@@ -24,6 +24,10 @@ profile.cov
 go.work
 go.work.sum
 
+# Local hook overrides
+lefthook-local.yml
+.claude/settings.local.json
+
 # env file
 .env
 

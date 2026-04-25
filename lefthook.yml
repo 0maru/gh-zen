@@ -1,0 +1,43 @@
+pre-commit:
+  parallel: false
+  jobs:
+    - name: gofmt
+      glob: "*.go"
+      run: ./scripts/fmt.sh {staged_files}
+      stage_fixed: true
+
+    - name: lint
+      run: ./scripts/lint.sh
+
+    - name: test-small
+      run: ./scripts/test-small.sh
+
+pre-push:
+  jobs:
+    - name: test-medium
+      files: git ls-files
+      run: ./scripts/test-medium.sh {files}
+
+check:
+  jobs:
+    - name: format
+      run: ./scripts/fmt.sh
+
+    - name: lint
+      run: ./scripts/lint.sh
+
+    - name: test-medium
+      run: ./scripts/test-medium.sh
+
+agent-check:
+  jobs:
+    - name: lint
+      run: ./scripts/lint.sh
+
+    - name: test-small
+      run: ./scripts/test-small.sh
+
+test-large:
+  jobs:
+    - name: test-large
+      run: ./scripts/test-large.sh

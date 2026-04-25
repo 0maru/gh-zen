@@ -9,6 +9,7 @@ trustworthy.
 - [0001: Use Charmbracelet Libraries as the TUI Foundation](0001-use-charmbracelet-libraries-as-the-tui-foundation.md)
 - [0002: Keep UI Copy in English and Support Unicode Input](0002-keep-ui-copy-in-english-and-support-unicode-input.md)
 - [0003: Use Yazi-Inspired Object Navigation and Previews](0003-use-yazi-inspired-object-navigation-and-previews.md)
+- [0004: Use Lefthook and Sized Test Gates](0004-use-lefthook-and-sized-test-gates.md)
 
 ## Status Values
 
