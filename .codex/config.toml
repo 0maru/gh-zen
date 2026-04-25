@@ -1,0 +1,13 @@
+model = "gpt-5.5"
+approval_policy = "on-request"
+web_search = "cached"
+sandbox_mode = "workspace-write"
+model_reasoning_effort = "xhigh"
+personality = "pragmatic"
+
+[features]
+codex_hooks = true
+fast_mode = true
+multi_agent = true
+shell_snapshot = true
+shell_tool = true
