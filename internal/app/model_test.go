@@ -1,6 +1,7 @@
 package app
 
 import (
+	"reflect"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,8 +40,21 @@ func TestUpdate_NonQuitKey_NoCommand(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("expected nil cmd for non-quit key, got %T", cmd)
 	}
-	if got != (model{}) {
+	if !reflect.DeepEqual(got, model{}) {
 		t.Fatalf("expected model unchanged, got %+v", got)
+	}
+}
+
+func TestNew_LoadsFakeWorkbenchData(t *testing.T) {
+	got, ok := New().(model)
+	if !ok {
+		t.Fatalf("expected model from New")
+	}
+	if len(got.repos) == 0 {
+		t.Fatalf("expected fake repositories")
+	}
+	if len(got.workItems) == 0 {
+		t.Fatalf("expected fake work items")
 	}
 }
 
@@ -55,6 +69,56 @@ func TestUpdate_WindowSizeMsg_StoresDimensions(t *testing.T) {
 	}
 	if mm.width != 40 || mm.height != 24 {
 		t.Fatalf("expected width=40 height=24, got width=%d height=%d", mm.width, mm.height)
+	}
+}
+
+func TestUpdate_MoveSelection(t *testing.T) {
+	start := newModel()
+	if start.selectedItem != 0 {
+		t.Fatalf("expected initial selection at 0, got %d", start.selectedItem)
+	}
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for movement, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.selectedItem != 1 {
+		t.Fatalf("expected j to move selection to 1, got %d", mm.selectedItem)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	mm = got.(model)
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected k to move selection back to 0, got %d", mm.selectedItem)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	mm = got.(model)
+	if mm.selectedItem != len(mm.workItems)-1 {
+		t.Fatalf("expected G to move selection to end, got %d", mm.selectedItem)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	mm = got.(model)
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected g to move selection to start, got %d", mm.selectedItem)
+	}
+}
+
+func TestUpdate_MoveSelection_ClampsAtEdges(t *testing.T) {
+	start := newModel()
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	mm := got.(model)
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected selection to stay at start, got %d", mm.selectedItem)
+	}
+
+	mm.selectedItem = len(mm.workItems) - 1
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	if mm.selectedItem != len(mm.workItems)-1 {
+		t.Fatalf("expected selection to stay at end, got %d", mm.selectedItem)
 	}
 }
 

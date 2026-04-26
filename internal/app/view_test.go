@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -36,5 +38,34 @@ func requireEqualGolden(t *testing.T, got []byte) {
 }
 
 func TestView_Initial(t *testing.T) {
-	requireEqualGolden(t, []byte((model{}).View()))
+	requireEqualGolden(t, []byte(newModel().View()))
+}
+
+func TestView_Compact_HidesRepositoryPane(t *testing.T) {
+	m := newModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
+	got := updated.(model).View()
+	if bytes.Contains([]byte(got), []byte("Repositories")) {
+		t.Fatalf("expected compact view to hide repository pane, got:\n%s", got)
+	}
+	if !bytes.Contains([]byte(got), []byte("Work Items")) || !bytes.Contains([]byte(got), []byte("Preview")) {
+		t.Fatalf("expected compact view to keep list and preview, got:\n%s", got)
+	}
+}
+
+func TestView_SelectedItemChangesPreview(t *testing.T) {
+	m := newModel()
+	initial := m.View()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	next := updated.(model).View()
+
+	if initial == next {
+		t.Fatalf("expected preview to change after moving selection")
+	}
+	if !bytes.Contains([]byte(next), []byte("feat/config-loader")) {
+		t.Fatalf("expected moved preview to include selected branch, got:\n%s", next)
+	}
+	if !bytes.Contains([]byte(next), []byte("PR #24 open")) {
+		t.Fatalf("expected moved preview to include linked PR, got:\n%s", next)
+	}
 }
