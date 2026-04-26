@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -83,8 +85,32 @@ func TestView_FullLayoutSeparatesPanes(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("expected full layout output, got:\n%s", got)
 	}
-	if !strings.Contains(lines[3], " | ") {
+	if !strings.Contains(lines[3], paneBorderGlyph) {
 		t.Fatalf("expected visible pane separators in header row, got line %q", lines[3])
+	}
+}
+
+func TestView_FrameFillsWindowHeight(t *testing.T) {
+	m := newModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	got := updated.(model).View()
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+
+	if len(lines) != 24 {
+		t.Fatalf("expected frame to fill window height, got %d lines:\n%s", len(lines), got)
+	}
+	top := ansi.Strip(lines[2])
+	if !strings.HasPrefix(top, frameTopLeftGlyph) || !strings.HasSuffix(top, frameTopRightGlyph) {
+		t.Fatalf("expected top frame border on line 3, got %q", lines[2])
+	}
+	last := ansi.Strip(lines[len(lines)-1])
+	if !strings.HasPrefix(last, frameBottomLeftGlyph) || !strings.HasSuffix(last, frameBottomRightGlyph) {
+		t.Fatalf("expected bottom frame border on last line, got %q", lines[len(lines)-1])
+	}
+	for i, line := range lines[2:] {
+		if width := lipgloss.Width(line); width != 100 {
+			t.Fatalf("expected frame line %d to use full width 100, got %d for %q", i+2, width, line)
+		}
 	}
 }
 
