@@ -126,6 +126,57 @@ func TestUpdate_MoveSelection_ClampsAtEdges(t *testing.T) {
 	}
 }
 
+func TestUpdate_TabChangesFocusedPane(t *testing.T) {
+	start := newModel()
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for tab, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.focusedPane != panePreview {
+		t.Fatalf("expected tab to focus preview pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	mm = got.(model)
+	if mm.focusedPane != paneWorkItems {
+		t.Fatalf("expected shift+tab to focus work items pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	mm = got.(model)
+	if mm.focusedPane != paneRepositories {
+		t.Fatalf("expected shift+tab to focus repositories pane, got %v", mm.focusedPane)
+	}
+}
+
+func TestUpdate_MovementTargetsFocusedPane(t *testing.T) {
+	start := newModel()
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	mm := got.(model)
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	if mm.selectedRepo != 1 {
+		t.Fatalf("expected j to move repository selection when repo pane is focused, got %d", mm.selectedRepo)
+	}
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected work item selection to stay unchanged, got %d", mm.selectedItem)
+	}
+}
+
+func TestUpdate_PreviewPaneIgnoresMovementKeys(t *testing.T) {
+	start := newModel()
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyTab})
+	mm := got.(model)
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	if mm.selectedRepo != 0 || mm.selectedItem != 0 {
+		t.Fatalf("expected preview pane movement to leave selections unchanged, got repo=%d item=%d", mm.selectedRepo, mm.selectedItem)
+	}
+}
+
 func TestUpdate_UnicodeRunes_NoQuit(t *testing.T) {
 	cases := []struct {
 		name  string
