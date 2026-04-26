@@ -68,4 +68,7 @@ func TestView_SelectedItemChangesPreview(t *testing.T) {
 	if !bytes.Contains([]byte(next), []byte("PR #24 open")) {
 		t.Fatalf("expected moved preview to include linked PR, got:\n%s", next)
 	}
+	if !bytes.Contains([]byte(next), []byte("Review: review requested")) {
+		t.Fatalf("expected moved preview to include review state, got:\n%s", next)
+	}
 }

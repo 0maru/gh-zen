@@ -27,6 +27,33 @@ func TestWorkItem_ZeroValueSafeLabels(t *testing.T) {
 	}
 }
 
+func TestWorkItem_PullRequestLabel_PartialDataSafe(t *testing.T) {
+	cases := []struct {
+		name string
+		pr   *PullRequestRef
+		want string
+	}{
+		{name: "missing state and number", pr: &PullRequestRef{}, want: "PR"},
+		{name: "number only", pr: &PullRequestRef{Number: 24}, want: "PR #24"},
+		{name: "state", pr: &PullRequestRef{Number: 24, State: "open"}, want: "PR #24 open"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			item := WorkItem{PullRequest: tc.pr}
+			if got := item.PullRequestLabel(); got != tc.want {
+				t.Fatalf("expected PR label %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestWorkItem_IssueLabel_MarksUncertainIssue(t *testing.T) {
+	item := WorkItem{Issue: &IssueRef{Number: 34, Title: "Branch preview UX"}}
+	if got := item.IssueLabel(); got != "#34 Branch preview UX (uncertain)" {
+		t.Fatalf("expected uncertain issue label, got %q", got)
+	}
+}
+
 func TestFakeWorkItems_CoverRequiredShapes(t *testing.T) {
 	items := FakeWorkItems()
 	if len(items) < 5 {

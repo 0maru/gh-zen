@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/0maru/gh-zen/internal/workbench"
 )
 
 func TestInit_ReturnsNilCmd(t *testing.T) {
@@ -36,11 +39,12 @@ func TestUpdate_QuitOnQuitKeys(t *testing.T) {
 }
 
 func TestUpdate_NonQuitKey_NoCommand(t *testing.T) {
-	got, cmd := (model{}).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	start := newModel()
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	if cmd != nil {
 		t.Fatalf("expected nil cmd for non-quit key, got %T", cmd)
 	}
-	if !reflect.DeepEqual(got, model{}) {
+	if !reflect.DeepEqual(got, start) {
 		t.Fatalf("expected model unchanged, got %+v", got)
 	}
 }
@@ -138,5 +142,32 @@ func TestUpdate_UnicodeRunes_NoQuit(t *testing.T) {
 				t.Fatalf("expected nil cmd for non-quit unicode key, got %T (%v)", cmd, cmd())
 			}
 		})
+	}
+}
+
+func TestPad_UsesTerminalDisplayWidth(t *testing.T) {
+	got := pad("日本", 6)
+	if width := lipgloss.Width(got); width != 6 {
+		t.Fatalf("expected display width 6, got %d for %q", width, got)
+	}
+}
+
+func TestTruncate_UsesTerminalDisplayWidth(t *testing.T) {
+	got := truncate("日本語", 5)
+	if width := lipgloss.Width(got); width > 5 {
+		t.Fatalf("expected display width at most 5, got %d for %q", width, got)
+	}
+	if got != "日本~" {
+		t.Fatalf("expected wide text to truncate with tail, got %q", got)
+	}
+}
+
+func TestShortRemoteLabel_ShowsIssueNumberWhenBranchHasNoPullRequest(t *testing.T) {
+	item := workbench.WorkItem{
+		Branch: &workbench.BranchRef{Name: "feat/issue-linked-work"},
+		Issue:  &workbench.IssueRef{Number: 34, Title: "Branch preview UX", Certain: true},
+	}
+	if got := shortRemoteLabel(item); got != "#34" {
+		t.Fatalf("expected issue number for branch without PR, got %q", got)
 	}
 }

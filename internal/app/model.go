@@ -5,11 +5,22 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
-const defaultWidth = 100
+const (
+	defaultWidth        = 100
+	repoPaneWidth       = 23
+	workItemPaneWidth   = 39
+	paneGapWidth        = 2
+	previewPaneMinWidth = 28
+	dividerMaxWidth     = 72
+	compactDividerWidth = 48
+	fullLayoutMinWidth  = repoPaneWidth + workItemPaneWidth + paneGapWidth*2 + previewPaneMinWidth
+)
 
 type model struct {
 	width        int
@@ -83,32 +94,26 @@ func (m model) View() string {
 		width = defaultWidth
 	}
 
-	if width < 94 {
+	if width < fullLayoutMinWidth {
 		return m.renderCompact(width)
 	}
 	return m.renderFull(width)
 }
 
 func (m model) renderFull(width int) string {
-	leftWidth := 23
-	middleWidth := 39
-	gapWidth := 2
-	rightWidth := width - leftWidth - middleWidth - gapWidth*2
-	if rightWidth < 28 {
-		rightWidth = 28
-	}
+	rightWidth := width - repoPaneWidth - workItemPaneWidth - paneGapWidth*2
 
-	left := m.repoLines(leftWidth)
-	middle := m.workItemLines(middleWidth)
+	left := m.repoLines(repoPaneWidth)
+	middle := m.workItemLines(workItemPaneWidth)
 	right := m.previewLines(rightWidth)
-	lines := maxInt(len(left), maxInt(len(middle), len(right)))
+	lines := max(len(left), max(len(middle), len(right)))
 
 	out := []string{
 		"gh-zen  repository workbench",
-		strings.Repeat("-", minInt(width, 72)),
+		strings.Repeat("-", min(width, dividerMaxWidth)),
 	}
 	for i := 0; i < lines; i++ {
-		row := pad(lineAt(left, i), leftWidth) + strings.Repeat(" ", gapWidth) + pad(lineAt(middle, i), middleWidth) + strings.Repeat(" ", gapWidth) + pad(lineAt(right, i), rightWidth)
+		row := pad(lineAt(left, i), repoPaneWidth) + strings.Repeat(" ", paneGapWidth) + pad(lineAt(middle, i), workItemPaneWidth) + strings.Repeat(" ", paneGapWidth) + pad(lineAt(right, i), rightWidth)
 		out = append(out, strings.TrimRight(row, " "))
 	}
 	out = append(out, "", "j/k move  g/G jump  q quit")
@@ -118,7 +123,7 @@ func (m model) renderFull(width int) string {
 func (m model) renderCompact(width int) string {
 	lines := []string{
 		"gh-zen workbench",
-		strings.Repeat("-", minInt(width, 48)),
+		strings.Repeat("-", min(width, compactDividerWidth)),
 	}
 	lines = append(lines, m.workItemLines(width)...)
 	lines = append(lines, "")
@@ -182,6 +187,9 @@ func (m model) previewLines(width int) []string {
 	lines = append(lines, truncate("Local: "+item.LocalLabel(), width))
 	lines = append(lines, truncate("Issue: "+item.IssueLabel(), width))
 	lines = append(lines, truncate("PR: "+item.PullRequestLabel(), width))
+	if item.PullRequest != nil && item.PullRequest.ReviewState != "" {
+		lines = append(lines, truncate("Review: "+item.PullRequest.ReviewState, width))
+	}
 	lines = append(lines, truncate("Checks: "+item.Checks.Label(), width))
 	if len(item.Commits) > 0 {
 		lines = append(lines, "Commits:")
@@ -201,13 +209,19 @@ func (m model) selectedWorkItem() (workbench.WorkItem, bool) {
 
 func shortRemoteLabel(item workbench.WorkItem) string {
 	if item.PullRequest != nil {
+		if item.PullRequest.Number == 0 {
+			return "PR"
+		}
 		return fmt.Sprintf("PR #%d", item.PullRequest.Number)
+	}
+	if item.Issue != nil {
+		if item.Issue.Number == 0 {
+			return "issue"
+		}
+		return fmt.Sprintf("#%d", item.Issue.Number)
 	}
 	if item.Branch != nil && item.Branch.RemoteOnly {
 		return "remote"
-	}
-	if item.Issue != nil && item.Branch == nil {
-		return fmt.Sprintf("#%d", item.Issue.Number)
 	}
 	return "no PR"
 }
@@ -221,36 +235,19 @@ func lineAt(lines []string, i int) string {
 
 func pad(s string, width int) string {
 	s = truncate(s, width)
-	if len(s) >= width {
+	padWidth := width - lipgloss.Width(s)
+	if padWidth <= 0 {
 		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", padWidth)
 }
 
 func truncate(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	runes := []rune(s)
-	if len(runes) <= width {
+	if lipgloss.Width(s) <= width {
 		return s
 	}
-	if width == 1 {
-		return string(runes[:1])
-	}
-	return string(runes[:width-1]) + "~"
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return ansi.Truncate(s, width, "~")
 }

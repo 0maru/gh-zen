@@ -55,13 +55,18 @@ type PullRequestRef struct {
 }
 
 func (p PullRequestRef) Label() string {
+	label := p.NumberLabel()
+	if p.Title == "" {
+		return label
+	}
+	return fmt.Sprintf("%s %s", label, p.Title)
+}
+
+func (p PullRequestRef) NumberLabel() string {
 	if p.Number == 0 {
 		return "PR"
 	}
-	if p.Title == "" {
-		return fmt.Sprintf("PR #%d", p.Number)
-	}
-	return fmt.Sprintf("PR #%d %s", p.Number, p.Title)
+	return fmt.Sprintf("PR #%d", p.Number)
 }
 
 type CheckState string
@@ -182,12 +187,20 @@ func (w WorkItem) PullRequestLabel() string {
 	if w.PullRequest == nil {
 		return "no PR"
 	}
-	return fmt.Sprintf("PR #%d %s", w.PullRequest.Number, w.PullRequest.State)
+	label := w.PullRequest.NumberLabel()
+	if w.PullRequest.State == "" {
+		return label
+	}
+	return fmt.Sprintf("%s %s", label, w.PullRequest.State)
 }
 
 func (w WorkItem) IssueLabel() string {
 	if w.Issue == nil {
 		return "no issue"
 	}
-	return w.Issue.Label()
+	label := w.Issue.Label()
+	if !w.Issue.Certain {
+		return fmt.Sprintf("%s (uncertain)", label)
+	}
+	return label
 }
