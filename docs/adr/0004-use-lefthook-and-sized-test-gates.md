@@ -79,8 +79,8 @@ CI policy:
 
 - Pull request CI runs formatting check, lint, and the small test gate.
 - Pull request CI should not run medium or large tests by default.
-- Main branch CI may start with the same small gate and can add medium jobs once
-  the medium suite contains meaningful local integration coverage.
+- Main branch CI runs the same small gate, then medium tests, then the opt-in
+  large test gate with `GH_ZEN_LARGE_TESTS=1`.
 
 Agent hook policy:
 
