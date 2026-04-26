@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  small:
+    name: Format, lint, and small tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: ./scripts/fmt-check.sh
+
+      - name: Run lint
+        run: ./scripts/lint.sh
+
+      - name: Run small tests
+        run: ./scripts/test-small.sh
+
+  medium:
+    name: Medium tests
+    runs-on: ubuntu-latest
+    needs: small
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run medium tests
+        run: ./scripts/test-medium.sh
+
+  large:
+    name: Large tests
+    runs-on: ubuntu-latest
+    needs: medium
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      GH_ZEN_LARGE_TESTS: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run large tests
+        run: ./scripts/test-large.sh

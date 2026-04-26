@@ -11,6 +11,7 @@ help:
 	@printf '  %-18s %s\n' 'install-extension' 'Build and install this checkout as a local gh extension'
 	@printf '  %-18s %s\n' 'run-extension' 'Run the installed gh extension'
 	@printf '  %-18s %s\n' 'fmt' 'Format source files'
+	@printf '  %-18s %s\n' 'fmt-check' 'Check source formatting'
 	@printf '  %-18s %s\n' 'lint' 'Run lint checks'
 	@printf '  %-18s %s\n' 'test-small' 'Run the fast deterministic test gate'
 	@printf '  %-18s %s\n' 'test-medium' 'Run the default local integration test gate'
@@ -38,6 +39,10 @@ run-extension:
 .PHONY: fmt
 fmt:
 	./scripts/fmt.sh
+
+.PHONY: fmt-check
+fmt-check:
+	./scripts/fmt-check.sh
 
 .PHONY: lint
 lint:

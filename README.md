@@ -1,5 +1,7 @@
 # gh-zen
 
+[![CI](https://github.com/0maru/gh-zen/actions/workflows/ci.yml/badge.svg)](https://github.com/0maru/gh-zen/actions/workflows/ci.yml)
+
 `gh-zen` is a GitHub CLI extension for focused terminal GitHub workflows.
 
 ## Development
