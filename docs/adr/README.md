@@ -11,6 +11,8 @@ trustworthy.
 - [0003: Use Yazi-Inspired Object Navigation and Previews](0003-use-yazi-inspired-object-navigation-and-previews.md)
 - [0004: Use Lefthook and Sized Test Gates](0004-use-lefthook-and-sized-test-gates.md)
 - [0005: Package as a GitHub CLI Extension](0005-package-as-a-github-cli-extension.md)
+- [0006: Use Repository Workbench as the Primary Navigation Model](0006-use-repository-workbench-as-the-primary-navigation-model.md)
+- [0007: Use Layered Configuration With Terminal Profiles](0007-use-layered-configuration-with-terminal-profiles.md)
 
 ## Status Values
 

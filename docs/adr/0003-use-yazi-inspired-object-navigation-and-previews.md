@@ -1,6 +1,6 @@
 # 0003: Use Yazi-Inspired Object Navigation and Previews
 
-- Status: Accepted
+- Status: Superseded by [0006: Use Repository Workbench as the Primary Navigation Model](0006-use-repository-workbench-as-the-primary-navigation-model.md)
 - Date: 2026-04-26
 
 ## Context
