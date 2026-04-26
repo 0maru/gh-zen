@@ -13,6 +13,7 @@ The project also needs the same local quality gates to run from several entry
 points:
 
 - Git hooks before commit or push.
+- Make targets for manual development.
 - Manual developer commands.
 - Codex project hooks.
 - Claude Code project hooks.
@@ -24,11 +25,13 @@ make the coding loop slow, especially once GitHub integration tests exist.
 
 ## Decision
 
-Use Lefthook v2.1.1 or newer as the repository Git hook runner, and keep the
-actual format, lint, and test commands behind scripts in `scripts/`.
+Use Lefthook v2.1.1 or newer as the repository Git hook runner. Use `Makefile`
+targets as the local developer command runner. Keep the actual format, lint,
+build, and test commands behind scripts in `scripts/`.
 
 The scripts are the stable command boundary:
 
+- `scripts/build.sh` builds the local GitHub CLI extension binary.
 - `scripts/fmt.sh` applies formatting.
 - `scripts/lint.sh` runs the local lint gate.
 - `scripts/test-small.sh` runs the fast deterministic test gate.
@@ -38,6 +41,10 @@ The scripts are the stable command boundary:
 
 Lefthook should call these scripts instead of embedding tool-specific command
 logic directly in `lefthook.yml`.
+
+Make targets should also call these scripts instead of becoming a second source
+of truth. The Makefile is a discoverable command surface for common local tasks,
+not the place where validation or build behavior is defined.
 
 Use sized test gates:
 
@@ -82,16 +89,22 @@ Agent hook policy:
 Positive:
 
 - Local developers, agents, and CI can reuse the same command boundary.
+- `make help` gives contributors a low-friction entrypoint without adding a
+  language-specific task runner dependency.
 - Fast edit loops stay fast because agent hooks stop at the small gate.
 - GitHub API and credential-dependent tests have a clear home without slowing
   normal commits.
 - The project can add CI later without redesigning the local validation model.
 - Lefthook keeps Git hook configuration small and language-agnostic.
+- The Makefile keeps local command discovery simple while preserving scripts as
+  the implementation boundary.
 
 Tradeoffs:
 
 - Contributors need Lefthook v2.1.1 or newer installed before Git hooks run
   locally.
+- Contributors need `make` for the convenience runner, though scripts remain
+  directly executable when `make` is unavailable.
 - Agent hook behavior depends on Codex and Claude Code project hook support.
 - The small, medium, and large boundaries require discipline when new tests are
   added.

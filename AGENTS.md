@@ -19,11 +19,15 @@
 
 - Use Lefthook v2.1.1 or newer.
 - Install local Git hooks with `lefthook install` after cloning.
-- Run the fast local gate with `lefthook run pre-commit` or
+- Prefer `make` targets for manual development commands.
+- Run the fast local gate with `make test-small`, `lefthook run pre-commit`, or
   `./scripts/test-small.sh`.
-- Run the normal local gate with `lefthook run check` or `./scripts/check.sh`.
+- Run the normal local gate with `make check`, `lefthook run check`, or
+  `./scripts/check.sh`.
 - Run the push gate with `lefthook run pre-push`.
-- Keep large tests opt-in with `GH_ZEN_LARGE_TESTS=1 ./scripts/test-large.sh`.
+- Build the local extension binary with `make build` or `./scripts/build.sh`.
+- Keep large tests opt-in with `make test-large` or
+  `GH_ZEN_LARGE_TESTS=1 ./scripts/test-large.sh`.
 - Use small tests for deterministic model, view, and pure logic coverage.
 - Use medium tests for local integration with temporary files, fixtures, and
   fake command boundaries.
