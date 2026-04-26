@@ -33,6 +33,7 @@ The scripts are the stable command boundary:
 
 - `scripts/build.sh` builds the local GitHub CLI extension binary.
 - `scripts/fmt.sh` applies formatting.
+- `scripts/fmt-check.sh` verifies formatting without modifying files.
 - `scripts/lint.sh` runs the local lint gate.
 - `scripts/test-small.sh` runs the fast deterministic test gate.
 - `scripts/test-medium.sh` runs the default local integration test gate.
@@ -73,6 +74,13 @@ Local hook policy:
 - `check` runs formatting, lint, and the medium test gate.
 - `test-large` is a named Lefthook task and is never wired into normal commit or
   push hooks.
+
+CI policy:
+
+- Pull request CI runs formatting check, lint, and the small test gate.
+- Pull request CI should not run medium or large tests by default.
+- Main branch CI may start with the same small gate and can add medium jobs once
+  the medium suite contains meaningful local integration coverage.
 
 Agent hook policy:
 

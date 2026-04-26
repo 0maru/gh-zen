@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  small:
+    name: Format, lint, and small tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: ./scripts/fmt-check.sh
+
+      - name: Run lint
+        run: ./scripts/lint.sh
+
+      - name: Run small tests
+        run: ./scripts/test-small.sh
