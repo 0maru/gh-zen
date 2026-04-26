@@ -12,15 +12,21 @@ import (
 )
 
 const (
-	defaultWidth        = 100
-	repoPaneWidth       = 23
-	workItemPaneWidth   = 39
-	paneSeparator       = " | "
-	paneSeparatorWidth  = len(paneSeparator)
-	previewPaneMinWidth = 28
-	dividerMaxWidth     = 72
-	compactDividerWidth = 48
-	fullLayoutMinWidth  = repoPaneWidth + workItemPaneWidth + paneSeparatorWidth*2 + previewPaneMinWidth
+	defaultWidth          = 100
+	repoPaneWidth         = 23
+	workItemPaneWidth     = 39
+	paneBorderGlyph       = "│"
+	paneBorderWidth       = 2
+	frameBorderWidth      = 2
+	frameHeaderLines      = 2
+	frameBorderLines      = 2
+	horizontalLineGlyph   = "─"
+	frameTopLeftGlyph     = "┌"
+	frameTopRightGlyph    = "┐"
+	frameBottomLeftGlyph  = "└"
+	frameBottomRightGlyph = "┘"
+	previewPaneMinWidth   = 28
+	fullLayoutMinWidth    = repoPaneWidth + workItemPaneWidth + paneBorderWidth*2 + previewPaneMinWidth
 )
 
 // paneFocus tracks the pane that owns pane-scoped key handling.
@@ -51,6 +57,7 @@ type model struct {
 	workItems    []workbench.WorkItem
 	selectedItem int
 	focusedPane  paneFocus
+	styles       Styles
 }
 
 func New() tea.Model {
@@ -61,6 +68,7 @@ func newModel() model {
 	return model{
 		repos:     workbench.FakeRepos(),
 		workItems: workbench.FakeWorkItems(),
+		styles:    DefaultStyles(),
 	}
 }
 
@@ -127,7 +135,7 @@ func (m model) activePane() paneFocus {
 }
 
 func (m model) isCompact() bool {
-	return m.effectiveWidth() < fullLayoutMinWidth
+	return m.effectiveContentWidth() < fullLayoutMinWidth
 }
 
 func (m model) effectiveWidth() int {
@@ -135,6 +143,10 @@ func (m model) effectiveWidth() int {
 		return defaultWidth
 	}
 	return m.width
+}
+
+func (m model) effectiveContentWidth() int {
+	return max(m.effectiveWidth()-frameBorderWidth, 0)
 }
 
 func nextPane(current paneFocus, order []paneFocus) paneFocus {
@@ -227,38 +239,46 @@ func (m model) View() string {
 }
 
 func (m model) renderFull(width int) string {
-	rightWidth := width - repoPaneWidth - workItemPaneWidth - paneSeparatorWidth*2
+	contentWidth := max(width-frameBorderWidth, 0)
+	rightWidth := contentWidth - repoPaneWidth - workItemPaneWidth - paneBorderWidth*2
 	focus := m.activePane()
 
 	left := m.repoLines(repoPaneWidth, focus == paneRepositories)
 	middle := m.workItemLines(workItemPaneWidth, focus == paneWorkItems)
 	right := m.previewLines(rightWidth, focus == panePreview)
-	lines := max(len(left), max(len(middle), len(right)))
+	bodyHeight := m.frameBodyHeight(max(len(left), max(len(middle), len(right))))
 
 	out := []string{
 		"gh-zen  repository workbench",
 		m.keymapLine(width),
-		strings.Repeat("-", min(width, dividerMaxWidth)),
 	}
-	for i := 0; i < lines; i++ {
-		row := paneRow(lineAt(left, i), lineAt(middle, i), lineAt(right, i), rightWidth)
-		out = append(out, strings.TrimRight(row, " "))
-	}
+	body := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		m.renderPane(left, repoPaneWidth, bodyHeight, false),
+		m.renderPane(middle, workItemPaneWidth, bodyHeight, true),
+		m.renderPane(right, rightWidth, bodyHeight, true),
+	)
+	out = append(out, m.renderFrame(trimRightLines(body), width, bodyHeight))
 	return strings.Join(out, "\n") + "\n"
 }
 
 func (m model) renderCompact(width int) string {
+	contentWidth := max(width-frameBorderWidth, 0)
 	focus := m.activePane()
-	lines := []string{
+	out := []string{
 		"gh-zen workbench",
 		m.keymapLine(width),
-		strings.Repeat("-", min(width, compactDividerWidth)),
 	}
-	lines = append(lines, m.workItemLines(width, focus == paneWorkItems)...)
+
+	lines := m.workItemLines(contentWidth, focus == paneWorkItems)
 	lines = append(lines, "")
-	lines = append(lines, strings.Repeat("-", min(width, compactDividerWidth)))
-	lines = append(lines, m.previewLines(width, focus == panePreview)...)
-	return strings.Join(lines, "\n") + "\n"
+	lines = append(lines, m.dividerLine(contentWidth))
+	lines = append(lines, m.previewLines(contentWidth, focus == panePreview)...)
+	bodyHeight := m.frameBodyHeight(len(lines))
+
+	content := renderPaneContent(lines, contentWidth, bodyHeight)
+	out = append(out, m.renderFrame(content, width, bodyHeight))
+	return strings.Join(out, "\n") + "\n"
 }
 
 func (m model) repoLines(width int, focused bool) []string {
@@ -354,9 +374,70 @@ func selectionMarker(selected, focused bool) string {
 	return "*"
 }
 
-// paneRow renders full-layout columns with visible pane separators.
-func paneRow(left, middle, right string, rightWidth int) string {
-	return pad(left, repoPaneWidth) + paneSeparator + pad(middle, workItemPaneWidth) + paneSeparator + pad(right, rightWidth)
+// dividerLine renders horizontal separators through the theme boundary.
+func (m model) dividerLine(width int) string {
+	return m.styles.Divider.Render(strings.Repeat(horizontalLineGlyph, width))
+}
+
+func (m model) frameBodyHeight(contentHeight int) int {
+	if m.height <= 0 {
+		return contentHeight
+	}
+	available := m.height - frameHeaderLines - frameBorderLines
+	if available > contentHeight {
+		return available
+	}
+	return contentHeight
+}
+
+// renderFrame owns the outer workbench rectangle.
+func (m model) renderFrame(content string, width int, bodyHeight int) string {
+	return lipgloss.NewStyle().
+		Width(max(width-frameBorderWidth, 0)).
+		Height(bodyHeight).
+		Border(lipgloss.Border{
+			Top:         horizontalLineGlyph,
+			Bottom:      horizontalLineGlyph,
+			Left:        paneBorderGlyph,
+			Right:       paneBorderGlyph,
+			TopLeft:     frameTopLeftGlyph,
+			TopRight:    frameTopRightGlyph,
+			BottomLeft:  frameBottomLeftGlyph,
+			BottomRight: frameBottomRightGlyph,
+		}, true).
+		BorderForeground(m.styles.FrameBorder.GetForeground()).
+		Render(content)
+}
+
+// renderPane pads pane content and lets Lip Gloss own pane borders.
+func (m model) renderPane(lines []string, width int, height int, bordered bool) string {
+	content := renderPaneContent(lines, width, height)
+	if !bordered {
+		return content
+	}
+	return lipgloss.NewStyle().
+		BorderLeft(true).
+		BorderStyle(lipgloss.Border{Left: paneBorderGlyph}).
+		BorderForeground(m.styles.PaneBorder.GetForeground()).
+		PaddingLeft(1).
+		Render(content)
+}
+
+// renderPaneContent keeps each pane block rectangular before borders are added.
+func renderPaneContent(lines []string, width int, height int) string {
+	out := make([]string, height)
+	for i := range out {
+		out[i] = pad(lineAt(lines, i), width)
+	}
+	return strings.Join(out, "\n")
+}
+
+func trimRightLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m model) selectedWorkItem() (workbench.WorkItem, bool) {

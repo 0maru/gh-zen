@@ -2,6 +2,7 @@ package app
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -210,6 +211,22 @@ func TestTruncate_UsesTerminalDisplayWidth(t *testing.T) {
 	}
 	if got != "日本~" {
 		t.Fatalf("expected wide text to truncate with tail, got %q", got)
+	}
+}
+
+func TestRenderPane_UsesLipGlossBorderWidth(t *testing.T) {
+	got := newModel().renderPane([]string{"header", "row"}, 10, 3, true)
+	lines := strings.Split(got, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected bordered pane height 3, got %d in %q", len(lines), got)
+	}
+	for _, line := range lines {
+		if width := lipgloss.Width(line); width != 10+paneBorderWidth {
+			t.Fatalf("expected bordered pane width %d, got %d for %q", 10+paneBorderWidth, width, line)
+		}
+	}
+	if !strings.Contains(got, paneBorderGlyph) {
+		t.Fatalf("expected Lip Gloss pane border, got %q", got)
 	}
 }
 
