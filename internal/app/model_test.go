@@ -2,6 +2,7 @@ package app
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -126,6 +127,57 @@ func TestUpdate_MoveSelection_ClampsAtEdges(t *testing.T) {
 	}
 }
 
+func TestUpdate_TabChangesFocusedPane(t *testing.T) {
+	start := newModel()
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for tab, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.focusedPane != panePreview {
+		t.Fatalf("expected tab to focus preview pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	mm = got.(model)
+	if mm.focusedPane != paneWorkItems {
+		t.Fatalf("expected shift+tab to focus work items pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	mm = got.(model)
+	if mm.focusedPane != paneRepositories {
+		t.Fatalf("expected shift+tab to focus repositories pane, got %v", mm.focusedPane)
+	}
+}
+
+func TestUpdate_MovementTargetsFocusedPane(t *testing.T) {
+	start := newModel()
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	mm := got.(model)
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	if mm.selectedRepo != 1 {
+		t.Fatalf("expected j to move repository selection when repo pane is focused, got %d", mm.selectedRepo)
+	}
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected work item selection to stay unchanged, got %d", mm.selectedItem)
+	}
+}
+
+func TestUpdate_PreviewPaneIgnoresMovementKeys(t *testing.T) {
+	start := newModel()
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyTab})
+	mm := got.(model)
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	if mm.selectedRepo != 0 || mm.selectedItem != 0 {
+		t.Fatalf("expected preview pane movement to leave selections unchanged, got repo=%d item=%d", mm.selectedRepo, mm.selectedItem)
+	}
+}
+
 func TestUpdate_UnicodeRunes_NoQuit(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -159,6 +211,22 @@ func TestTruncate_UsesTerminalDisplayWidth(t *testing.T) {
 	}
 	if got != "日本~" {
 		t.Fatalf("expected wide text to truncate with tail, got %q", got)
+	}
+}
+
+func TestRenderPane_UsesLipGlossBorderWidth(t *testing.T) {
+	got := newModel().renderPane([]string{"header", "row"}, 10, 3, true)
+	lines := strings.Split(got, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected bordered pane height 3, got %d in %q", len(lines), got)
+	}
+	for _, line := range lines {
+		if width := lipgloss.Width(line); width != 10+paneBorderWidth {
+			t.Fatalf("expected bordered pane width %d, got %d for %q", 10+paneBorderWidth, width, line)
+		}
+	}
+	if !strings.Contains(got, paneBorderGlyph) {
+		t.Fatalf("expected Lip Gloss pane border, got %q", got)
 	}
 }
 
