@@ -23,6 +23,8 @@ type Styles struct {
 // DefaultStyles returns the built-in semantic styles.
 func DefaultStyles() Styles {
 	return Styles{
+		Key:         lipgloss.NewStyle().Foreground(lipgloss.Color("#5AA9FF")),
 		FrameBorder: lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7FF")),
+		PaneBorder:  lipgloss.NewStyle().Foreground(lipgloss.Color("#3A4856")),
 	}
 }

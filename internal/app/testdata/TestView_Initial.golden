@@ -1,15 +1,14 @@
 gh-zen  repository workbench
-Work Items keys: j/k move  g/G jump  tab/S-tab pane  q quit
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│Repositories           │ Work Items [active]                    │ Preview                         │
-│* 0maru/gh-zen         │ > main                   clean   no PR │ Repo: 0maru/gh-zen              │
-│  0maru/dotfiles       │   feat/config-loader     dirty   PR #24│ Item: main                      │
-│                       │   feat/repo-workbench    clean   #6    │ Where: ~/workspaces/github.com/~│
-│Views                  │   agent/preview-state    missing #8    │ Branch: main -> origin/main     │
-│  Active worktrees     │   #34 Branch preview UX  unknown #34   │ Local: clean                    │
-│  Review requested     │                                        │ Issue: no issue                 │
-│  Failed checks        │                                        │ PR: no PR                       │
-│                       │                                        │ Checks: checks passing          │
-│                       │                                        │ Commits:                        │
-│                       │                                        │   3da43e7 Set up GitHub CLI ext~│
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Work Items keys: j/k move  g/G jump  [1]/[2]/[3] pane  tab/S-tab pane  q quit
+┌─Repositories[1]───────┐ ┌─WorkItems[2]────────────────────────────┐ ┌─Review[3]──────────────────┐
+│ * 0maru/gh-zen        │ │ > main                   clean   no PR  │ │ Repo: 0maru/gh-zen         │
+│   0maru/dotfiles      │ │   feat/config-loader     dirty   PR #24 │ │ Item: main                 │
+│                       │ │   feat/repo-workbench    clean   #6     │ │ Where: ~/workspaces/github~│
+│ Views                 │ │   agent/preview-state    missing #8     │ │ Branch: main -> origin/main│
+│   Active worktrees    │ │   #34 Branch preview UX  unknown #34    │ │ Local: clean               │
+│   Review requested    │ │                                         │ │ Issue: no issue            │
+│   Failed checks       │ │                                         │ │ PR: no PR                  │
+│                       │ │                                         │ │ Checks: checks passing     │
+│                       │ │                                         │ │ Commits:                   │
+│                       │ │                                         │ │   3da43e7 Set up GitHub CL~│
+└───────────────────────┘ └─────────────────────────────────────────┘ └────────────────────────────┘
