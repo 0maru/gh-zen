@@ -177,10 +177,19 @@ func TestView_CompactKeymapShowsVisiblePaneNumbers(t *testing.T) {
 }
 
 func TestView_SelectedItemChangesPreview(t *testing.T) {
-	m := newModel()
+	m := newModelWithPreviewLoader(fakeDelayedPreviewLoader(0))
+	loaded, _ := m.Update(requirePreviewResultMsg(t, m.Init()))
+	m = loaded.(model)
 	initial := m.View()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	next := updated.(model).View()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	loading := updated.(model).View()
+	if !bytes.Contains([]byte(loading), []byte("Loading preview...")) {
+		t.Fatalf("expected moved preview to show loading state, got:\n%s", loading)
+	}
+
+	loaded, _ = updated.(model).Update(requirePreviewResultMsg(t, cmd))
+	next := loaded.(model).View()
 
 	if initial == next {
 		t.Fatalf("expected preview to change after moving selection")

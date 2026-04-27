@@ -62,16 +62,20 @@ func (p paneFocus) borderLabel() string {
 }
 
 type model struct {
-	width        int
-	height       int
-	repos        []workbench.RepoRef
-	selectedRepo int
-	selectedView int
-	viewSelected bool
-	workItems    []workbench.WorkItem
-	selectedItem int
-	focusedPane  paneFocus
-	styles       Styles
+	width                int
+	height               int
+	repos                []workbench.RepoRef
+	selectedRepo         int
+	selectedView         int
+	viewSelected         bool
+	workItems            []workbench.WorkItem
+	selectedItem         int
+	focusedPane          paneFocus
+	focusedWorkItemID    string
+	preview              previewState
+	nextPreviewRequestID int
+	previewLoader        previewLoader
+	styles               Styles
 }
 
 type repoViewFilter int
@@ -103,20 +107,43 @@ func New() tea.Model {
 }
 
 func newModel() model {
-	return model{
-		repos:     workbench.FakeRepos(),
-		workItems: workbench.FakeWorkItems(),
-		styles:    DefaultStyles(),
-	}
+	return newModelWithPreviewLoader(fakeDelayedPreviewLoader(defaultPreviewDelay))
 }
 
-func (m model) Init() tea.Cmd { return nil }
+func newModelWithPreviewLoader(loader previewLoader) model {
+	m := model{
+		repos:         workbench.FakeRepos(),
+		workItems:     workbench.FakeWorkItems(),
+		previewLoader: loader,
+		styles:        DefaultStyles(),
+	}
+	_ = m.startPreviewLoadForCurrentItem()
+	return m
+}
+
+func (m model) Init() tea.Cmd {
+	if m.preview.status != previewLoading || m.previewLoader == nil {
+		return nil
+	}
+	item, ok := m.selectedWorkItem()
+	if !ok || item.ID != m.focusedWorkItemID {
+		return nil
+	}
+	return m.previewLoader(previewRequest{
+		requestID:  m.preview.requestID,
+		workItemID: item.ID,
+		item:       item,
+	})
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return m, nil
+	case previewResultMsg:
+		m.handlePreviewResult(msg)
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -139,19 +166,88 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "j", "down":
 			m.moveFocusedSelection(1)
-			return m, nil
+			return m, m.startPreviewLoadIfFocusedItemChanged()
 		case "k", "up":
 			m.moveFocusedSelection(-1)
-			return m, nil
+			return m, m.startPreviewLoadIfFocusedItemChanged()
 		case "g":
 			m.jumpFocusedSelection(false)
-			return m, nil
+			return m, m.startPreviewLoadIfFocusedItemChanged()
 		case "G":
 			m.jumpFocusedSelection(true)
-			return m, nil
+			return m, m.startPreviewLoadIfFocusedItemChanged()
 		}
 	}
 	return m, nil
+}
+
+func (m *model) startPreviewLoadIfFocusedItemChanged() tea.Cmd {
+	item, ok := m.selectedWorkItem()
+	if !ok {
+		m.focusedWorkItemID = ""
+		m.preview = previewState{status: previewEmpty}
+		return nil
+	}
+	if item.ID == "" {
+		m.focusedWorkItemID = ""
+		m.preview = previewState{status: previewEmpty}
+		return nil
+	}
+	if item.ID == m.focusedWorkItemID {
+		return nil
+	}
+	return m.startPreviewLoadForCurrentItem()
+}
+
+func (m *model) startPreviewLoadForCurrentItem() tea.Cmd {
+	item, ok := m.selectedWorkItem()
+	if !ok || item.ID == "" {
+		m.focusedWorkItemID = ""
+		m.preview = previewState{status: previewEmpty}
+		return nil
+	}
+
+	m.nextPreviewRequestID++
+	requestID := m.nextPreviewRequestID
+	m.focusedWorkItemID = item.ID
+	m.preview = previewState{
+		status:            previewLoading,
+		requestID:         requestID,
+		focusedWorkItemID: item.ID,
+	}
+	if m.previewLoader == nil {
+		return nil
+	}
+	return m.previewLoader(previewRequest{
+		requestID:  requestID,
+		workItemID: item.ID,
+		item:       item,
+	})
+}
+
+func (m *model) handlePreviewResult(msg previewResultMsg) {
+	if msg.requestID != m.preview.requestID || msg.workItemID != m.focusedWorkItemID {
+		return
+	}
+
+	next := previewState{
+		requestID:         msg.requestID,
+		focusedWorkItemID: msg.workItemID,
+	}
+	switch {
+	case msg.err != nil:
+		next.status = previewError
+		next.errorMessage = msg.err.Error()
+	case msg.empty:
+		next.status = previewEmpty
+	default:
+		next.status = previewLoaded
+		next.loaded = msg.data
+		if next.loaded.workItemID == "" {
+			next.loaded.workItemID = msg.workItemID
+		}
+	}
+	m.preview = next
 }
 
 func (m *model) focusNextPane() {
@@ -458,35 +554,37 @@ func (m model) workItemLines(width int, focused bool) []string {
 }
 
 func (m model) previewLines(width int) []string {
-	item, ok := m.selectedWorkItem()
-	if !ok {
-		return []string{"  no work item selected"}
+	switch m.preview.status {
+	case previewLoading:
+		return m.previewStatusLines(width, "Loading preview...")
+	case previewLoaded:
+		if m.preview.loaded.workItemID != m.focusedWorkItemID {
+			return m.previewStatusLines(width, "Loading preview...")
+		}
+		return workItemPreviewLines(m.preview.loaded.item, width)
+	case previewEmpty:
+		if _, ok := m.selectedWorkItem(); !ok {
+			return []string{"  no work item selected"}
+		}
+		return m.previewStatusLines(width, "No preview data")
+	case previewError:
+		lines := m.previewStatusLines(width, "Preview failed")
+		if m.preview.errorMessage != "" {
+			lines = append(lines, truncate("Error: "+m.preview.errorMessage, width))
+		}
+		return lines
+	default:
+		if _, ok := m.selectedWorkItem(); !ok {
+			return []string{"  no work item selected"}
+		}
+		return m.previewStatusLines(width, "Preview idle")
 	}
+}
 
-	lines := []string{
-		truncate("Repo: "+item.Repo.FullName(), width),
-		truncate("Item: "+item.Title(), width),
-		truncate("Where: "+item.Location(), width),
-	}
-	if item.Branch != nil {
-		base := item.Branch.Base
-		if base == "" {
-			base = "unknown base"
-		}
-		lines = append(lines, truncate("Branch: "+item.Branch.Name+" -> "+base, width))
-	}
-	lines = append(lines, truncate("Local: "+item.LocalLabel(), width))
-	lines = append(lines, truncate("Issue: "+item.IssueLabel(), width))
-	lines = append(lines, truncate("PR: "+item.PullRequestLabel(), width))
-	if item.PullRequest != nil && item.PullRequest.ReviewState != "" {
-		lines = append(lines, truncate("Review: "+item.PullRequest.ReviewState, width))
-	}
-	lines = append(lines, truncate("Checks: "+item.Checks.Label(), width))
-	if len(item.Commits) > 0 {
-		lines = append(lines, "Commits:")
-		for _, commit := range item.Commits {
-			lines = append(lines, truncate("  "+commit.ShortSHA+" "+commit.Subject, width))
-		}
+func (m model) previewStatusLines(width int, status string) []string {
+	lines := []string{truncate(status, width)}
+	if item, ok := m.selectedWorkItem(); ok {
+		lines = append(lines, truncate("Item: "+item.Title(), width))
 	}
 	return lines
 }
