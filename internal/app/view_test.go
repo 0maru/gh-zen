@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -51,8 +53,8 @@ func TestView_Compact_HidesRepositoryPane(t *testing.T) {
 	if bytes.Contains([]byte(got), []byte("Repositories")) {
 		t.Fatalf("expected compact view to hide repository pane, got:\n%s", got)
 	}
-	if !bytes.Contains([]byte(got), []byte("Work Items")) || !bytes.Contains([]byte(got), []byte("Preview")) {
-		t.Fatalf("expected compact view to keep list and preview, got:\n%s", got)
+	if !bytes.Contains([]byte(got), []byte("WorkItems[1]")) || !bytes.Contains([]byte(got), []byte("Review[2]")) {
+		t.Fatalf("expected compact view to keep list and review panes, got:\n%s", got)
 	}
 }
 
@@ -68,14 +70,34 @@ func TestView_KeymapFollowsFocusedPane(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	next := updated.(model).View()
-	if !bytes.Contains([]byte(next), []byte("Preview keys: tab/S-tab pane  q quit")) {
-		t.Fatalf("expected focused preview header, got:\n%s", next)
+	if !bytes.Contains([]byte(next), []byte("Review keys: [1]/[2]/[3] pane  tab/S-tab pane  q quit")) {
+		t.Fatalf("expected focused review header, got:\n%s", next)
 	}
-	if got := strings.Split(next, "\n")[1]; !strings.HasPrefix(got, "Preview keys:") {
-		t.Fatalf("expected preview keymap directly under title, got line %q", got)
+	if got := strings.Split(next, "\n")[1]; !strings.HasPrefix(got, "Review keys:") {
+		t.Fatalf("expected review keymap directly under title, got line %q", got)
 	}
 	if bytes.Contains([]byte(next), []byte("j/k move")) {
 		t.Fatalf("expected preview keymap to omit movement keys, got:\n%s", next)
+	}
+}
+
+func TestView_KeymapStylesOnlyKeys(t *testing.T) {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.TrueColor)
+
+	m := newModel()
+	m.styles.Key = m.styles.Key.Renderer(r)
+	got := m.keymapLine(defaultWidth)
+	want := "Work Items keys: j/k move  g/G jump  [1]/[2]/[3] pane  tab/S-tab pane  q quit"
+
+	if stripped := ansi.Strip(got); stripped != want {
+		t.Fatalf("expected keymap text to stay unchanged, got %q", stripped)
+	}
+	if !strings.Contains(got, m.styles.Key.Render("j/k")+" move") {
+		t.Fatalf("expected j/k key to be styled without styling description, got %q", got)
+	}
+	if strings.Contains(got, m.styles.Key.Render("move")) || strings.Contains(got, m.styles.Key.Render("jump")) {
+		t.Fatalf("expected key descriptions to stay unstyled, got %q", got)
 	}
 }
 
@@ -85,8 +107,21 @@ func TestView_FullLayoutSeparatesPanes(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("expected full layout output, got:\n%s", got)
 	}
-	if !strings.Contains(lines[3], paneBorderGlyph) {
-		t.Fatalf("expected visible pane separators in header row, got line %q", lines[3])
+	top := ansi.Strip(lines[2])
+	if strings.Count(top, frameTopLeftGlyph) != 3 || strings.Count(top, frameTopRightGlyph) != 3 {
+		t.Fatalf("expected three independent pane boxes, got top line %q", top)
+	}
+	if !strings.Contains(top, frameTopRightGlyph+" "+frameTopLeftGlyph) {
+		t.Fatalf("expected visible gap between pane boxes, got top line %q", top)
+	}
+	for _, title := range []string{"Repositories[1]", "WorkItems[2]", "Review[3]"} {
+		if !strings.Contains(top, title) {
+			t.Fatalf("expected top border to include pane title %q, got %q", title, top)
+		}
+	}
+	body := ansi.Strip(lines[3])
+	if strings.Count(body, paneBorderGlyph) != 6 {
+		t.Fatalf("expected each pane row to have left and right borders, got %q", body)
 	}
 }
 
@@ -125,6 +160,19 @@ func TestView_CompactNormalizesHiddenRepositoryFocus(t *testing.T) {
 	}
 	if bytes.Contains([]byte(got), []byte("Repositories keys:")) {
 		t.Fatalf("expected compact view to hide repository keymap, got:\n%s", got)
+	}
+}
+
+func TestView_CompactKeymapShowsVisiblePaneNumbers(t *testing.T) {
+	m := newModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
+	got := updated.(model).View()
+
+	if !bytes.Contains([]byte(got), []byte("[1]/[2] pane")) {
+		t.Fatalf("expected compact keymap to show visible pane numbers, got:\n%s", got)
+	}
+	if bytes.Contains([]byte(got), []byte("[1]/[2]/[3] pane")) {
+		t.Fatalf("expected compact keymap to omit hidden repository number, got:\n%s", got)
 	}
 }
 

@@ -151,6 +151,48 @@ func TestUpdate_TabChangesFocusedPane(t *testing.T) {
 	}
 }
 
+func TestUpdate_NumberKeysFocusVisiblePanes(t *testing.T) {
+	start := newModel()
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for pane number key, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.focusedPane != paneRepositories {
+		t.Fatalf("expected 1 to focus repositories pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	mm = got.(model)
+	if mm.focusedPane != paneWorkItems {
+		t.Fatalf("expected 2 to focus work items pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	mm = got.(model)
+	if mm.focusedPane != panePreview {
+		t.Fatalf("expected 3 to focus preview pane, got %v", mm.focusedPane)
+	}
+}
+
+func TestUpdate_NumberKeysFollowCompactVisiblePanes(t *testing.T) {
+	start := newModel()
+	start.width = 50
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	mm := got.(model)
+	if mm.focusedPane != panePreview {
+		t.Fatalf("expected compact 2 to focus preview pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	mm = got.(model)
+	if mm.focusedPane != panePreview {
+		t.Fatalf("expected compact 3 to leave focus unchanged, got %v", mm.focusedPane)
+	}
+}
+
 func TestUpdate_MovementTargetsFocusedPane(t *testing.T) {
 	start := newModel()
 	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -163,6 +205,53 @@ func TestUpdate_MovementTargetsFocusedPane(t *testing.T) {
 	}
 	if mm.selectedItem != 0 {
 		t.Fatalf("expected work item selection to stay unchanged, got %d", mm.selectedItem)
+	}
+}
+
+func TestUpdate_RepositoryViewsFilterWorkItems(t *testing.T) {
+	start := newModel()
+	start.focusedPane = paneRepositories
+	start.selectedItem = 2
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm := got.(model)
+	if mm.viewSelected {
+		t.Fatalf("expected first repository movement to select another repo, got view selected")
+	}
+	if items := mm.visibleWorkItems(); len(items) != 0 {
+		t.Fatalf("expected dotfiles repo to have no fake work items, got %d", len(items))
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	if !mm.viewSelected || mm.selectedView != int(repoViewActiveWorktrees) {
+		t.Fatalf("expected active worktrees view, got viewSelected=%v selectedView=%d", mm.viewSelected, mm.selectedView)
+	}
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected filter change to reset selected work item, got %d", mm.selectedItem)
+	}
+	active := mm.visibleWorkItems()
+	if len(active) == 0 {
+		t.Fatalf("expected active worktrees view to include work items")
+	}
+	for _, item := range active {
+		if item.Worktree == nil {
+			t.Fatalf("expected active worktrees view to exclude item without worktree: %+v", item)
+		}
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	reviewRequested := mm.visibleWorkItems()
+	if len(reviewRequested) != 1 || reviewRequested[0].PullRequest == nil || reviewRequested[0].PullRequest.ReviewState != "review requested" {
+		t.Fatalf("expected review requested view to include only review-requested PR work, got %+v", reviewRequested)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	failedChecks := mm.visibleWorkItems()
+	if len(failedChecks) != 1 || failedChecks[0].Checks.State != workbench.CheckFailing {
+		t.Fatalf("expected failed checks view to include only failing-check work, got %+v", failedChecks)
 	}
 }
 
@@ -215,10 +304,13 @@ func TestTruncate_UsesTerminalDisplayWidth(t *testing.T) {
 }
 
 func TestRenderPane_UsesLipGlossBorderWidth(t *testing.T) {
-	got := newModel().renderPane([]string{"header", "row"}, 10, 3, true)
+	got := newModel().renderPane("Demo[1]", []string{"header", "row"}, 10, 3, true)
 	lines := strings.Split(got, "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected bordered pane height 3, got %d in %q", len(lines), got)
+	if len(lines) != 5 {
+		t.Fatalf("expected bordered pane height 5, got %d in %q", len(lines), got)
+	}
+	if !strings.Contains(lines[0], "Demo[1]") {
+		t.Fatalf("expected pane title in top border, got %q", lines[0])
 	}
 	for _, line := range lines {
 		if width := lipgloss.Width(line); width != 10+paneBorderWidth {
