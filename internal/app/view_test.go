@@ -70,7 +70,7 @@ func TestView_KeymapFollowsFocusedPane(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	next := updated.(model).View()
-	if !bytes.Contains([]byte(next), []byte("Review keys: [1]/[2]/[3] pane  tab/S-tab pane  q quit")) {
+	if !bytes.Contains([]byte(next), []byte("Review keys: [1]/[2]/[3] pane  h/l pane  ? help  q quit")) {
 		t.Fatalf("expected focused review header, got:\n%s", next)
 	}
 	if got := strings.Split(next, "\n")[1]; !strings.HasPrefix(got, "Review keys:") {
@@ -88,7 +88,7 @@ func TestView_KeymapStylesOnlyKeys(t *testing.T) {
 	m := newModel()
 	m.styles.Key = m.styles.Key.Renderer(r)
 	got := m.keymapLine(defaultWidth)
-	want := "Work Items keys: j/k move  g/G jump  [1]/[2]/[3] pane  tab/S-tab pane  q quit"
+	want := "Work Items keys: j/k move  g/G jump  [1]/[2]/[3] pane  h/l pane  ? help  q quit"
 
 	if stripped := ansi.Strip(got); stripped != want {
 		t.Fatalf("expected keymap text to stay unchanged, got %q", stripped)
@@ -98,6 +98,30 @@ func TestView_KeymapStylesOnlyKeys(t *testing.T) {
 	}
 	if strings.Contains(got, m.styles.Key.Render("move")) || strings.Contains(got, m.styles.Key.Render("jump")) {
 		t.Fatalf("expected key descriptions to stay unstyled, got %q", got)
+	}
+}
+
+func TestView_FullHelpShowsContextualActions(t *testing.T) {
+	m := newModel()
+	m.help.ShowAll = true
+	got := ansi.Strip(m.View())
+
+	for _, want := range []string{"enter/o open", "copy", "refresh"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected full help to include %q, got:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "j down") || !strings.Contains(got, "G bottom") {
+		t.Fatalf("expected full work item help to include movement keys, got:\n%s", got)
+	}
+
+	m.focusedPane = panePreview
+	got = ansi.Strip(m.View())
+	if strings.Contains(got, "j down") || strings.Contains(got, "G bottom") {
+		t.Fatalf("expected preview full help to omit movement keys, got:\n%s", got)
+	}
+	if !strings.Contains(got, "enter/o open") || !strings.Contains(got, "refresh") {
+		t.Fatalf("expected preview full help to keep actions, got:\n%s", got)
 	}
 }
 
