@@ -28,7 +28,7 @@ func TestUpdate_QuitOnQuitKeys(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, cmd := (model{}).Update(tc.msg)
+			_, cmd := newModel().Update(tc.msg)
 			if cmd == nil {
 				t.Fatalf("expected quit command, got nil")
 			}
@@ -111,6 +111,24 @@ func TestUpdate_MoveSelection(t *testing.T) {
 	}
 }
 
+func TestUpdate_ArrowKeysMoveSelection(t *testing.T) {
+	start := newModel()
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for arrow movement, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.selectedItem != 1 {
+		t.Fatalf("expected down arrow to move selection to 1, got %d", mm.selectedItem)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyUp})
+	mm = got.(model)
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected up arrow to move selection back to 0, got %d", mm.selectedItem)
+	}
+}
+
 func TestUpdate_MoveSelection_ClampsAtEdges(t *testing.T) {
 	start := newModel()
 	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
@@ -148,6 +166,25 @@ func TestUpdate_TabChangesFocusedPane(t *testing.T) {
 	mm = got.(model)
 	if mm.focusedPane != paneRepositories {
 		t.Fatalf("expected shift+tab to focus repositories pane, got %v", mm.focusedPane)
+	}
+}
+
+func TestUpdate_HAndLChangeFocusedPane(t *testing.T) {
+	start := newModel()
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for pane focus, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.focusedPane != paneRepositories {
+		t.Fatalf("expected h to focus repositories pane, got %v", mm.focusedPane)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	mm = got.(model)
+	if mm.focusedPane != paneWorkItems {
+		t.Fatalf("expected l to focus work items pane, got %v", mm.focusedPane)
 	}
 }
 
@@ -205,6 +242,81 @@ func TestUpdate_MovementTargetsFocusedPane(t *testing.T) {
 	}
 	if mm.selectedItem != 0 {
 		t.Fatalf("expected work item selection to stay unchanged, got %d", mm.selectedItem)
+	}
+}
+
+func TestUpdate_ToggleHelpPreservesFocusedWorkItem(t *testing.T) {
+	start := newModel()
+	start.selectedItem = 2
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for help toggle, got %T", cmd)
+	}
+	mm := got.(model)
+	if !mm.help.ShowAll {
+		t.Fatalf("expected ? to show full help")
+	}
+	if mm.selectedItem != 2 || mm.focusedPane != paneWorkItems {
+		t.Fatalf("expected help toggle to preserve focus and selected item, got focus=%v item=%d", mm.focusedPane, mm.selectedItem)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	mm = got.(model)
+	if mm.help.ShowAll {
+		t.Fatalf("expected second ? to hide full help")
+	}
+	if mm.selectedItem != 2 || mm.focusedPane != paneWorkItems {
+		t.Fatalf("expected help hide to preserve focus and selected item, got focus=%v item=%d", mm.focusedPane, mm.selectedItem)
+	}
+}
+
+func TestUpdate_KeyOverrideChangesActionAndHelp(t *testing.T) {
+	start := newModel()
+	start.keys.MoveDown.SetKeys("n")
+	start.keys.MoveDown.SetHelp("n", "down")
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for remapped movement, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.selectedItem != 1 {
+		t.Fatalf("expected remapped n key to move selection to 1, got %d", mm.selectedItem)
+	}
+
+	got, _ = start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected original j key to stop moving after override, got %d", mm.selectedItem)
+	}
+	if !strings.Contains(start.keymapLine(defaultWidth), "n/k move") {
+		t.Fatalf("expected help to reflect remapped key, got %q", start.keymapLine(defaultWidth))
+	}
+}
+
+func TestUpdate_ActionKeysAreBound(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  tea.KeyMsg
+		want actionID
+	}{
+		{"refresh", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}, actionRefresh},
+		{"open", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}, actionOpen},
+		{"enter", tea.KeyMsg{Type: tea.KeyEnter}, actionOpen},
+		{"copy", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, actionCopy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := newModel().matchedAction(tc.msg)
+			if !ok {
+				t.Fatalf("expected key to be bound to %s", tc.want)
+			}
+			if got != tc.want {
+				t.Fatalf("expected action %s, got %s", tc.want, got)
+			}
+		})
 	}
 }
 
