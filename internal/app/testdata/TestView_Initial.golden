@@ -1,5 +1,5 @@
 gh-zen  repository workbench
-Work Items keys: j/k move  g/G jump  [1]/[2]/[3] pane  tab/S-tab pane  q quit
+Work Items keys: j/k move  g/G jump  [1]/[2]/[3] pane  h/l pane  ? help  q quit
 ┌─Repositories[1]───────┐ ┌─WorkItems[2]────────────────────────────┐ ┌─Review[3]──────────────────┐
 │ * 0maru/gh-zen        │ │ > main                   clean   no PR  │ │ Loading preview...         │
 │   0maru/dotfiles      │ │   feat/config-loader     dirty   PR #24 │ │ Item: main                 │

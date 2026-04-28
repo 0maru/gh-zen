@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -19,7 +21,6 @@ const (
 	paneContentPaddingLeft = 1
 	paneBorderGlyph        = "│"
 	paneBorderWidth        = 2
-	frameHeaderLines       = 2
 	frameBorderLines       = 2
 	horizontalLineGlyph    = "─"
 	frameTopLeftGlyph      = "┌"
@@ -76,6 +77,8 @@ type model struct {
 	nextPreviewRequestID int
 	previewLoader        previewLoader
 	styles               Styles
+	keys                 workbenchKeyMap
+	help                 help.Model
 }
 
 type repoViewFilter int
@@ -89,11 +92,6 @@ const (
 type repoView struct {
 	label  string
 	filter repoViewFilter
-}
-
-type keyBinding struct {
-	key         string
-	description string
 }
 
 var repoViews = []repoView{
@@ -116,6 +114,8 @@ func newModelWithPreviewLoader(loader previewLoader) model {
 		workItems:     workbench.FakeWorkItems(),
 		previewLoader: loader,
 		styles:        DefaultStyles(),
+		keys:          DefaultKeyMap(),
+		help:          newHelpModel(),
 	}
 	_ = m.startPreviewLoadForCurrentItem()
 	return m
@@ -146,36 +146,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handlePreviewResult(msg)
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c", "esc":
-			return m, tea.Quit
-		case "tab":
-			m.focusNextPane()
-			return m, nil
-		case "shift+tab":
-			m.focusPreviousPane()
-			return m, nil
-		case "1":
-			m.focusPaneByNumber(1)
-			return m, nil
-		case "2":
-			m.focusPaneByNumber(2)
-			return m, nil
-		case "3":
-			m.focusPaneByNumber(3)
-			return m, nil
-		case "j", "down":
-			m.moveFocusedSelection(1)
-			return m, m.startPreviewLoadIfFocusedItemChanged()
-		case "k", "up":
-			m.moveFocusedSelection(-1)
-			return m, m.startPreviewLoadIfFocusedItemChanged()
-		case "g":
-			m.jumpFocusedSelection(false)
-			return m, m.startPreviewLoadIfFocusedItemChanged()
-		case "G":
-			m.jumpFocusedSelection(true)
-			return m, m.startPreviewLoadIfFocusedItemChanged()
+		if action, ok := m.matchedAction(msg); ok {
+			return m, m.handleAction(action)
 		}
 	}
 	return m, nil
@@ -248,6 +220,49 @@ func (m *model) handlePreviewResult(msg previewResultMsg) {
 		}
 	}
 	m.preview = next
+}
+
+func (m model) matchedAction(msg tea.KeyMsg) (actionID, bool) {
+	for _, binding := range m.keys.actionBindings() {
+		if key.Matches(msg, binding.binding) {
+			return binding.id, true
+		}
+	}
+	return "", false
+}
+
+func (m *model) handleAction(action actionID) tea.Cmd {
+	switch action {
+	case actionQuit:
+		return tea.Quit
+	case actionToggleHelp:
+		m.help.ShowAll = !m.help.ShowAll
+	case actionFocusNextPane:
+		m.focusNextPane()
+	case actionFocusPreviousPane:
+		m.focusPreviousPane()
+	case actionFocusPane1:
+		m.focusPaneByNumber(1)
+	case actionFocusPane2:
+		m.focusPaneByNumber(2)
+	case actionFocusPane3:
+		m.focusPaneByNumber(3)
+	case actionMoveDown:
+		m.moveFocusedSelection(1)
+		return m.startPreviewLoadIfFocusedItemChanged()
+	case actionMoveUp:
+		m.moveFocusedSelection(-1)
+		return m.startPreviewLoadIfFocusedItemChanged()
+	case actionJumpTop:
+		m.jumpFocusedSelection(false)
+		return m.startPreviewLoadIfFocusedItemChanged()
+	case actionJumpBottom:
+		m.jumpFocusedSelection(true)
+		return m.startPreviewLoadIfFocusedItemChanged()
+	case actionRefresh, actionOpen, actionCopy:
+		return nil
+	}
+	return nil
 }
 
 func (m *model) focusNextPane() {
@@ -477,12 +492,9 @@ func (m model) renderFull(width int) string {
 	left := m.repoLines(paneTextWidth(repoPaneWidth), focus == paneRepositories)
 	middle := m.workItemLines(paneTextWidth(workItemPaneWidth), focus == paneWorkItems)
 	right := m.previewLines(paneTextWidth(rightWidth))
-	bodyHeight := m.frameBodyHeight(max(len(left), max(len(middle), len(right))))
+	out := m.headerLines("gh-zen  repository workbench", width)
+	bodyHeight := m.frameBodyHeight(max(len(left), max(len(middle), len(right))), len(out))
 
-	out := []string{
-		"gh-zen  repository workbench",
-		m.keymapLine(width),
-	}
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		m.renderPane(m.paneHeading(paneRepositories), left, repoPaneWidth, bodyHeight, focus == paneRepositories),
@@ -498,17 +510,14 @@ func (m model) renderFull(width int) string {
 func (m model) renderCompact(width int) string {
 	contentWidth := max(width-paneBorderWidth, 0)
 	focus := m.activePane()
-	out := []string{
-		"gh-zen workbench",
-		m.keymapLine(width),
-	}
+	out := m.headerLines("gh-zen workbench", width)
 
 	workLines := m.workItemLines(paneTextWidth(contentWidth), focus == paneWorkItems)
 	previewLines := m.previewLines(paneTextWidth(contentWidth))
 	workHeight := len(workLines)
 	previewHeight := len(previewLines)
 	if m.height > 0 {
-		availableContentHeight := m.height - frameHeaderLines - frameBorderLines*2
+		availableContentHeight := m.height - len(out) - frameBorderLines*2
 		if availableContentHeight > workHeight+previewHeight {
 			previewHeight += availableContentHeight - workHeight - previewHeight
 		}
@@ -589,56 +598,52 @@ func (m model) previewStatusLines(width int, status string) []string {
 	return lines
 }
 
-// keymapLine keeps the active pane affordances visible near the title.
-func (m model) keymapLine(width int) string {
+func (m model) headerLines(title string, width int) []string {
+	out := []string{title}
+	return append(out, m.keymapLines(width)...)
+}
+
+// keymapLines keeps the active pane affordances visible near the title.
+func (m model) keymapLines(width int) []string {
 	focus := m.activePane()
 	prefix := focus.label() + " keys: "
-	paneKey := m.paneNumberKey()
-	switch focus {
-	case paneRepositories, paneWorkItems:
-		return m.renderKeymapLine(prefix, []keyBinding{
-			{key: "j/k", description: "move"},
-			{key: "g/G", description: "jump"},
-			{key: paneKey, description: "pane"},
-			{key: "tab/S-tab", description: "pane"},
-			{key: "q", description: "quit"},
-		}, width)
-	case panePreview:
-		return m.renderKeymapLine(prefix, []keyBinding{
-			{key: paneKey, description: "pane"},
-			{key: "tab/S-tab", description: "pane"},
-			{key: "q", description: "quit"},
-		}, width)
+	helpWidth := max(width-lipgloss.Width(prefix), 0)
+	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(focus, m.paneOrder()))
+	lines := strings.Split(helpView, "\n")
+	indent := strings.Repeat(" ", lipgloss.Width(prefix))
+
+	for i := range lines {
+		if i == 0 {
+			lines[i] = truncate(prefix+lines[i], width)
+			continue
+		}
+		lines[i] = truncate(indent+lines[i], width)
 	}
-	return m.renderKeymapLine(prefix, []keyBinding{
-		{key: paneKey, description: "pane"},
-		{key: "tab/S-tab", description: "pane"},
-		{key: "q", description: "quit"},
-	}, width)
+	return lines
 }
 
-func (m model) paneNumberKey() string {
-	keys := make([]string, len(m.paneOrder()))
-	for i := range keys {
-		keys[i] = fmt.Sprintf("[%d]", i+1)
-	}
-	return strings.Join(keys, "/")
+func (m model) keymapLine(width int) string {
+	return m.keymapLines(width)[0]
 }
 
-func (m model) renderKeymapLine(prefix string, bindings []keyBinding, width int) string {
-	var out strings.Builder
-	out.WriteString(prefix)
-	for i, binding := range bindings {
-		if i > 0 {
-			out.WriteString("  ")
-		}
-		out.WriteString(m.styles.Key.Render(binding.key))
-		if binding.description != "" {
-			out.WriteByte(' ')
-			out.WriteString(binding.description)
-		}
-	}
-	return truncate(out.String(), width)
+func newHelpModel() help.Model {
+	helpModel := help.New()
+	helpModel.ShortSeparator = "  "
+	return helpModel
+}
+
+func (m model) styledHelp(width int) help.Model {
+	helpModel := m.help
+	helpModel.Width = width
+	helpModel.ShortSeparator = "  "
+	helpModel.Styles.ShortKey = m.styles.Key
+	helpModel.Styles.FullKey = m.styles.Key
+	helpModel.Styles.ShortDesc = m.styles.KeyDescription
+	helpModel.Styles.FullDesc = m.styles.KeyDescription
+	helpModel.Styles.ShortSeparator = m.styles.Divider
+	helpModel.Styles.FullSeparator = m.styles.Divider
+	helpModel.Styles.Ellipsis = m.styles.Muted
+	return helpModel
 }
 
 // selectionMarker keeps the retained selection visible outside the active pane.
@@ -652,11 +657,11 @@ func selectionMarker(selected, focused bool) string {
 	return "*"
 }
 
-func (m model) frameBodyHeight(contentHeight int) int {
+func (m model) frameBodyHeight(contentHeight int, headerHeight int) int {
 	if m.height <= 0 {
 		return contentHeight
 	}
-	available := m.height - frameHeaderLines - frameBorderLines
+	available := m.height - headerHeight - frameBorderLines
 	if available > contentHeight {
 		return available
 	}
