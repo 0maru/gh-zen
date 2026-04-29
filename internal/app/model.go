@@ -75,6 +75,8 @@ type model struct {
 	viewSelected         bool
 	workItems            []workbench.WorkItem
 	selectedItem         int
+	workbenchSource      workbenchDataSource
+	workbenchLoading     bool
 	focusedPane          paneFocus
 	focusedWorkItemID    string
 	preview              previewState
@@ -93,9 +95,11 @@ type model struct {
 
 // WorkbenchData contains resolved repository workbench state for app startup.
 type WorkbenchData struct {
-	Repos     []workbench.RepoRef
-	WorkItems []workbench.WorkItem
-	Reloader  WorkbenchReloader
+	Repos          []workbench.RepoRef
+	WorkItems      []workbench.WorkItem
+	Reloader       WorkbenchReloader
+	InitialLoading bool
+	Demo           bool
 }
 
 // WorkbenchReloader reloads runtime workbench data for one selected repository.
@@ -105,10 +109,17 @@ type WorkbenchReloader interface {
 
 type repoViewFilter int
 
+type workbenchDataSource int
+
 const (
 	repoViewActiveWorktrees repoViewFilter = iota
 	repoViewReviewRequested
 	repoViewFailedChecks
+)
+
+const (
+	workbenchDataLive workbenchDataSource = iota
+	workbenchDataDemo
 )
 
 type repoView struct {
@@ -120,6 +131,13 @@ var repoViews = []repoView{
 	{label: "Active worktrees", filter: repoViewActiveWorktrees},
 	{label: "Review requested", filter: repoViewReviewRequested},
 	{label: "Failed checks", filter: repoViewFailedChecks},
+}
+
+var workbenchErrorIDPrefixes = []string{
+	"local-discovery-error:",
+	"pull-request-discovery-error:",
+	"issue-check-discovery-error:",
+	"repository-path-error:",
 }
 
 func New() tea.Model {
@@ -147,13 +165,19 @@ func newModelWithRuntimeConfig(cfg cfgpkg.Config, startupRepo string, loader pre
 	return newModelWithRuntimeData(cfg, startupRepo, WorkbenchData{
 		Repos:     workbench.FakeRepos(),
 		WorkItems: workbench.FakeWorkItems(),
+		Demo:      true,
 	}, loader)
 }
 
 func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data WorkbenchData, loader previewLoader) model {
+	source := workbenchDataLive
+	if data.Demo {
+		source = workbenchDataDemo
+	}
 	m := model{
 		repos:             cloneRepoRefs(data.Repos),
 		workItems:         cloneWorkItems(data.WorkItems),
+		workbenchSource:   source,
 		previewLoader:     loader,
 		workbenchReloader: data.Reloader,
 		workbenchFilter:   cfg.Workbench.Filter,
@@ -167,6 +191,9 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 		startupRepo = cfg.Startup.Repo
 	}
 	m.applyStartupRepo(startupRepo)
+	if data.InitialLoading {
+		m.beginWorkbenchReload("Loading workbench data...")
+	}
 	_ = m.startPreviewLoadForCurrentItem()
 	return m
 }
@@ -182,18 +209,40 @@ type workbenchReloadMsg struct {
 }
 
 func (m model) Init() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.workbenchLoading && m.activeReloadRequest.requestID != 0 {
+		cmds = append(cmds, m.workbenchReloadCommand(m.activeReloadRequest))
+	}
 	if m.preview.status != previewLoading || m.previewLoader == nil {
-		return nil
+		return batchCommands(cmds...)
 	}
 	item, ok := m.selectedWorkItem()
 	if !ok || item.ID != m.focusedWorkItemID {
-		return nil
+		return batchCommands(cmds...)
 	}
-	return m.previewLoader(previewRequest{
+	cmds = append(cmds, m.previewLoader(previewRequest{
 		requestID:  m.preview.requestID,
 		workItemID: item.ID,
 		item:       item,
-	})
+	}))
+	return batchCommands(cmds...)
+}
+
+func batchCommands(cmds ...tea.Cmd) tea.Cmd {
+	filtered := make([]tea.Cmd, 0, len(cmds))
+	for _, cmd := range cmds {
+		if cmd != nil {
+			filtered = append(filtered, cmd)
+		}
+	}
+	switch len(filtered) {
+	case 0:
+		return nil
+	case 1:
+		return filtered[0]
+	default:
+		return tea.Batch(filtered...)
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -330,7 +379,6 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 			m.statusMessage = "Refresh unavailable"
 			return nil
 		}
-		m.statusMessage = "Reloading workbench data..."
 		return cmd
 	case actionOpenPullRequest:
 		return m.openPullRequest()
@@ -447,12 +495,23 @@ func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
 }
 
 func (m *model) refreshWorkbenchData() tea.Cmd {
-	if m.workbenchReloader == nil {
+	return m.startWorkbenchReload("Reloading workbench data...")
+}
+
+func (m *model) startWorkbenchReload(status string) tea.Cmd {
+	if !m.beginWorkbenchReload(status) {
 		return nil
+	}
+	return m.workbenchReloadCommand(m.activeReloadRequest)
+}
+
+func (m *model) beginWorkbenchReload(status string) bool {
+	if m.workbenchReloader == nil {
+		return false
 	}
 	repo, ok := m.selectedRepoRef()
 	if !ok {
-		return nil
+		return false
 	}
 	m.nextReloadRequestID++
 	request := workbenchReloadRequest{
@@ -460,10 +519,16 @@ func (m *model) refreshWorkbenchData() tea.Cmd {
 		repo:      repo,
 	}
 	m.activeReloadRequest = request
+	m.workbenchLoading = true
+	m.statusMessage = status
+	return true
+}
+
+func (m model) workbenchReloadCommand(request workbenchReloadRequest) tea.Cmd {
 	return func() tea.Msg {
 		return workbenchReloadMsg{
 			request: request,
-			result:  m.workbenchReloader.Load(context.Background(), repo),
+			result:  m.workbenchReloader.Load(context.Background(), request.repo),
 		}
 	}
 }
@@ -474,6 +539,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	}
 	repo, ok := m.selectedRepoRef()
 	if !ok || repo != msg.request.repo {
+		m.workbenchLoading = false
 		m.statusMessage = ""
 		return nil
 	}
@@ -486,7 +552,12 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	}
 	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
 	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
-	m.statusMessage = "Reloaded workbench data"
+	m.workbenchLoading = false
+	if hasWorkbenchErrorItems(msg.result.Items) {
+		m.statusMessage = "Workbench loaded with partial errors"
+	} else {
+		m.statusMessage = ""
+	}
 	return m.startPreviewLoadForCurrentItem()
 }
 
@@ -709,6 +780,17 @@ func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, re
 	return out
 }
 
+func hasWorkbenchErrorItems(items []workbench.WorkItem) bool {
+	for _, item := range items {
+		for _, prefix := range workbenchErrorIDPrefixes {
+			if strings.HasPrefix(item.ID, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *model) restoreSelectedWorkItem(repo workbench.RepoRef, workItemID string) {
 	items := m.visibleWorkItems()
 	if len(items) == 0 {
@@ -915,8 +997,14 @@ func (m model) workItemLines(width int, focused bool) []string {
 }
 
 func (m model) emptyWorkItemLine() string {
+	if m.workbenchLoading {
+		return "  loading workbench data..."
+	}
 	if workbenchFilterActive(m.workbenchFilter) {
 		return "  no work items match filters"
+	}
+	if m.workbenchSource == workbenchDataLive {
+		return "  no live work items"
 	}
 	return "  no work items"
 }
