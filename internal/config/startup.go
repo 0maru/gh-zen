@@ -36,6 +36,7 @@ type StartupRepositoryOptions struct {
 	WorkingDir          string
 	Env                 map[string]string
 	CurrentRepoResolver CurrentRepoResolver
+	AllowMissingCurrent bool
 }
 
 // ResolveStartupRepository applies the ADR 0007 startup repository precedence.
@@ -56,6 +57,9 @@ func ResolveStartupRepository(options StartupRepositoryOptions) (StartupReposito
 	}
 	repo, err := resolver(options.WorkingDir)
 	if err != nil {
+		if options.AllowMissingCurrent {
+			return StartupRepository{Source: StartupRepoCurrentGit}, nil
+		}
 		return StartupRepository{}, fmt.Errorf("resolve startup repository from current Git repository: %w", err)
 	}
 	return startupRepoFromValue(repo, StartupRepoCurrentGit, "current Git repository")
@@ -102,7 +106,7 @@ func ParseGitHubRemoteURL(raw string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("parse GitHub remote URL %q: %w", raw, err)
 		}
-		if parsed.Host != "github.com" {
+		if !strings.EqualFold(parsed.Hostname(), "github.com") {
 			return "", fmt.Errorf("unsupported GitHub remote host %q", parsed.Host)
 		}
 		switch parsed.Scheme {

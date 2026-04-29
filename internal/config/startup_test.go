@@ -86,6 +86,21 @@ func TestResolveStartupRepository_RejectsInvalidStrongerSources(t *testing.T) {
 	}
 }
 
+func TestResolveStartupRepository_AllowsMissingCurrentGit(t *testing.T) {
+	got, err := ResolveStartupRepository(StartupRepositoryOptions{
+		Config:              Defaults(),
+		Env:                 map[string]string{},
+		CurrentRepoResolver: func(string) (string, error) { return "", os.ErrNotExist },
+		AllowMissingCurrent: true,
+	})
+	if err != nil {
+		t.Fatalf("expected missing current Git repository to be non-fatal, got %v", err)
+	}
+	if got.Repo != "" || got.Source != StartupRepoCurrentGit {
+		t.Fatalf("expected empty current Git fallback, got %+v", got)
+	}
+}
+
 func TestParseGitHubRemoteURL(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -96,7 +111,10 @@ func TestParseGitHubRemoteURL(t *testing.T) {
 		{name: "ssh scp", remote: "git@github.com:owner/repo.git", want: "owner/repo"},
 		{name: "https git suffix", remote: "https://github.com/owner/repo.git", want: "owner/repo"},
 		{name: "https no suffix", remote: "https://github.com/owner/repo", want: "owner/repo"},
+		{name: "https uppercase host", remote: "https://GitHub.com/owner/repo.git", want: "owner/repo"},
+		{name: "https default port", remote: "https://github.com:443/owner/repo.git", want: "owner/repo"},
 		{name: "ssh url", remote: "ssh://git@github.com/owner/repo.git", want: "owner/repo"},
+		{name: "ssh url default port", remote: "ssh://git@github.com:22/owner/repo.git", want: "owner/repo"},
 		{name: "unsupported host", remote: "https://example.com/owner/repo.git", wantErr: true},
 		{name: "unsupported scheme", remote: "http://github.com/owner/repo.git", wantErr: true},
 		{name: "invalid repo", remote: "https://github.com/owner /repo.git", wantErr: true},

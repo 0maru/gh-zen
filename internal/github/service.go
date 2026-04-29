@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -46,6 +47,8 @@ const (
 	ErrorAuth    ErrorKind = "auth"
 	ErrorNetwork ErrorKind = "network"
 	ErrorCommand ErrorKind = "command"
+
+	listLimit = "1000"
 )
 
 // Error describes a gh-backed service failure.
@@ -73,6 +76,9 @@ func (GHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if isPendingChecksExit(args, err) {
+			return output, nil
+		}
 		return nil, classifyError("gh "+strings.Join(args, " "), output, err)
 	}
 	return output, nil
@@ -98,16 +104,19 @@ func (s CLIService) RepositorySummary(ctx context.Context, repo string) (Reposit
 
 // PullRequests loads pull request summaries through gh.
 func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.PullRequestRef, error) {
-	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--json", "number,title,state,url,headRefName,reviewDecision,closingIssuesReferences")
+	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision,closingIssuesReferences")
 	if err != nil {
 		return nil, err
 	}
 	var payload []struct {
-		Number         int    `json:"number"`
-		Title          string `json:"title"`
-		State          string `json:"state"`
-		URL            string `json:"url"`
-		HeadRefName    string `json:"headRefName"`
+		Number              int    `json:"number"`
+		Title               string `json:"title"`
+		State               string `json:"state"`
+		URL                 string `json:"url"`
+		HeadRefName         string `json:"headRefName"`
+		HeadRepositoryOwner struct {
+			Login string `json:"login"`
+		} `json:"headRepositoryOwner"`
 		ReviewDecision string `json:"reviewDecision"`
 		ClosingIssues  []struct {
 			Number int    `json:"number"`
@@ -126,6 +135,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			Title:        pr.Title,
 			State:        strings.ToLower(pr.State),
 			URL:          pr.URL,
+			HeadOwner:    pr.HeadRepositoryOwner.Login,
 			HeadBranch:   pr.HeadRefName,
 			LinkedIssues: linkedIssues(pr.ClosingIssues),
 			ReviewState:  reviewState(pr.ReviewDecision),
@@ -136,7 +146,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 
 // Issues loads issue summaries through gh.
 func (s CLIService) Issues(ctx context.Context, repo string) ([]workbench.IssueRef, error) {
-	output, err := s.runner().Run(ctx, "issue", "list", "--repo", repo, "--state", "all", "--json", "number,title,state,url")
+	output, err := s.runner().Run(ctx, "issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url")
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +219,26 @@ func linkedIssues(payload []struct {
 		})
 	}
 	return issues
+}
+
+func isPendingChecksExit(args []string, err error) bool {
+	if len(args) < 2 || args[0] != "pr" || args[1] != "checks" {
+		return false
+	}
+	code, ok := exitCode(err)
+	return ok && code == 8
+}
+
+type exitCoder interface {
+	ExitCode() int
+}
+
+func exitCode(err error) (int, bool) {
+	var exitErr exitCoder
+	if !errors.As(err, &exitErr) {
+		return 0, false
+	}
+	return exitErr.ExitCode(), true
 }
 
 func reviewState(value string) string {
