@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +11,54 @@ import (
 
 	"github.com/0maru/gh-zen/internal/workbench"
 )
+
+func requirePreviewResultMsg(t *testing.T, cmd tea.Cmd) previewResultMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("expected preview command, got nil")
+	}
+	msg := cmd()
+	result, ok := msg.(previewResultMsg)
+	if !ok {
+		t.Fatalf("expected previewResultMsg, got %T", msg)
+	}
+	return result
+}
+
+func requireModelEqualIgnoringPreviewLoader(t *testing.T, got tea.Model, want model) {
+	t.Helper()
+	mm, ok := got.(model)
+	if !ok {
+		t.Fatalf("expected model, got %T", got)
+	}
+	mm.previewLoader = nil
+	want.previewLoader = nil
+	if !reflect.DeepEqual(mm, want) {
+		t.Fatalf("expected model unchanged, got %+v", mm)
+	}
+}
+
+func emptyPreviewLoader(req previewRequest) tea.Cmd {
+	return func() tea.Msg {
+		return previewResultMsg{
+			requestID:  req.requestID,
+			workItemID: req.workItemID,
+			empty:      true,
+		}
+	}
+}
+
+func errorPreviewLoader(err error) previewLoader {
+	return func(req previewRequest) tea.Cmd {
+		return func() tea.Msg {
+			return previewResultMsg{
+				requestID:  req.requestID,
+				workItemID: req.workItemID,
+				err:        err,
+			}
+		}
+	}
+}
 
 func TestInit_ReturnsNilCmd(t *testing.T) {
 	if cmd := (model{}).Init(); cmd != nil {
@@ -45,9 +94,7 @@ func TestUpdate_NonQuitKey_NoCommand(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("expected nil cmd for non-quit key, got %T", cmd)
 	}
-	if !reflect.DeepEqual(got, start) {
-		t.Fatalf("expected model unchanged, got %+v", got)
-	}
+	requireModelEqualIgnoringPreviewLoader(t, got, start)
 }
 
 func TestNew_LoadsFakeWorkbenchData(t *testing.T) {
@@ -60,6 +107,35 @@ func TestNew_LoadsFakeWorkbenchData(t *testing.T) {
 	}
 	if len(got.workItems) == 0 {
 		t.Fatalf("expected fake work items")
+	}
+	if got.preview.status != previewLoading {
+		t.Fatalf("expected initial preview to be loading, got %v", got.preview.status)
+	}
+	if got.focusedWorkItemID != got.workItems[0].ID {
+		t.Fatalf("expected focused item %q, got %q", got.workItems[0].ID, got.focusedWorkItemID)
+	}
+}
+
+func TestInit_LoadsInitialPreview(t *testing.T) {
+	start := newModelWithPreviewLoader(fakeDelayedPreviewLoader(0))
+	msg := requirePreviewResultMsg(t, start.Init())
+	if msg.requestID != start.preview.requestID {
+		t.Fatalf("expected request ID %d, got %d", start.preview.requestID, msg.requestID)
+	}
+	if msg.workItemID != start.focusedWorkItemID {
+		t.Fatalf("expected work item ID %q, got %q", start.focusedWorkItemID, msg.workItemID)
+	}
+
+	got, cmd := start.Update(msg)
+	if cmd != nil {
+		t.Fatalf("expected nil command after preview result, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.preview.status != previewLoaded {
+		t.Fatalf("expected loaded preview, got %v", mm.preview.status)
+	}
+	if mm.preview.loaded.item.ID != start.focusedWorkItemID {
+		t.Fatalf("expected loaded item %q, got %q", start.focusedWorkItemID, mm.preview.loaded.item.ID)
 	}
 }
 
@@ -84,27 +160,36 @@ func TestUpdate_MoveSelection(t *testing.T) {
 	}
 
 	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	if cmd != nil {
-		t.Fatalf("expected nil cmd for movement, got %T", cmd)
+	if cmd == nil {
+		t.Fatalf("expected preview load command for movement")
 	}
 	mm := got.(model)
 	if mm.selectedItem != 1 {
 		t.Fatalf("expected j to move selection to 1, got %d", mm.selectedItem)
 	}
 
-	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	got, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if cmd == nil {
+		t.Fatalf("expected preview load command for movement back to first item")
+	}
 	mm = got.(model)
 	if mm.selectedItem != 0 {
 		t.Fatalf("expected k to move selection back to 0, got %d", mm.selectedItem)
 	}
 
-	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	got, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	if cmd == nil {
+		t.Fatalf("expected preview load command for jump to end")
+	}
 	mm = got.(model)
 	if mm.selectedItem != len(mm.workItems)-1 {
 		t.Fatalf("expected G to move selection to end, got %d", mm.selectedItem)
 	}
 
-	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	got, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if cmd == nil {
+		t.Fatalf("expected preview load command for jump to start")
+	}
 	mm = got.(model)
 	if mm.selectedItem != 0 {
 		t.Fatalf("expected g to move selection to start, got %d", mm.selectedItem)
@@ -114,8 +199,8 @@ func TestUpdate_MoveSelection(t *testing.T) {
 func TestUpdate_ArrowKeysMoveSelection(t *testing.T) {
 	start := newModel()
 	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if cmd != nil {
-		t.Fatalf("expected nil cmd for arrow movement, got %T", cmd)
+	if cmd == nil {
+		t.Fatalf("expected preview load command for arrow movement")
 	}
 	mm := got.(model)
 	if mm.selectedItem != 1 {
@@ -131,16 +216,25 @@ func TestUpdate_ArrowKeysMoveSelection(t *testing.T) {
 
 func TestUpdate_MoveSelection_ClampsAtEdges(t *testing.T) {
 	start := newModel()
-	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd when clamped at start, got %T", cmd)
+	}
 	mm := got.(model)
 	if mm.selectedItem != 0 {
 		t.Fatalf("expected selection to stay at start, got %d", mm.selectedItem)
 	}
 
-	mm.selectedItem = len(mm.workItems) - 1
-	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	items := mm.visibleWorkItems()
+	mm.selectedItem = len(items) - 1
+	mm.focusedWorkItemID = items[len(items)-1].ID
+	mm.preview = previewState{status: previewLoading, focusedWorkItemID: mm.focusedWorkItemID}
+	got, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd when clamped at end, got %T", cmd)
+	}
 	mm = got.(model)
-	if mm.selectedItem != len(mm.workItems)-1 {
+	if mm.selectedItem != len(items)-1 {
 		t.Fatalf("expected selection to stay at end, got %d", mm.selectedItem)
 	}
 }
@@ -235,13 +329,19 @@ func TestUpdate_MovementTargetsFocusedPane(t *testing.T) {
 	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	mm := got.(model)
 
-	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	got, cmd := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd when repository movement selects no work item, got %T", cmd)
+	}
 	mm = got.(model)
 	if mm.selectedRepo != 1 {
 		t.Fatalf("expected j to move repository selection when repo pane is focused, got %d", mm.selectedRepo)
 	}
 	if mm.selectedItem != 0 {
 		t.Fatalf("expected work item selection to stay unchanged, got %d", mm.selectedItem)
+	}
+	if mm.preview.status != previewEmpty {
+		t.Fatalf("expected empty preview after selecting repo with no work items, got %v", mm.preview.status)
 	}
 }
 
@@ -278,8 +378,8 @@ func TestUpdate_KeyOverrideChangesActionAndHelp(t *testing.T) {
 	start.keys.MoveDown.SetHelp("n", "down")
 
 	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	if cmd != nil {
-		t.Fatalf("expected nil cmd for remapped movement, got %T", cmd)
+	if cmd == nil {
+		t.Fatalf("expected preview load command for remapped movement")
 	}
 	mm := got.(model)
 	if mm.selectedItem != 1 {
@@ -372,10 +472,107 @@ func TestUpdate_PreviewPaneIgnoresMovementKeys(t *testing.T) {
 	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyTab})
 	mm := got.(model)
 
-	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	got, cmd := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if cmd != nil {
+		t.Fatalf("expected preview pane movement to skip preview load, got %T", cmd)
+	}
 	mm = got.(model)
 	if mm.selectedRepo != 0 || mm.selectedItem != 0 {
 		t.Fatalf("expected preview pane movement to leave selections unchanged, got repo=%d item=%d", mm.selectedRepo, mm.selectedItem)
+	}
+}
+
+func TestUpdate_FocusChangeStartsPreviewLoad(t *testing.T) {
+	start := newModelWithPreviewLoader(fakeDelayedPreviewLoader(0))
+	initialRequestID := start.preview.requestID
+	second := start.visibleWorkItems()[1]
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if cmd == nil {
+		t.Fatalf("expected preview load command")
+	}
+	mm := got.(model)
+	if mm.focusedWorkItemID != second.ID {
+		t.Fatalf("expected focused item %q, got %q", second.ID, mm.focusedWorkItemID)
+	}
+	if mm.preview.status != previewLoading {
+		t.Fatalf("expected loading preview, got %v", mm.preview.status)
+	}
+	if mm.preview.requestID != initialRequestID+1 {
+		t.Fatalf("expected request ID to increment to %d, got %d", initialRequestID+1, mm.preview.requestID)
+	}
+}
+
+func TestUpdate_StalePreviewResultIsDiscarded(t *testing.T) {
+	start := newModelWithPreviewLoader(fakeDelayedPreviewLoader(0))
+	firstResult := requirePreviewResultMsg(t, start.Init())
+
+	got, secondCmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm := got.(model)
+	secondID := mm.focusedWorkItemID
+
+	got, cmd := mm.Update(firstResult)
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for stale preview result, got %T", cmd)
+	}
+	mm = got.(model)
+	if mm.focusedWorkItemID != secondID {
+		t.Fatalf("expected focus to stay on %q, got %q", secondID, mm.focusedWorkItemID)
+	}
+	if mm.preview.status != previewLoading {
+		t.Fatalf("expected stale result to leave preview loading, got %v", mm.preview.status)
+	}
+	if mm.preview.loaded.item.ID == firstResult.workItemID {
+		t.Fatalf("expected stale item %q not to be loaded", firstResult.workItemID)
+	}
+
+	wrongIdentity := previewResultMsg{
+		requestID:  mm.preview.requestID,
+		workItemID: firstResult.workItemID,
+		data: previewData{
+			workItemID: firstResult.workItemID,
+			item:       firstResult.data.item,
+		},
+	}
+	got, _ = mm.Update(wrongIdentity)
+	mm = got.(model)
+	if mm.preview.status != previewLoading {
+		t.Fatalf("expected wrong work item identity to be discarded, got %v", mm.preview.status)
+	}
+
+	secondResult := requirePreviewResultMsg(t, secondCmd)
+	got, _ = mm.Update(secondResult)
+	mm = got.(model)
+	if mm.preview.status != previewLoaded {
+		t.Fatalf("expected current result to load preview, got %v", mm.preview.status)
+	}
+	if mm.preview.loaded.item.ID != secondID {
+		t.Fatalf("expected loaded item %q, got %q", secondID, mm.preview.loaded.item.ID)
+	}
+}
+
+func TestUpdate_EmptyPreviewResultRendersClearly(t *testing.T) {
+	start := newModelWithPreviewLoader(emptyPreviewLoader)
+	got, _ := start.Update(requirePreviewResultMsg(t, start.Init()))
+	mm := got.(model)
+	if mm.preview.status != previewEmpty {
+		t.Fatalf("expected empty preview, got %v", mm.preview.status)
+	}
+	if got := strings.Join(mm.previewLines(80), "\n"); !strings.Contains(got, "No preview data") {
+		t.Fatalf("expected empty preview copy, got %q", got)
+	}
+}
+
+func TestUpdate_ErrorPreviewResultRendersClearly(t *testing.T) {
+	start := newModelWithPreviewLoader(errorPreviewLoader(errors.New("fake preview failed")))
+	got, _ := start.Update(requirePreviewResultMsg(t, start.Init()))
+	mm := got.(model)
+	if mm.preview.status != previewError {
+		t.Fatalf("expected error preview, got %v", mm.preview.status)
+	}
+	lines := strings.Join(mm.previewLines(80), "\n")
+	if !strings.Contains(lines, "Preview failed") || !strings.Contains(lines, "fake preview failed") {
+		t.Fatalf("expected error preview copy, got %q", lines)
 	}
 }
 
