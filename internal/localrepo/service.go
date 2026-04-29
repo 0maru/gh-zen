@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -36,14 +37,14 @@ type Runner interface {
 // GitRunner runs real Git commands.
 type GitRunner struct{}
 
-// Run executes git with -C dir and returns trimmed combined output.
+// Run executes git with -C dir and returns combined output without trailing newlines.
 func (GitRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
-	return strings.TrimRight(string(output), "\n"), nil
+	return trimGitOutput(output), nil
 }
 
 // Service discovers local repository state behind a Git command boundary.
@@ -65,6 +66,12 @@ func (s Service) DiscoverWorktrees(ctx context.Context, repoPath string) ([]Work
 	}
 	for i := range worktrees {
 		worktree := &worktrees[i]
+		if worktree.Prunable {
+			if missingPath(worktree.Path) {
+				worktree.Missing = true
+			}
+			continue
+		}
 		if missingPath(worktree.Path) {
 			worktree.Missing = true
 			continue
@@ -81,11 +88,16 @@ func (s Service) DiscoverWorktrees(ctx context.Context, repoPath string) ([]Work
 
 // DiscoverBranches lists local and remote branch refs known to the repository.
 func (s Service) DiscoverBranches(ctx context.Context, repoPath string) ([]Branch, error) {
-	output, err := s.runner().Run(ctx, repoPath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
+	runner := s.runner()
+	output, err := runner.Run(ctx, repoPath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
 	if err != nil {
 		return nil, fmt.Errorf("list branches: %w", err)
 	}
-	return ParseBranchRefs(output), nil
+	remoteOutput, err := runner.Run(ctx, repoPath, "remote")
+	if err != nil {
+		return nil, fmt.Errorf("list remotes: %w", err)
+	}
+	return ParseBranchRefsWithRemotes(output, parseRemoteNames(remoteOutput)), nil
 }
 
 func (s Service) runner() Runner {
@@ -137,6 +149,11 @@ func ParseWorktreeListPorcelain(output string) ([]Worktree, error) {
 
 // ParseBranchRefs parses refnames from git for-each-ref --format=%(refname).
 func ParseBranchRefs(output string) []Branch {
+	return ParseBranchRefsWithRemotes(output, nil)
+}
+
+// ParseBranchRefsWithRemotes parses refnames using known remote names for disambiguation.
+func ParseBranchRefsWithRemotes(output string, remotes []string) []Branch {
 	branches := []Branch{}
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		ref := strings.TrimSpace(line)
@@ -147,7 +164,7 @@ func ParseBranchRefs(output string) []Branch {
 			branches = append(branches, Branch{Name: strings.TrimPrefix(ref, "refs/heads/")})
 		case strings.HasPrefix(ref, "refs/remotes/"):
 			remoteRef := strings.TrimPrefix(ref, "refs/remotes/")
-			remote, name, ok := strings.Cut(remoteRef, "/")
+			remote, name, ok := splitRemoteBranch(remoteRef, remotes)
 			if !ok || name == "" || name == "HEAD" {
 				continue
 			}
@@ -157,12 +174,45 @@ func ParseBranchRefs(output string) []Branch {
 	return branches
 }
 
+func parseRemoteNames(output string) []string {
+	remotes := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		remote := strings.TrimSpace(line)
+		if remote != "" {
+			remotes = append(remotes, remote)
+		}
+	}
+	return remotes
+}
+
+func splitRemoteBranch(remoteRef string, remotes []string) (string, string, bool) {
+	for _, remote := range remotesByLength(remotes) {
+		prefix := remote + "/"
+		if strings.HasPrefix(remoteRef, prefix) {
+			return remote, strings.TrimPrefix(remoteRef, prefix), true
+		}
+	}
+	return strings.Cut(remoteRef, "/")
+}
+
+func remotesByLength(remotes []string) []string {
+	out := append([]string(nil), remotes...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return len(out[i]) > len(out[j])
+	})
+	return out
+}
+
 func porcelainStatusEntries(output string) []string {
-	output = strings.TrimRight(output, "\n")
-	if strings.TrimSpace(output) == "" {
+	output = strings.TrimRight(output, "\r\n")
+	if output == "" {
 		return nil
 	}
 	return strings.Split(output, "\n")
+}
+
+func trimGitOutput(output []byte) string {
+	return strings.TrimRight(string(output), "\r\n")
 }
 
 func missingPath(path string) bool {

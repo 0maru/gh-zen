@@ -23,7 +23,8 @@ func run() error {
 		return err
 	}
 	startupRepo, err := config.ResolveStartupRepository(config.StartupRepositoryOptions{
-		Config: loadResult.Config,
+		Config:              loadResult.Config,
+		AllowMissingCurrent: true,
 	})
 	if err != nil {
 		return err

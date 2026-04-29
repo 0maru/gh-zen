@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -28,9 +29,10 @@ func (s IssueCheckLinkService) LinkForRepo(ctx context.Context, repo RepoRef, it
 	if s.GitHub == nil {
 		return cloneWorkItems(items)
 	}
+	var discoveryErrors []error
 	issues, err := s.GitHub.Issues(ctx, repo.FullName())
 	if err != nil {
-		return append(cloneWorkItems(items), issueCheckDiscoveryErrorItem(repo, err))
+		discoveryErrors = append(discoveryErrors, err)
 	}
 
 	out := LinkIssues(items, issues)
@@ -40,11 +42,18 @@ func (s IssueCheckLinkService) LinkForRepo(ctx context.Context, repo RepoRef, it
 		}
 		checks, err := s.GitHub.CheckSummary(ctx, repo.FullName(), out[i].PullRequest.HeadBranch)
 		if err != nil {
-			return append(out, issueCheckDiscoveryErrorItem(repo, err))
+			discoveryErrors = append(discoveryErrors, err)
+			if out[i].Checks.State == "" {
+				out[i].Checks = CheckSummary{State: CheckUnknown}
+			}
+			continue
 		}
 		if checks.State != "" {
 			out[i].Checks = checks
 		}
+	}
+	if len(discoveryErrors) > 0 {
+		return append(out, issueCheckDiscoveryErrorItem(repo, errors.Join(discoveryErrors...)))
 	}
 	return out
 }
