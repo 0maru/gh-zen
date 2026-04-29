@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"math"
+	pathpkg "path"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -533,8 +535,18 @@ func validateWorkbenchFilter(path string, filter WorkbenchFilter) []Problem {
 	if strings.TrimSpace(filter.Worktree) != filter.Worktree {
 		problems = append(problems, Problem{Path: path + ".worktree", Message: "must not have surrounding whitespace"})
 	}
+	if filter.Worktree != "" {
+		if _, err := filepath.Match(filter.Worktree, ""); err != nil {
+			problems = append(problems, Problem{Path: path + ".worktree", Message: "must be a valid glob pattern"})
+		}
+	}
 	if strings.TrimSpace(filter.BranchPattern) != filter.BranchPattern {
 		problems = append(problems, Problem{Path: path + ".branch_pattern", Message: "must not have surrounding whitespace"})
+	}
+	if filter.BranchPattern != "" {
+		if _, err := pathpkg.Match(filter.BranchPattern, ""); err != nil {
+			problems = append(problems, Problem{Path: path + ".branch_pattern", Message: "must be a valid glob pattern"})
+		}
 	}
 	if !isPullRequestFilter(filter.PullRequest) {
 		problems = append(problems, Problem{Path: path + ".pull_request", Message: "must be any, present, or absent"})

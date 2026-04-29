@@ -231,6 +231,29 @@ func TestValidate_RejectsNaNPreviewWidth(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsInvalidWorkbenchFilterGlobs(t *testing.T) {
+	cfg := Defaults()
+	cfg.Workbench.Filter.Worktree = "["
+	cfg.Workbench.Filter.BranchPattern = "["
+	cfg.Workbench.SavedFilters = map[string]WorkbenchFilter{
+		"review": {BranchPattern: "["},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	for _, want := range []string{
+		"workbench.filter.worktree",
+		"workbench.filter.branch_pattern",
+		"workbench.saved_filters.review.branch_pattern",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected validation error to mention %q, got %q", want, err.Error())
+		}
+	}
+}
+
 func TestValidate_RejectsRepositoryNamesWithWhitespace(t *testing.T) {
 	cfg := Defaults()
 	cfg.Startup.Repo = " owner/repo"
