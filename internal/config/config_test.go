@@ -246,6 +246,7 @@ func TestIsRepoFullName_ValidatesOwnerAndRepositorySegments(t *testing.T) {
 	}{
 		{name: "basic", value: "owner/repo", want: true},
 		{name: "owner hyphen", value: "owner-name/repo", want: true},
+		{name: "numeric owner", value: "123/repo", want: true},
 		{name: "repo punctuation", value: "owner/repo.name_test", want: true},
 		{name: "leading whitespace", value: " owner/repo", want: false},
 		{name: "trailing whitespace", value: "owner/repo ", want: false},
@@ -253,6 +254,9 @@ func TestIsRepoFullName_ValidatesOwnerAndRepositorySegments(t *testing.T) {
 		{name: "repo whitespace", value: "owner/re po", want: false},
 		{name: "owner slash", value: "owner/team/repo", want: false},
 		{name: "owner underscore", value: "owner_name/repo", want: false},
+		{name: "owner leading hyphen", value: "-team/repo", want: false},
+		{name: "owner trailing hyphen", value: "team-/repo", want: false},
+		{name: "owner consecutive hyphens", value: "team--name/repo", want: false},
 		{name: "empty owner", value: "/repo", want: false},
 		{name: "empty repo", value: "owner/", want: false},
 	}

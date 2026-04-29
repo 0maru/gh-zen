@@ -571,12 +571,24 @@ func isRepoFullName(value string) bool {
 }
 
 func isRepoOwner(value string) bool {
+	if value == "" || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+
+	previousHyphen := false
 	for _, r := range value {
 		switch {
 		case r >= 'a' && r <= 'z':
+			previousHyphen = false
 		case r >= 'A' && r <= 'Z':
+			previousHyphen = false
 		case r >= '0' && r <= '9':
+			previousHyphen = false
 		case r == '-':
+			if previousHyphen {
+				return false
+			}
+			previousHyphen = true
 		default:
 			return false
 		}
