@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -35,7 +36,9 @@ func run() error {
 		return err
 	}
 
-	data := loadStartupWorkbenchData(context.Background(), startupRepo)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	data := loadStartupWorkbenchData(ctx, startupRepo)
 
 	_, err = tea.NewProgram(app.NewWithWorkbenchData(loadResult.Config, startupRepo.Repo, data), tea.WithAltScreen()).Run()
 	return err
@@ -65,7 +68,7 @@ func loadStartupWorkbenchData(ctx context.Context, startupRepo config.StartupRep
 
 func currentCheckoutPathForRepo(repoName string) (string, bool) {
 	currentRepo, err := config.CurrentGitRepository("")
-	if err != nil || currentRepo != repoName {
+	if err != nil || !sameRepoFullName(currentRepo, repoName) {
 		return "", false
 	}
 	repoPath, err := config.CurrentGitRepositoryRoot("")
@@ -81,4 +84,8 @@ func repoRefFromFullName(repoName string) (workbench.RepoRef, bool) {
 		return workbench.RepoRef{}, false
 	}
 	return workbench.RepoRef{Owner: owner, Name: name}, true
+}
+
+func sameRepoFullName(left string, right string) bool {
+	return strings.EqualFold(left, right)
 }

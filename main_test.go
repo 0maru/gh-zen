@@ -19,3 +19,12 @@ func TestRepoRefFromFullName(t *testing.T) {
 		t.Fatalf("expected empty repo name to be rejected")
 	}
 }
+
+func TestSameRepoFullName(t *testing.T) {
+	if !sameRepoFullName("Owner/Repo", "owner/repo") {
+		t.Fatalf("expected repo names to compare case-insensitively")
+	}
+	if sameRepoFullName("owner/other", "owner/repo") {
+		t.Fatalf("expected different repo names not to match")
+	}
+}

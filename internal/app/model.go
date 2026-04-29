@@ -125,6 +125,7 @@ func NewWithConfig(cfg cfgpkg.Config, startupRepo string) tea.Model {
 	return newModelWithRuntimeConfig(cfg, startupRepo, fakeDelayedPreviewLoader(defaultPreviewDelay))
 }
 
+// NewWithWorkbenchData builds the app model from already resolved workbench data.
 func NewWithWorkbenchData(cfg cfgpkg.Config, startupRepo string, data WorkbenchData) tea.Model {
 	return newModelWithRuntimeData(cfg, startupRepo, data, fakeDelayedPreviewLoader(defaultPreviewDelay))
 }
