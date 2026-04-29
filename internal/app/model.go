@@ -92,6 +92,12 @@ type model struct {
 	help                 help.Model
 }
 
+// WorkbenchData contains resolved repository workbench state for app startup.
+type WorkbenchData struct {
+	Repos     []workbench.RepoRef
+	WorkItems []workbench.WorkItem
+}
+
 type repoViewFilter int
 
 const (
@@ -119,6 +125,10 @@ func NewWithConfig(cfg cfgpkg.Config, startupRepo string) tea.Model {
 	return newModelWithRuntimeConfig(cfg, startupRepo, fakeDelayedPreviewLoader(defaultPreviewDelay))
 }
 
+func NewWithWorkbenchData(cfg cfgpkg.Config, startupRepo string, data WorkbenchData) tea.Model {
+	return newModelWithRuntimeData(cfg, startupRepo, data, fakeDelayedPreviewLoader(defaultPreviewDelay))
+}
+
 func newModel() model {
 	return newModelWithPreviewLoader(fakeDelayedPreviewLoader(defaultPreviewDelay))
 }
@@ -128,9 +138,16 @@ func newModelWithPreviewLoader(loader previewLoader) model {
 }
 
 func newModelWithRuntimeConfig(cfg cfgpkg.Config, startupRepo string, loader previewLoader) model {
+	return newModelWithRuntimeData(cfg, startupRepo, WorkbenchData{
+		Repos:     workbench.FakeRepos(),
+		WorkItems: workbench.FakeWorkItems(),
+	}, loader)
+}
+
+func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data WorkbenchData, loader previewLoader) model {
 	m := model{
-		repos:           workbench.FakeRepos(),
-		workItems:       workbench.FakeWorkItems(),
+		repos:           cloneRepoRefs(data.Repos),
+		workItems:       cloneWorkItems(data.WorkItems),
 		previewLoader:   loader,
 		workbenchFilter: cfg.Workbench.Filter,
 		actionRunner:    systemActionRunner{},
@@ -648,6 +665,14 @@ func filterWorkItems(items []workbench.WorkItem, keep func(workbench.WorkItem) b
 		}
 	}
 	return out
+}
+
+func cloneRepoRefs(repos []workbench.RepoRef) []workbench.RepoRef {
+	return append([]workbench.RepoRef(nil), repos...)
+}
+
+func cloneWorkItems(items []workbench.WorkItem) []workbench.WorkItem {
+	return append([]workbench.WorkItem(nil), items...)
 }
 
 func (v repoView) matches(item workbench.WorkItem) bool {

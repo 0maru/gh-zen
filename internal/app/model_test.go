@@ -187,6 +187,46 @@ func TestNew_LoadsFakeWorkbenchData(t *testing.T) {
 	}
 }
 
+func TestNewWithWorkbenchData_UsesProvidedData(t *testing.T) {
+	cfg := cfgpkg.Defaults()
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	item := workbench.WorkItem{
+		ID:     "branch:live",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "live"},
+		Local:  &workbench.LocalStatus{State: workbench.LocalClean},
+	}
+
+	got := NewWithWorkbenchData(cfg, repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{item},
+	}).(model)
+
+	if len(got.repos) != 1 || got.repos[0] != repo {
+		t.Fatalf("expected provided repo only, got %+v", got.repos)
+	}
+	if len(got.workItems) != 1 || got.workItems[0].ID != item.ID {
+		t.Fatalf("expected provided work item only, got %+v", got.workItems)
+	}
+	if got.focusedWorkItemID != item.ID {
+		t.Fatalf("expected live item to be focused, got %q", got.focusedWorkItemID)
+	}
+}
+
+func TestNewWithWorkbenchData_EmptyDataDoesNotFallbackToFakeItems(t *testing.T) {
+	got := NewWithWorkbenchData(cfgpkg.Defaults(), "", WorkbenchData{}).(model)
+
+	if len(got.repos) != 0 {
+		t.Fatalf("expected no repos, got %+v", got.repos)
+	}
+	if len(got.workItems) != 0 {
+		t.Fatalf("expected no work items, got %+v", got.workItems)
+	}
+	if got.preview.status != previewEmpty {
+		t.Fatalf("expected empty preview, got %v", got.preview.status)
+	}
+}
+
 func TestInit_LoadsInitialPreview(t *testing.T) {
 	start := newModelWithPreviewLoader(fakeDelayedPreviewLoader(0))
 	msg := requirePreviewResultMsg(t, start.Init())

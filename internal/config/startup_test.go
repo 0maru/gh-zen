@@ -158,6 +158,22 @@ func TestCurrentGitRepository_ResolvesOriginRemote(t *testing.T) {
 	if got != "owner/repo" {
 		t.Fatalf("expected owner/repo, got %q", got)
 	}
+
+	root, err := CurrentGitRepositoryRoot(subdir)
+	if err != nil {
+		t.Fatalf("expected current Git repository root to resolve, got %v", err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		t.Fatalf("resolve repo dir symlinks: %v", err)
+	}
+	gotRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve root symlinks: %v", err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("expected root %q, got %q", wantRoot, gotRoot)
+	}
 }
 
 func TestCurrentGitRepository_ReportsActionableErrors(t *testing.T) {
