@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -22,16 +23,32 @@ type actionResultMsg struct {
 }
 
 func (systemActionRunner) Open(ctx context.Context, target string) error {
+	if !isOpenTargetURL(target) {
+		return fmt.Errorf("unsupported URL %q", target)
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.CommandContext(ctx, "open", target)
+		cmd = exec.CommandContext(ctx, "open", "--", target)
 	case "windows":
 		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", target)
 	default:
 		cmd = exec.CommandContext(ctx, "xdg-open", target)
 	}
 	return cmd.Run()
+}
+
+func isOpenTargetURL(target string) bool {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+		return parsed.Host != ""
+	default:
+		return false
+	}
 }
 
 func (systemActionRunner) Copy(ctx context.Context, text string) error {
