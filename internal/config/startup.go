@@ -102,7 +102,7 @@ func ParseGitHubRemoteURL(raw string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("parse GitHub remote URL %q: %w", raw, err)
 		}
-		if parsed.Host != "github.com" {
+		if !strings.EqualFold(parsed.Hostname(), "github.com") {
 			return "", fmt.Errorf("unsupported GitHub remote host %q", parsed.Host)
 		}
 		switch parsed.Scheme {
