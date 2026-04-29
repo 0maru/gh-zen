@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	ghsvc "github.com/0maru/gh-zen/internal/github"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -60,9 +61,61 @@ func errorPreviewLoader(err error) previewLoader {
 	}
 }
 
+func requireGitHubSummaryMsg(t *testing.T, cmd tea.Cmd) githubSummaryMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("expected GitHub summary command, got nil")
+	}
+	msg := cmd()
+	result, ok := msg.(githubSummaryMsg)
+	if !ok {
+		t.Fatalf("expected githubSummaryMsg, got %T", msg)
+	}
+	return result
+}
+
 func TestInit_ReturnsNilCmd(t *testing.T) {
 	if cmd := (model{}).Init(); cmd != nil {
 		t.Fatalf("expected Init to return nil cmd, got %T", cmd)
+	}
+}
+
+func TestUpdate_RefreshLoadsGitHubSummary(t *testing.T) {
+	service := ghsvc.FakeService{
+		Summaries: map[string]ghsvc.RepositorySummary{
+			"0maru/gh-zen": {
+				Repo: "0maru/gh-zen",
+				PullRequests: []workbench.PullRequestRef{
+					{Number: 12, Title: "Add PR links", State: "open"},
+				},
+				Issues: []workbench.IssueRef{
+					{Number: 10, Title: "Config discovery", State: "open", Certain: true},
+				},
+				Checks: workbench.CheckSummary{State: workbench.CheckPassing, Passing: 2},
+			},
+		},
+	}
+	start := newModelWithGitHubService(service)
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatalf("expected refresh command")
+	}
+
+	msg := requireGitHubSummaryMsg(t, cmd)
+	got, cmd = got.(model).Update(msg)
+	if cmd != nil {
+		t.Fatalf("expected nil command after GitHub summary, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.githubSummary.Repo != "0maru/gh-zen" {
+		t.Fatalf("expected GitHub summary repo, got %+v", mm.githubSummary)
+	}
+	if len(mm.githubSummary.PullRequests) != 1 || len(mm.githubSummary.Issues) != 1 {
+		t.Fatalf("expected PR and issue summaries, got %+v", mm.githubSummary)
+	}
+	if mm.githubSummary.Checks.State != workbench.CheckPassing {
+		t.Fatalf("expected check summary, got %+v", mm.githubSummary.Checks)
 	}
 }
 

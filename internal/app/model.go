@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	ghsvc "github.com/0maru/gh-zen/internal/github"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -76,6 +78,9 @@ type model struct {
 	preview              previewState
 	nextPreviewRequestID int
 	previewLoader        previewLoader
+	githubService        ghsvc.Service
+	githubSummary        ghsvc.RepositorySummary
+	githubError          string
 	styles               Styles
 	keys                 workbenchKeyMap
 	help                 help.Model
@@ -121,6 +126,17 @@ func newModelWithPreviewLoader(loader previewLoader) model {
 	return m
 }
 
+func newModelWithGitHubService(service ghsvc.Service) model {
+	m := newModelWithPreviewLoader(fakeDelayedPreviewLoader(defaultPreviewDelay))
+	m.githubService = service
+	return m
+}
+
+type githubSummaryMsg struct {
+	summary ghsvc.RepositorySummary
+	err     error
+}
+
 func (m model) Init() tea.Cmd {
 	if m.preview.status != previewLoading || m.previewLoader == nil {
 		return nil
@@ -144,6 +160,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case previewResultMsg:
 		m.handlePreviewResult(msg)
+		return m, nil
+	case githubSummaryMsg:
+		m.handleGitHubSummary(msg)
 		return m, nil
 	case tea.KeyMsg:
 		if action, ok := m.matchedAction(msg); ok {
@@ -259,10 +278,36 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 	case actionJumpBottom:
 		m.jumpFocusedSelection(true)
 		return m.startPreviewLoadIfFocusedItemChanged()
-	case actionRefresh, actionOpen, actionCopy:
+	case actionRefresh:
+		return m.refreshGitHubSummary()
+	case actionOpen, actionCopy:
 		return nil
 	}
 	return nil
+}
+
+func (m model) refreshGitHubSummary() tea.Cmd {
+	if m.githubService == nil {
+		return nil
+	}
+	repo, ok := m.selectedRepoRef()
+	if !ok {
+		return nil
+	}
+	repoName := repo.FullName()
+	return func() tea.Msg {
+		summary, err := m.githubService.RepositorySummary(context.Background(), repoName)
+		return githubSummaryMsg{summary: summary, err: err}
+	}
+}
+
+func (m *model) handleGitHubSummary(msg githubSummaryMsg) {
+	if msg.err != nil {
+		m.githubError = msg.err.Error()
+		return
+	}
+	m.githubError = ""
+	m.githubSummary = msg.summary
 }
 
 func (m *model) focusNextPane() {
