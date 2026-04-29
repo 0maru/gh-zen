@@ -16,6 +16,18 @@ type fakeRunner struct {
 	args   []string
 }
 
+type fakeExitError struct {
+	code int
+}
+
+func (e fakeExitError) Error() string {
+	return "exit status"
+}
+
+func (e fakeExitError) ExitCode() int {
+	return e.code
+}
+
 func (r *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 	r.args = append([]string(nil), args...)
 	return r.output, r.err
@@ -64,6 +76,9 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	if !reflect.DeepEqual(runner.args[:4], []string{"pr", "list", "--repo", "0maru/gh-zen"}) {
 		t.Fatalf("expected gh pr list args, got %#v", runner.args)
 	}
+	if !hasArgPair(runner.args, "--limit", listLimit) {
+		t.Fatalf("expected gh pr list limit, got %#v", runner.args)
+	}
 }
 
 func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
@@ -83,6 +98,9 @@ func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)
+	}
+	if !hasArgPair(runner.args, "--limit", listLimit) {
+		t.Fatalf("expected gh issue list limit, got %#v", runner.args)
 	}
 }
 
@@ -112,4 +130,25 @@ func TestClassifyError(t *testing.T) {
 	if err.Kind != ErrorNetwork {
 		t.Fatalf("expected network error, got %+v", err)
 	}
+}
+
+func TestIsPendingChecksExit(t *testing.T) {
+	if !isPendingChecksExit([]string{"pr", "checks", "feature"}, fakeExitError{code: 8}) {
+		t.Fatal("expected gh pr checks exit 8 to be pending")
+	}
+	if isPendingChecksExit([]string{"pr", "checks", "feature"}, fakeExitError{code: 1}) {
+		t.Fatal("expected non-pending check exit to remain an error")
+	}
+	if isPendingChecksExit([]string{"pr", "list"}, fakeExitError{code: 8}) {
+		t.Fatal("expected exit 8 from a different gh command to remain an error")
+	}
+}
+
+func hasArgPair(args []string, key string, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
