@@ -56,7 +56,7 @@ func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
 }
 
 func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"reviewDecision":"REVIEW_REQUIRED"}]`)}
+	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"reviewDecision":"REVIEW_REQUIRED","closingIssuesReferences":[{"number":9,"title":"Issue","state":"OPEN","url":"https://example.test/issues/9"}]}]`)}
 	service := CLIService{Runner: runner}
 
 	got, err := service.PullRequests(context.Background(), "0maru/gh-zen")
@@ -64,12 +64,15 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		t.Fatalf("expected pull requests to parse, got %v", err)
 	}
 	want := []workbench.PullRequestRef{{
-		Number:      12,
-		Title:       "Add feature",
-		State:       "open",
-		URL:         "https://example.test/pr/12",
-		HeadOwner:   "0maru",
-		HeadBranch:  "feature",
+		Number:     12,
+		Title:      "Add feature",
+		State:      "open",
+		URL:        "https://example.test/pr/12",
+		HeadOwner:  "0maru",
+		HeadBranch: "feature",
+		LinkedIssues: []workbench.IssueRef{
+			{Number: 9, Title: "Issue", State: "open", URL: "https://example.test/issues/9", Certain: true},
+		},
 		ReviewState: "review required",
 	}}
 	if !reflect.DeepEqual(got, want) {
@@ -81,7 +84,7 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	if !hasArgPair(runner.args, "--limit", listLimit) {
 		t.Fatalf("expected gh pr list limit, got %#v", runner.args)
 	}
-	if !hasArgValue(runner.args, "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision") {
+	if !hasArgValue(runner.args, "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision,closingIssuesReferences") {
 		t.Fatalf("expected gh pr list to request head repository owner, got %#v", runner.args)
 	}
 }

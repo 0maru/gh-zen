@@ -47,13 +47,14 @@ func (i IssueRef) Label() string {
 }
 
 type PullRequestRef struct {
-	Number      int
-	Title       string
-	State       string
-	URL         string
-	HeadOwner   string
-	HeadBranch  string
-	ReviewState string
+	Number       int
+	Title        string
+	State        string
+	URL          string
+	HeadOwner    string
+	HeadBranch   string
+	LinkedIssues []IssueRef
+	ReviewState  string
 }
 
 func (p PullRequestRef) Label() string {

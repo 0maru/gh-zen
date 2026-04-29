@@ -104,7 +104,7 @@ func (s CLIService) RepositorySummary(ctx context.Context, repo string) (Reposit
 
 // PullRequests loads pull request summaries through gh.
 func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.PullRequestRef, error) {
-	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision")
+	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision,closingIssuesReferences")
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +118,12 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
 		ReviewDecision string `json:"reviewDecision"`
+		ClosingIssues  []struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+			State  string `json:"state"`
+			URL    string `json:"url"`
+		} `json:"closingIssuesReferences"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("parse gh pr list output: %w", err)
@@ -125,13 +131,14 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 	prs := make([]workbench.PullRequestRef, 0, len(payload))
 	for _, pr := range payload {
 		prs = append(prs, workbench.PullRequestRef{
-			Number:      pr.Number,
-			Title:       pr.Title,
-			State:       strings.ToLower(pr.State),
-			URL:         pr.URL,
-			HeadOwner:   pr.HeadRepositoryOwner.Login,
-			HeadBranch:  pr.HeadRefName,
-			ReviewState: reviewState(pr.ReviewDecision),
+			Number:       pr.Number,
+			Title:        pr.Title,
+			State:        strings.ToLower(pr.State),
+			URL:          pr.URL,
+			HeadOwner:    pr.HeadRepositoryOwner.Login,
+			HeadBranch:   pr.HeadRefName,
+			LinkedIssues: linkedIssues(pr.ClosingIssues),
+			ReviewState:  reviewState(pr.ReviewDecision),
 		})
 	}
 	return prs, nil
@@ -193,6 +200,25 @@ func (s CLIService) runner() Runner {
 		return s.Runner
 	}
 	return GHRunner{}
+}
+
+func linkedIssues(payload []struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	URL    string `json:"url"`
+}) []workbench.IssueRef {
+	issues := make([]workbench.IssueRef, 0, len(payload))
+	for _, issue := range payload {
+		issues = append(issues, workbench.IssueRef{
+			Number:  issue.Number,
+			Title:   issue.Title,
+			State:   strings.ToLower(issue.State),
+			URL:     issue.URL,
+			Certain: true,
+		})
+	}
+	return issues
 }
 
 func isPendingChecksExit(args []string, err error) bool {
