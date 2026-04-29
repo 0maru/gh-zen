@@ -85,6 +85,8 @@ type model struct {
 	githubSummary        ghsvc.RepositorySummary
 	githubError          string
 	workbenchFilter      cfgpkg.WorkbenchFilter
+	actionRunner         actionRunner
+	statusMessage        string
 	styles               Styles
 	keys                 workbenchKeyMap
 	help                 help.Model
@@ -131,6 +133,7 @@ func newModelWithRuntimeConfig(cfg cfgpkg.Config, startupRepo string, loader pre
 		workItems:       workbench.FakeWorkItems(),
 		previewLoader:   loader,
 		workbenchFilter: cfg.Workbench.Filter,
+		actionRunner:    systemActionRunner{},
 		styles:          DefaultStyles(),
 		keys:            DefaultKeyMap(),
 		help:            newHelpModel(),
@@ -178,6 +181,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case previewResultMsg:
 		m.handlePreviewResult(msg)
+		return m, nil
+	case actionResultMsg:
+		m.handleActionResult(msg)
 		return m, nil
 	case githubSummaryMsg:
 		m.handleGitHubSummary(msg)
@@ -297,11 +303,125 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.jumpFocusedSelection(true)
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionRefresh:
-		return m.refreshGitHubSummary()
-	case actionOpen, actionCopy:
-		return nil
+		cmd := m.refreshGitHubSummary()
+		if cmd == nil {
+			m.statusMessage = "Refresh unavailable"
+			return nil
+		}
+		m.statusMessage = "Refreshing GitHub data..."
+		return cmd
+	case actionOpenPullRequest:
+		return m.openPullRequest()
+	case actionOpenIssue:
+		return m.openIssue()
+	case actionCopyURL:
+		return m.copyURL()
+	case actionCopyWorktreePath:
+		return m.copyWorktreePath()
 	}
 	return nil
+}
+
+func (m *model) openPullRequest() tea.Cmd {
+	item, ok := m.selectedWorkItem()
+	if !ok {
+		m.statusMessage = "No work item selected"
+		return nil
+	}
+	if item.PullRequest == nil || item.PullRequest.URL == "" {
+		m.statusMessage = "No PR URL for selected work item"
+		return nil
+	}
+	label := item.PullRequest.NumberLabel()
+	m.statusMessage = "Opening " + label + "..."
+	return m.actionCommand("Opened "+label, "Open PR failed", func(ctx context.Context) error {
+		return m.runner().Open(ctx, item.PullRequest.URL)
+	})
+}
+
+func (m *model) openIssue() tea.Cmd {
+	item, ok := m.selectedWorkItem()
+	if !ok {
+		m.statusMessage = "No work item selected"
+		return nil
+	}
+	if item.Issue == nil || item.Issue.URL == "" {
+		m.statusMessage = "No issue URL for selected work item"
+		return nil
+	}
+	label := item.Issue.Label()
+	m.statusMessage = "Opening " + label + "..."
+	return m.actionCommand("Opened "+label, "Open issue failed", func(ctx context.Context) error {
+		return m.runner().Open(ctx, item.Issue.URL)
+	})
+}
+
+func (m *model) copyURL() tea.Cmd {
+	item, ok := m.selectedWorkItem()
+	if !ok {
+		m.statusMessage = "No work item selected"
+		return nil
+	}
+	label, target, ok := bestWorkItemURL(item)
+	if !ok {
+		m.statusMessage = "No URL for selected work item"
+		return nil
+	}
+	m.statusMessage = "Copying " + label + " URL..."
+	return m.actionCommand("Copied "+label+" URL", "Copy URL failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, target)
+	})
+}
+
+func (m *model) copyWorktreePath() tea.Cmd {
+	item, ok := m.selectedWorkItem()
+	if !ok {
+		m.statusMessage = "No work item selected"
+		return nil
+	}
+	if item.Worktree == nil || item.Worktree.Path == "" {
+		m.statusMessage = "No worktree path for selected work item"
+		return nil
+	}
+	m.statusMessage = "Copying worktree path..."
+	return m.actionCommand("Copied worktree path", "Copy worktree path failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, item.Worktree.Path)
+	})
+}
+
+func (m *model) actionCommand(success string, failure string, run func(context.Context) error) tea.Cmd {
+	return func() tea.Msg {
+		return actionResultMsg{
+			success: success,
+			failure: failure,
+			err:     run(context.Background()),
+		}
+	}
+}
+
+func (m *model) handleActionResult(msg actionResultMsg) {
+	if msg.err != nil {
+		m.statusMessage = fmt.Sprintf("%s: %v", msg.failure, msg.err)
+		return
+	}
+	m.statusMessage = msg.success
+}
+
+func (m model) runner() actionRunner {
+	if m.actionRunner != nil {
+		return m.actionRunner
+	}
+	return systemActionRunner{}
+}
+
+func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
+	if item.PullRequest != nil && item.PullRequest.URL != "" {
+		return "PR", item.PullRequest.URL, true
+	}
+	if item.Issue != nil && item.Issue.URL != "" {
+		return "issue", item.Issue.URL, true
+	}
+	return "", "", false
 }
 
 func (m model) refreshGitHubSummary() tea.Cmd {
@@ -322,10 +442,12 @@ func (m model) refreshGitHubSummary() tea.Cmd {
 func (m *model) handleGitHubSummary(msg githubSummaryMsg) {
 	if msg.err != nil {
 		m.githubError = msg.err.Error()
+		m.statusMessage = "Refresh failed: " + msg.err.Error()
 		return
 	}
 	m.githubError = ""
 	m.githubSummary = msg.summary
+	m.statusMessage = "Refreshed GitHub data"
 }
 
 func (m *model) focusNextPane() {
@@ -753,7 +875,11 @@ func (m model) previewStatusLines(width int, status string) []string {
 
 func (m model) headerLines(title string, width int) []string {
 	out := []string{title}
-	return append(out, m.keymapLines(width)...)
+	out = append(out, m.keymapLines(width)...)
+	if m.statusMessage != "" {
+		out = append(out, truncate("Status: "+m.statusMessage, width))
+	}
+	return out
 }
 
 // keymapLines keeps the active pane affordances visible near the title.

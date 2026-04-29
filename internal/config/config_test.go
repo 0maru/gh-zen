@@ -66,12 +66,12 @@ func TestMergeLayers_ScalarsUseLastWriterWins(t *testing.T) {
 func TestMerge_KeyBindingsReplacePerAction(t *testing.T) {
 	got := Merge(Defaults(), PartialConfig{
 		Keys: KeyBindings{
-			"open": {"x"},
+			"copy_url": {"x"},
 		},
 	})
 
-	if !reflect.DeepEqual(got.Keys["open"], []string{"x"}) {
-		t.Fatalf("expected open binding to be replaced, got %#v", got.Keys["open"])
+	if !reflect.DeepEqual(got.Keys["copy_url"], []string{"x"}) {
+		t.Fatalf("expected copy URL binding to be replaced, got %#v", got.Keys["copy_url"])
 	}
 	if !reflect.DeepEqual(got.Keys["quit"], []string{"q", "esc", "ctrl+c"}) {
 		t.Fatalf("expected unrelated key binding to remain, got %#v", got.Keys["quit"])
@@ -168,19 +168,19 @@ func TestMerge_DoesNotAliasBaseOrLayer(t *testing.T) {
 	layerRoots := []string{"~/work"}
 	layer := PartialConfig{
 		Repos: ReposConfigLayer{Roots: &layerRoots},
-		Keys:  KeyBindings{"open": {"x"}},
+		Keys:  KeyBindings{"copy_url": {"x"}},
 	}
 
 	got := Merge(base, layer)
-	base.Keys["open"][0] = "base-mutated"
+	base.Keys["copy_url"][0] = "base-mutated"
 	layerRoots[0] = "layer-mutated"
-	layer.Keys["open"][0] = "layer-mutated"
+	layer.Keys["copy_url"][0] = "layer-mutated"
 
 	if !reflect.DeepEqual(got.Repos.Roots, []string{"~/work"}) {
 		t.Fatalf("expected merged roots to be isolated, got %#v", got.Repos.Roots)
 	}
-	if !reflect.DeepEqual(got.Keys["open"], []string{"x"}) {
-		t.Fatalf("expected merged keys to be isolated, got %#v", got.Keys["open"])
+	if !reflect.DeepEqual(got.Keys["copy_url"], []string{"x"}) {
+		t.Fatalf("expected merged keys to be isolated, got %#v", got.Keys["copy_url"])
 	}
 }
 

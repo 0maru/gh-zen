@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -60,6 +61,22 @@ func errorPreviewLoader(err error) previewLoader {
 			}
 		}
 	}
+}
+
+type fakeActionRunner struct {
+	opened []string
+	copied []string
+	err    error
+}
+
+func (r *fakeActionRunner) Open(_ context.Context, target string) error {
+	r.opened = append(r.opened, target)
+	return r.err
+}
+
+func (r *fakeActionRunner) Copy(_ context.Context, text string) error {
+	r.copied = append(r.copied, text)
+	return r.err
 }
 
 func requireGitHubSummaryMsg(t *testing.T, cmd tea.Cmd) githubSummaryMsg {
@@ -457,9 +474,10 @@ func TestUpdate_ActionKeysAreBound(t *testing.T) {
 		want actionID
 	}{
 		{"refresh", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}, actionRefresh},
-		{"open", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}, actionOpen},
-		{"enter", tea.KeyMsg{Type: tea.KeyEnter}, actionOpen},
-		{"copy", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, actionCopy},
+		{"open PR", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}, actionOpenPullRequest},
+		{"open issue", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}, actionOpenIssue},
+		{"copy URL", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, actionCopyURL},
+		{"copy worktree path", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}}, actionCopyWorktreePath},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -471,6 +489,100 @@ func TestUpdate_ActionKeysAreBound(t *testing.T) {
 				t.Fatalf("expected action %s, got %s", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestUpdate_OpenPullRequestRunsActionCommand(t *testing.T) {
+	runner := &fakeActionRunner{}
+	start := newModel()
+	start.actionRunner = runner
+	start.selectedItem = 1
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if cmd == nil {
+		t.Fatalf("expected open PR command")
+	}
+	msg := cmd()
+	if len(runner.opened) != 1 || runner.opened[0] != "https://github.com/0maru/gh-zen/pull/24" {
+		t.Fatalf("expected PR URL to open, got %#v", runner.opened)
+	}
+	got, _ = got.(model).Update(msg)
+	if status := got.(model).statusMessage; status != "Opened PR #24" {
+		t.Fatalf("expected success status, got %q", status)
+	}
+}
+
+func TestUpdate_OpenIssueRunsActionCommand(t *testing.T) {
+	runner := &fakeActionRunner{}
+	start := newModel()
+	start.actionRunner = runner
+	start.selectedItem = 1
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if cmd == nil {
+		t.Fatalf("expected open issue command")
+	}
+	_ = cmd()
+	if len(runner.opened) != 1 || runner.opened[0] != "https://github.com/0maru/gh-zen/issues/9" {
+		t.Fatalf("expected issue URL to open, got %#v", runner.opened)
+	}
+	if status := got.(model).statusMessage; !strings.Contains(status, "Opening #9") {
+		t.Fatalf("expected pending status, got %q", status)
+	}
+}
+
+func TestUpdate_CopyActionsRouteSelectedWorkItemData(t *testing.T) {
+	runner := &fakeActionRunner{}
+	start := newModel()
+	start.actionRunner = runner
+	start.selectedItem = 1
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil {
+		t.Fatalf("expected copy URL command")
+	}
+	got, _ = got.(model).Update(cmd())
+	if len(runner.copied) != 1 || runner.copied[0] != "https://github.com/0maru/gh-zen/pull/24" {
+		t.Fatalf("expected PR URL to copy, got %#v", runner.copied)
+	}
+	if status := got.(model).statusMessage; status != "Copied PR URL" {
+		t.Fatalf("expected copied URL status, got %q", status)
+	}
+
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}})
+	if cmd == nil {
+		t.Fatalf("expected copy worktree path command")
+	}
+	_ = cmd()
+	if len(runner.copied) != 2 || runner.copied[1] != "~/workspaces/github.com/0maru/gh-zen-agent-a" {
+		t.Fatalf("expected worktree path to copy, got %#v", runner.copied)
+	}
+}
+
+func TestUpdate_ActionMissingDataSetsStatusWithoutCommand(t *testing.T) {
+	start := newModel()
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if cmd != nil {
+		t.Fatalf("expected nil command when selected item has no PR")
+	}
+	if status := got.(model).statusMessage; status != "No PR URL for selected work item" {
+		t.Fatalf("expected missing PR status, got %q", status)
+	}
+}
+
+func TestUpdate_ActionFailureSetsStatus(t *testing.T) {
+	start := newModel()
+	start.actionRunner = &fakeActionRunner{err: errors.New("launcher failed")}
+	start.selectedItem = 1
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	if cmd == nil {
+		t.Fatalf("expected open PR command")
+	}
+	got, _ = got.(model).Update(cmd())
+	if status := got.(model).statusMessage; !strings.Contains(status, "Open PR failed: launcher failed") {
+		t.Fatalf("expected failure status, got %q", status)
 	}
 }
 
