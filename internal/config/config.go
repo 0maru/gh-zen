@@ -567,6 +567,34 @@ func isRepoFullName(value string) bool {
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 		return false
 	}
+	return isRepoOwner(owner) && isRepoName(name)
+}
+
+func isRepoOwner(value string) bool {
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isRepoName(value string) bool {
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
 	return true
 }
 

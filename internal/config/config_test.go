@@ -217,6 +217,54 @@ func TestValidate_RejectsInvalidKnownValues(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsRepositoryNamesWithWhitespace(t *testing.T) {
+	cfg := Defaults()
+	cfg.Startup.Repo = " owner/repo"
+	cfg.Repos.Repositories = map[string]RepositoryConfig{
+		"owner /repo": {},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	for _, want := range []string{
+		"startup.repo",
+		"repos.repositories.owner /repo",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected validation error to mention %q, got %q", want, err.Error())
+		}
+	}
+}
+
+func TestIsRepoFullName_ValidatesOwnerAndRepositorySegments(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "basic", value: "owner/repo", want: true},
+		{name: "owner hyphen", value: "owner-name/repo", want: true},
+		{name: "repo punctuation", value: "owner/repo.name_test", want: true},
+		{name: "leading whitespace", value: " owner/repo", want: false},
+		{name: "trailing whitespace", value: "owner/repo ", want: false},
+		{name: "owner whitespace", value: "owner /repo", want: false},
+		{name: "repo whitespace", value: "owner/re po", want: false},
+		{name: "owner slash", value: "owner/team/repo", want: false},
+		{name: "owner underscore", value: "owner_name/repo", want: false},
+		{name: "empty owner", value: "/repo", want: false},
+		{name: "empty repo", value: "owner/", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRepoFullName(tc.value); got != tc.want {
+				t.Fatalf("expected %q validation to be %v, got %v", tc.value, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestValidateLayer_ReturnsUnknownKeyWarnings(t *testing.T) {
 	warnings, err := ValidateLayer(PartialConfig{
 		UnknownKeys: []string{"ui.unused", "workbench.future"},
