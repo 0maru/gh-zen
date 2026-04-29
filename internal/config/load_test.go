@@ -198,6 +198,64 @@ branch_patterns = ["agent/*"]
 	}
 }
 
+func TestLoad_UnknownKeysProduceDiagnostics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary filesystem config files")
+	}
+
+	projectDir := t.TempDir()
+	writeFile(t, filepath.Join(projectDir, ".gh-zen.toml"), `
+[ui]
+future_theme = "ignored"
+
+[workbench]
+future_filter = true
+`)
+
+	result, err := Load(LoadOptions{
+		HomeDir:    t.TempDir(),
+		ProjectDir: projectDir,
+		Env:        map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("expected unknown keys to be non-fatal, got %v", err)
+	}
+
+	got := diagnosticPaths(result.Diagnostics)
+	want := []string{"ui.future_theme", "workbench.future_filter"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected unknown-key diagnostics %#v, got %#v", want, got)
+	}
+}
+
+func TestLoad_ReturnsDiagnosticsWhenLayerValidationFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary filesystem config files")
+	}
+
+	projectDir := t.TempDir()
+	writeFile(t, filepath.Join(projectDir, ".gh-zen.toml"), `
+[ui]
+preview_width = 2.0
+future_theme = "ignored"
+`)
+
+	result, err := Load(LoadOptions{
+		HomeDir:    t.TempDir(),
+		ProjectDir: projectDir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected invalid loaded config to fail")
+	}
+	if got := diagnosticPaths(result.Diagnostics); !reflect.DeepEqual(got, []string{"ui.future_theme"}) {
+		t.Fatalf("expected diagnostics to survive validation error, got %#v", got)
+	}
+	if len(result.Sources) != 1 || result.Sources[0].Kind != SourceProject {
+		t.Fatalf("expected invalid loaded source to be recorded, got %+v", result.Sources)
+	}
+}
+
 func TestLoad_RejectsInvalidLoadedConfig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary filesystem config files")
@@ -221,6 +279,14 @@ preview_width = 2.0
 	if !strings.Contains(err.Error(), "ui.preview_width") {
 		t.Fatalf("expected error to mention ui.preview_width, got %v", err)
 	}
+}
+
+func diagnosticPaths(diagnostics []Diagnostic) []string {
+	paths := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		paths = append(paths, diagnostic.Path)
+	}
+	return paths
 }
 
 func writeFile(t *testing.T, path string, content string) {

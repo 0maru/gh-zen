@@ -2,6 +2,7 @@ package localrepo
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,25 @@ import (
 	"strings"
 	"testing"
 )
+
+type fakeRunner struct {
+	outputs map[string]string
+	errors  map[string]error
+	calls   []string
+}
+
+func (r *fakeRunner) Run(_ context.Context, dir string, args ...string) (string, error) {
+	call := dir + " " + strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	if err := r.errors[call]; err != nil {
+		return "", err
+	}
+	output, ok := r.outputs[call]
+	if !ok {
+		return "", fmt.Errorf("unexpected git call %s", call)
+	}
+	return output, nil
+}
 
 func TestParseWorktreeListPorcelain(t *testing.T) {
 	output := strings.TrimSpace(`
@@ -86,6 +106,77 @@ refs/remotes/upstream/feature/remote
 	}
 }
 
+func TestParseBranchRefsWithRemotes_DisambiguatesRemoteNamesContainingSlash(t *testing.T) {
+	output := strings.TrimSpace(`
+refs/remotes/foo/bar/main
+refs/remotes/foo/bar/feature/remote
+refs/remotes/foo/other
+`)
+
+	got := ParseBranchRefsWithRemotes(output, []string{"foo", "foo/bar"})
+	want := []Branch{
+		{Name: "main", Remote: "foo/bar", RemoteOnly: true},
+		{Name: "feature/remote", Remote: "foo/bar", RemoteOnly: true},
+		{Name: "other", Remote: "foo", RemoteOnly: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected branches %+v, got %+v", want, got)
+	}
+}
+
+func TestTrimGitOutputPreservesLeadingStatusColumns(t *testing.T) {
+	got := trimGitOutput([]byte(" M file.go\n?? new.go\n"))
+	want := " M file.go\n?? new.go"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestService_DiscoverWorktreesSkipsStatusForPrunableWorktrees(t *testing.T) {
+	repoDir := t.TempDir()
+	staleDir := filepath.Join(t.TempDir(), "stale")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatalf("mkdir stale worktree: %v", err)
+	}
+
+	listCall := repoDir + " worktree list --porcelain"
+	repoStatusCall := repoDir + " status --porcelain=v1"
+	staleStatusCall := staleDir + " status --porcelain=v1"
+	runner := &fakeRunner{
+		outputs: map[string]string{
+			listCall: strings.Join([]string{
+				"worktree " + repoDir,
+				"HEAD 1111111111111111111111111111111111111111",
+				"branch refs/heads/main",
+				"",
+				"worktree " + staleDir,
+				"HEAD 2222222222222222222222222222222222222222",
+				"branch refs/heads/stale",
+				"prunable gitdir file points to non-existent location",
+			}, "\n"),
+			repoStatusCall: "",
+		},
+		errors: map[string]error{
+			staleStatusCall: fmt.Errorf("status should not be called"),
+		},
+	}
+
+	worktrees, err := (Service{Runner: runner}).DiscoverWorktrees(context.Background(), repoDir)
+	if err != nil {
+		t.Fatalf("expected prunable worktree to be skipped, got %v", err)
+	}
+
+	stale := requireWorktree(t, worktrees, staleDir)
+	if !stale.Prunable || stale.Dirty || len(stale.StatusEntries) != 0 {
+		t.Fatalf("expected prunable worktree without status, got %+v", stale)
+	}
+	for _, call := range runner.calls {
+		if call == staleStatusCall {
+			t.Fatalf("expected status call for prunable worktree to be skipped, calls=%#v", runner.calls)
+		}
+	}
+}
+
 func TestService_DiscoverWorktrees(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary Git repositories and worktrees")
@@ -133,6 +224,7 @@ func TestService_DiscoverBranches(t *testing.T) {
 	runGit(t, repoDir, "commit", "-m", "initial")
 	runGit(t, repoDir, "branch", "local-only")
 	runGit(t, repoDir, "update-ref", "refs/remotes/origin/remote-only", "HEAD")
+	runGit(t, repoDir, "remote", "add", "origin", "https://github.com/0maru/gh-zen.git")
 
 	branches, err := (Service{}).DiscoverBranches(context.Background(), repoDir)
 	if err != nil {
@@ -144,6 +236,33 @@ func TestService_DiscoverBranches(t *testing.T) {
 	}
 	if !hasBranch(branches, Branch{Name: "remote-only", Remote: "origin", RemoteOnly: true}) {
 		t.Fatalf("expected remote-only branch in %+v", branches)
+	}
+}
+
+func TestService_DiscoverBranchesUsesRemoteNames(t *testing.T) {
+	repoDir := t.TempDir()
+	refCall := repoDir + " for-each-ref --format=%(refname) refs/heads refs/remotes"
+	remoteCall := repoDir + " remote"
+	runner := &fakeRunner{
+		outputs: map[string]string{
+			refCall: strings.Join([]string{
+				"refs/remotes/foo/bar/main",
+				"refs/remotes/foo/bar/feature/remote",
+			}, "\n"),
+			remoteCall: "foo/bar",
+		},
+	}
+
+	branches, err := (Service{Runner: runner}).DiscoverBranches(context.Background(), repoDir)
+	if err != nil {
+		t.Fatalf("expected branches to be discovered, got %v", err)
+	}
+	want := []Branch{
+		{Name: "main", Remote: "foo/bar", RemoteOnly: true},
+		{Name: "feature/remote", Remote: "foo/bar", RemoteOnly: true},
+	}
+	if !reflect.DeepEqual(branches, want) {
+		t.Fatalf("expected branches %+v, got %+v", want, branches)
 	}
 }
 

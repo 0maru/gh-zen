@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // PullRequestDiscovery provides pull request data for linking work items.
@@ -29,13 +30,14 @@ func (s PullRequestLinkService) LinkForRepo(ctx context.Context, repo RepoRef, i
 
 // LinkPullRequests matches pull requests to work items by branch head.
 func LinkPullRequests(items []WorkItem, prs []PullRequestRef) []WorkItem {
-	byBranch := map[string]PullRequestRef{}
+	byBranch := map[pullRequestBranchKey]PullRequestRef{}
 	for _, pr := range prs {
 		if pr.HeadBranch == "" {
 			continue
 		}
-		if _, exists := byBranch[pr.HeadBranch]; !exists {
-			byBranch[pr.HeadBranch] = pr
+		key := pullRequestBranchKey{owner: normalizedOwner(pr.HeadOwner), branch: pr.HeadBranch}
+		if existing, exists := byBranch[key]; !exists || preferredPullRequest(pr, existing) {
+			byBranch[key] = pr
 		}
 	}
 
@@ -44,7 +46,11 @@ func LinkPullRequests(items []WorkItem, prs []PullRequestRef) []WorkItem {
 		if out[i].Branch == nil || out[i].Branch.Name == "" {
 			continue
 		}
-		pr, ok := byBranch[out[i].Branch.Name]
+		out[i].PullRequest = nil
+		pr, ok := byBranch[pullRequestBranchKey{owner: normalizedOwner(out[i].Repo.Owner), branch: out[i].Branch.Name}]
+		if !ok {
+			pr, ok = byBranch[pullRequestBranchKey{branch: out[i].Branch.Name}]
+		}
 		if !ok {
 			continue
 		}
@@ -54,6 +60,19 @@ func LinkPullRequests(items []WorkItem, prs []PullRequestRef) []WorkItem {
 		}
 	}
 	return out
+}
+
+type pullRequestBranchKey struct {
+	owner  string
+	branch string
+}
+
+func normalizedOwner(owner string) string {
+	return strings.ToLower(owner)
+}
+
+func preferredPullRequest(candidate PullRequestRef, existing PullRequestRef) bool {
+	return strings.EqualFold(candidate.State, "open") && !strings.EqualFold(existing.State, "open")
 }
 
 func cloneWorkItems(items []WorkItem) []WorkItem {

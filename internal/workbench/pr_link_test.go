@@ -27,7 +27,7 @@ func TestLinkPullRequests_MatchesBranchBackedItems(t *testing.T) {
 		{ID: "issue-only", Repo: repo, Issue: &IssueRef{Number: 9, Certain: true}},
 	}
 	prs := []PullRequestRef{
-		{Number: 12, Title: "Add feature", State: "open", URL: "https://example.test/pr/12", HeadBranch: "feature", ReviewState: "review requested"},
+		{Number: 12, Title: "Add feature", State: "open", URL: "https://example.test/pr/12", HeadOwner: "0maru", HeadBranch: "feature", ReviewState: "review requested"},
 	}
 
 	got := LinkPullRequests(items, prs)
@@ -48,11 +48,64 @@ func TestLinkPullRequests_MatchesBranchBackedItems(t *testing.T) {
 	}
 }
 
+func TestLinkPullRequests_ClearsStaleBranchLink(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	stale := PullRequestRef{Number: 9, HeadOwner: "0maru", HeadBranch: "feature"}
+	items := []WorkItem{
+		{ID: "feature", Repo: repo, Branch: &BranchRef{Name: "feature"}, PullRequest: &stale},
+	}
+
+	got := LinkPullRequests(items, nil)
+	if got[0].PullRequest != nil {
+		t.Fatalf("expected stale PR link to be cleared, got %+v", got[0].PullRequest)
+	}
+	if items[0].PullRequest == nil {
+		t.Fatal("expected input work item to remain unchanged")
+	}
+}
+
+func TestLinkPullRequests_MatchesHeadOwner(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	items := []WorkItem{
+		{ID: "main", Repo: repo, Branch: &BranchRef{Name: "main"}},
+	}
+	prs := []PullRequestRef{
+		{Number: 1, State: "open", HeadOwner: "fork", HeadBranch: "main"},
+		{Number: 2, State: "open", HeadOwner: "0maru", HeadBranch: "main"},
+	}
+
+	got := LinkPullRequests(items, prs)
+	if got[0].PullRequest == nil || got[0].PullRequest.Number != 2 {
+		t.Fatalf("expected same-owner PR link, got %+v", got[0].PullRequest)
+	}
+
+	got = LinkPullRequests(items, prs[:1])
+	if got[0].PullRequest != nil {
+		t.Fatalf("expected fork PR with same branch name to be ignored, got %+v", got[0].PullRequest)
+	}
+}
+
+func TestLinkPullRequests_PrefersOpenPullRequestForSameHead(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	items := []WorkItem{
+		{ID: "feature", Repo: repo, Branch: &BranchRef{Name: "feature"}},
+	}
+	prs := []PullRequestRef{
+		{Number: 1, State: "closed", HeadOwner: "0maru", HeadBranch: "feature"},
+		{Number: 2, State: "open", HeadOwner: "0maru", HeadBranch: "feature"},
+	}
+
+	got := LinkPullRequests(items, prs)
+	if got[0].PullRequest == nil || got[0].PullRequest.Number != 2 {
+		t.Fatalf("expected open PR link, got %+v", got[0].PullRequest)
+	}
+}
+
 func TestPullRequestLinkService_LoadsPullRequestsForRepo(t *testing.T) {
 	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
 	service := PullRequestLinkService{
 		GitHub: fakePullRequestDiscovery{
-			prs: []PullRequestRef{{Number: 24, HeadBranch: "feature", State: "open"}},
+			prs: []PullRequestRef{{Number: 24, HeadOwner: "0maru", HeadBranch: "feature", State: "open"}},
 		},
 	}
 
