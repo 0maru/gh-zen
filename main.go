@@ -38,44 +38,35 @@ func run() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	data := loadStartupWorkbenchData(ctx, startupRepo)
+	data := loadStartupWorkbenchData(ctx, loadResult.Config, startupRepo)
 
 	_, err = tea.NewProgram(app.NewWithWorkbenchData(loadResult.Config, startupRepo.Repo, data), tea.WithAltScreen()).Run()
 	return err
 }
 
-func loadStartupWorkbenchData(ctx context.Context, startupRepo config.StartupRepository) app.WorkbenchData {
+func loadStartupWorkbenchData(ctx context.Context, cfg config.Config, startupRepo config.StartupRepository) app.WorkbenchData {
 	repo, ok := repoRefFromFullName(startupRepo.Repo)
 	if !ok {
 		return app.WorkbenchData{}
 	}
 
 	data := app.WorkbenchData{Repos: []workbench.RepoRef{repo}}
-	repoPath, ok := currentCheckoutPathForRepo(startupRepo.Repo)
-	if !ok {
+	resolvedPath := config.ResolveRepositoryPath(config.RepositoryPathOptions{
+		Repo:   startupRepo.Repo,
+		Config: cfg,
+	})
+	if resolvedPath.Path == "" {
 		return data
 	}
 
 	result := (workbench.RuntimeLoader{
 		Repo:     repo,
-		RepoPath: repoPath,
+		RepoPath: resolvedPath.Path,
 		Local:    localrepo.Service{},
 		GitHub:   github.CLIService{},
 	}).Load(ctx)
 	data.WorkItems = result.Items
 	return data
-}
-
-func currentCheckoutPathForRepo(repoName string) (string, bool) {
-	currentRepo, err := config.CurrentGitRepository("")
-	if err != nil || !sameRepoFullName(currentRepo, repoName) {
-		return "", false
-	}
-	repoPath, err := config.CurrentGitRepositoryRoot("")
-	if err != nil {
-		return "", false
-	}
-	return repoPath, true
 }
 
 func repoRefFromFullName(repoName string) (workbench.RepoRef, bool) {
