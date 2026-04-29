@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	cfgpkg "github.com/0maru/gh-zen/internal/config"
-	ghsvc "github.com/0maru/gh-zen/internal/github"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -81,9 +80,9 @@ type model struct {
 	preview              previewState
 	nextPreviewRequestID int
 	previewLoader        previewLoader
-	githubService        ghsvc.Service
-	githubSummary        ghsvc.RepositorySummary
-	githubError          string
+	workbenchReloader    WorkbenchReloader
+	nextReloadRequestID  int
+	activeReloadRequest  workbenchReloadRequest
 	workbenchFilter      cfgpkg.WorkbenchFilter
 	actionRunner         actionRunner
 	statusMessage        string
@@ -96,6 +95,12 @@ type model struct {
 type WorkbenchData struct {
 	Repos     []workbench.RepoRef
 	WorkItems []workbench.WorkItem
+	Reloader  WorkbenchReloader
+}
+
+// WorkbenchReloader reloads runtime workbench data for one selected repository.
+type WorkbenchReloader interface {
+	Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult
 }
 
 type repoViewFilter int
@@ -147,14 +152,15 @@ func newModelWithRuntimeConfig(cfg cfgpkg.Config, startupRepo string, loader pre
 
 func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data WorkbenchData, loader previewLoader) model {
 	m := model{
-		repos:           cloneRepoRefs(data.Repos),
-		workItems:       cloneWorkItems(data.WorkItems),
-		previewLoader:   loader,
-		workbenchFilter: cfg.Workbench.Filter,
-		actionRunner:    systemActionRunner{},
-		styles:          DefaultStyles(),
-		keys:            DefaultKeyMap(),
-		help:            newHelpModel(),
+		repos:             cloneRepoRefs(data.Repos),
+		workItems:         cloneWorkItems(data.WorkItems),
+		previewLoader:     loader,
+		workbenchReloader: data.Reloader,
+		workbenchFilter:   cfg.Workbench.Filter,
+		actionRunner:      systemActionRunner{},
+		styles:            DefaultStyles(),
+		keys:              DefaultKeyMap(),
+		help:              newHelpModel(),
 	}
 	m.applyStartupView(cfg.Startup.View)
 	if startupRepo == "" {
@@ -165,15 +171,14 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 	return m
 }
 
-func newModelWithGitHubService(service ghsvc.Service) model {
-	m := newModelWithPreviewLoader(fakeDelayedPreviewLoader(defaultPreviewDelay))
-	m.githubService = service
-	return m
+type workbenchReloadRequest struct {
+	requestID int
+	repo      workbench.RepoRef
 }
 
-type githubSummaryMsg struct {
-	summary ghsvc.RepositorySummary
-	err     error
+type workbenchReloadMsg struct {
+	request workbenchReloadRequest
+	result  workbench.RuntimeLoadResult
 }
 
 func (m model) Init() tea.Cmd {
@@ -203,9 +208,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionResultMsg:
 		m.handleActionResult(msg)
 		return m, nil
-	case githubSummaryMsg:
-		m.handleGitHubSummary(msg)
-		return m, nil
+	case workbenchReloadMsg:
+		return m, m.handleWorkbenchReload(msg)
 	case tea.KeyMsg:
 		if action, ok := m.matchedAction(msg); ok {
 			return m, m.handleAction(action)
@@ -321,12 +325,12 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.jumpFocusedSelection(true)
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionRefresh:
-		cmd := m.refreshGitHubSummary()
+		cmd := m.refreshWorkbenchData()
 		if cmd == nil {
 			m.statusMessage = "Refresh unavailable"
 			return nil
 		}
-		m.statusMessage = "Refreshing GitHub data..."
+		m.statusMessage = "Reloading workbench data..."
 		return cmd
 	case actionOpenPullRequest:
 		return m.openPullRequest()
@@ -442,30 +446,46 @@ func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
 	return "", "", false
 }
 
-func (m model) refreshGitHubSummary() tea.Cmd {
-	if m.githubService == nil {
+func (m *model) refreshWorkbenchData() tea.Cmd {
+	if m.workbenchReloader == nil {
 		return nil
 	}
 	repo, ok := m.selectedRepoRef()
 	if !ok {
 		return nil
 	}
-	repoName := repo.FullName()
+	m.nextReloadRequestID++
+	request := workbenchReloadRequest{
+		requestID: m.nextReloadRequestID,
+		repo:      repo,
+	}
+	m.activeReloadRequest = request
 	return func() tea.Msg {
-		summary, err := m.githubService.RepositorySummary(context.Background(), repoName)
-		return githubSummaryMsg{summary: summary, err: err}
+		return workbenchReloadMsg{
+			request: request,
+			result:  m.workbenchReloader.Load(context.Background(), repo),
+		}
 	}
 }
 
-func (m *model) handleGitHubSummary(msg githubSummaryMsg) {
-	if msg.err != nil {
-		m.githubError = msg.err.Error()
-		m.statusMessage = "Refresh failed: " + msg.err.Error()
-		return
+func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
+	if msg.request != m.activeReloadRequest {
+		return nil
 	}
-	m.githubError = ""
-	m.githubSummary = msg.summary
-	m.statusMessage = "Refreshed GitHub data"
+	repo, ok := m.selectedRepoRef()
+	if !ok || repo != msg.request.repo {
+		m.statusMessage = ""
+		return nil
+	}
+
+	selectedWorkItemID := ""
+	if item, ok := m.selectedWorkItem(); ok {
+		selectedWorkItemID = item.ID
+	}
+	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+	m.restoreSelectedWorkItem(selectedWorkItemID)
+	m.statusMessage = "Reloaded workbench data"
+	return m.startPreviewLoadForCurrentItem()
 }
 
 func (m *model) focusNextPane() {
@@ -666,6 +686,42 @@ func filterWorkItems(items []workbench.WorkItem, keep func(workbench.WorkItem) b
 		}
 	}
 	return out
+}
+
+func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, replacement []workbench.WorkItem) []workbench.WorkItem {
+	out := make([]workbench.WorkItem, 0, len(items)+len(replacement))
+	replaced := false
+	for _, item := range items {
+		if item.Repo == repo {
+			if !replaced {
+				out = append(out, replacement...)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, item)
+	}
+	if !replaced {
+		out = append(out, replacement...)
+	}
+	return out
+}
+
+func (m *model) restoreSelectedWorkItem(workItemID string) {
+	items := m.visibleWorkItems()
+	if len(items) == 0 {
+		m.selectedItem = 0
+		return
+	}
+	if workItemID != "" {
+		for i, item := range items {
+			if item.ID == workItemID {
+				m.selectedItem = i
+				return
+			}
+		}
+	}
+	m.selectedItem = clamp(m.selectedItem, 0, len(items)-1)
 }
 
 func cloneRepoRefs(repos []workbench.RepoRef) []workbench.RepoRef {
