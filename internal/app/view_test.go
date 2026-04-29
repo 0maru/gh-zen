@@ -106,7 +106,7 @@ func TestView_FullHelpShowsContextualActions(t *testing.T) {
 	m.help.ShowAll = true
 	got := ansi.Strip(m.View())
 
-	for _, want := range []string{"enter/o open", "copy", "refresh"} {
+	for _, want := range []string{"p open PR", "i open issue", "y copy URL", "Y copy path", "r refresh"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected full help to include %q, got:\n%s", want, got)
 		}
@@ -120,7 +120,7 @@ func TestView_FullHelpShowsContextualActions(t *testing.T) {
 	if strings.Contains(got, "j down") || strings.Contains(got, "G bottom") {
 		t.Fatalf("expected preview full help to omit movement keys, got:\n%s", got)
 	}
-	if !strings.Contains(got, "enter/o open") || !strings.Contains(got, "refresh") {
+	if !strings.Contains(got, "p open PR") || !strings.Contains(got, "r refresh") {
 		t.Fatalf("expected preview full help to keep actions, got:\n%s", got)
 	}
 }

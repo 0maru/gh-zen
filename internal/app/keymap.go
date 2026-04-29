@@ -20,8 +20,10 @@ const (
 	actionFocusPane3        actionID = "focus_pane_3"
 	actionToggleHelp        actionID = "toggle_help"
 	actionRefresh           actionID = "refresh"
-	actionOpen              actionID = "open"
-	actionCopy              actionID = "copy"
+	actionOpenPullRequest   actionID = "open_pr"
+	actionOpenIssue         actionID = "open_issue"
+	actionCopyURL           actionID = "copy_url"
+	actionCopyWorktreePath  actionID = "copy_worktree_path"
 	actionQuit              actionID = "quit"
 )
 
@@ -42,8 +44,10 @@ type workbenchKeyMap struct {
 	FocusPane3        key.Binding
 	ToggleHelp        key.Binding
 	Refresh           key.Binding
-	Open              key.Binding
-	Copy              key.Binding
+	OpenPullRequest   key.Binding
+	OpenIssue         key.Binding
+	CopyURL           key.Binding
+	CopyWorktreePath  key.Binding
 	Quit              key.Binding
 }
 
@@ -106,13 +110,21 @@ func DefaultKeyMap() workbenchKeyMap {
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
 		),
-		Open: key.NewBinding(
-			key.WithKeys("enter", "o"),
-			key.WithHelp("enter/o", "open"),
+		OpenPullRequest: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "open PR"),
 		),
-		Copy: key.NewBinding(
+		OpenIssue: key.NewBinding(
+			key.WithKeys("i"),
+			key.WithHelp("i", "open issue"),
+		),
+		CopyURL: key.NewBinding(
 			key.WithKeys("y"),
-			key.WithHelp("y", "copy"),
+			key.WithHelp("y", "copy URL"),
+		),
+		CopyWorktreePath: key.NewBinding(
+			key.WithKeys("Y"),
+			key.WithHelp("Y", "copy path"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "esc", "ctrl+c"),
@@ -135,8 +147,10 @@ func (k workbenchKeyMap) actionBindings() []actionBinding {
 		{id: actionJumpTop, binding: k.JumpTop},
 		{id: actionJumpBottom, binding: k.JumpBottom},
 		{id: actionRefresh, binding: k.Refresh},
-		{id: actionOpen, binding: k.Open},
-		{id: actionCopy, binding: k.Copy},
+		{id: actionOpenPullRequest, binding: k.OpenPullRequest},
+		{id: actionOpenIssue, binding: k.OpenIssue},
+		{id: actionCopyURL, binding: k.CopyURL},
+		{id: actionCopyWorktreePath, binding: k.CopyWorktreePath},
 	}
 }
 
@@ -144,7 +158,7 @@ func (k workbenchKeyMap) contextualHelp(focus paneFocus, visiblePanes []paneFocu
 	paneNumbers := k.visiblePaneBinding(visiblePanes)
 	paneKeys := combinedBinding("pane", k.FocusPreviousPane, k.FocusNextPane)
 	system := []key.Binding{k.ToggleHelp, k.Quit}
-	actions := []key.Binding{k.Open, k.Copy, k.Refresh}
+	actions := []key.Binding{k.OpenPullRequest, k.OpenIssue, k.CopyURL, k.CopyWorktreePath, k.Refresh}
 	panes := []key.Binding{k.FocusPreviousPane, k.FocusNextPane, paneNumbers}
 
 	short := []key.Binding{paneNumbers, paneKeys, k.ToggleHelp, k.Quit}

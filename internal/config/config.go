@@ -208,8 +208,10 @@ func Defaults() Config {
 			"focus_pane_3":        {"3"},
 			"toggle_help":         {"?"},
 			"refresh":             {"r"},
-			"open":                {"enter", "o"},
-			"copy":                {"y"},
+			"open_pr":             {"p"},
+			"open_issue":          {"i"},
+			"copy_url":            {"y"},
+			"copy_worktree_path":  {"Y"},
 			"quit":                {"q", "esc", "ctrl+c"},
 		},
 		Repos: ReposConfig{
