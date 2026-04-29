@@ -14,6 +14,7 @@ trustworthy.
 - [0006: Use Repository Workbench as the Primary Navigation Model](0006-use-repository-workbench-as-the-primary-navigation-model.md)
 - [0007: Use Layered Configuration With Terminal Profiles](0007-use-layered-configuration-with-terminal-profiles.md)
 - [0008: Use Semantic Style Tokens for TUI Theming](0008-use-semantic-style-tokens-for-tui-theming.md)
+- [0009: Use a Runtime Data Pipeline for the Repository Workbench](0009-use-a-runtime-data-pipeline-for-the-repository-workbench.md)
 
 ## Status Values
 
