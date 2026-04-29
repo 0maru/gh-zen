@@ -63,9 +63,10 @@ The workflow uses `cli/gh-extension-precompile@v2` to build platform-specific
 GitHub CLI extension assets from the root Go package and upload them to the
 matching GitHub Release.
 
-Release candidates can use prerelease tags such as `v0.1.0-rc.1`. GitHub CLI
-will install published release assets with:
+Release candidates can use prerelease tags such as `v0.1.0-rc.1`. To test a
+specific prerelease, pin the tag explicitly because GitHub CLI resolves an
+unpinned install to the latest stable release when one exists:
 
 ```sh
-gh extension install 0maru/gh-zen
+gh extension install 0maru/gh-zen --pin v0.1.0-rc.1
 ```
