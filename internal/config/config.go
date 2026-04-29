@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -320,7 +321,7 @@ func Validate(cfg Config) error {
 	if !isSafeIdentifier(cfg.UI.Theme) {
 		problems = append(problems, Problem{Path: "ui.theme", Message: "must be a safe identifier"})
 	}
-	if cfg.UI.PreviewWidth <= 0 || cfg.UI.PreviewWidth >= 1 {
+	if math.IsNaN(cfg.UI.PreviewWidth) || cfg.UI.PreviewWidth <= 0 || cfg.UI.PreviewWidth >= 1 {
 		problems = append(problems, Problem{Path: "ui.preview_width", Message: "must be greater than 0 and less than 1"})
 	}
 

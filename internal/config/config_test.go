@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -214,6 +215,19 @@ func TestValidate_RejectsInvalidKnownValues(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected validation error to mention %q, got %q", want, err.Error())
 		}
+	}
+}
+
+func TestValidate_RejectsNaNPreviewWidth(t *testing.T) {
+	cfg := Defaults()
+	cfg.UI.PreviewWidth = math.NaN()
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "ui.preview_width") {
+		t.Fatalf("expected validation error to mention ui.preview_width, got %q", err.Error())
 	}
 }
 
