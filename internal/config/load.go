@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -108,7 +110,11 @@ func Load(options LoadOptions) (LoadResult, error) {
 	for _, source := range sourcePaths {
 		layer, diagnostics, loaded, err := loadLayer(source.path)
 		if err != nil {
-			return LoadResult{}, fmt.Errorf("%s config %q: %w", source.kind, source.path, err)
+			result.Diagnostics = append(result.Diagnostics, diagnostics...)
+			if loaded {
+				result.Sources = append(result.Sources, ConfigSource{Kind: source.kind, Path: source.path})
+			}
+			return result, fmt.Errorf("%s config %q: %w", source.kind, source.path, err)
 		}
 		if !loaded {
 			continue
@@ -120,7 +126,7 @@ func Load(options LoadOptions) (LoadResult, error) {
 
 	result.Config = MergeLayers(layers...)
 	if err := Validate(result.Config); err != nil {
-		return LoadResult{}, err
+		return result, err
 	}
 	return result, nil
 }
@@ -135,7 +141,7 @@ func loadLayer(path string) (PartialConfig, []Diagnostic, bool, error) {
 	}
 
 	var layer PartialConfig
-	if err := toml.Unmarshal(data, &layer); err != nil {
+	if err := decodeLayer(data, &layer); err != nil {
 		return PartialConfig{}, nil, false, err
 	}
 	diagnostics, err := ValidateLayer(layer)
@@ -143,6 +149,32 @@ func loadLayer(path string) (PartialConfig, []Diagnostic, bool, error) {
 		return PartialConfig{}, diagnostics, true, err
 	}
 	return layer, diagnostics, true, nil
+}
+
+func decodeLayer(data []byte, layer *PartialConfig) error {
+	decoder := toml.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(layer); err != nil {
+		var strictErr *toml.StrictMissingError
+		if !errors.As(err, &strictErr) {
+			return err
+		}
+		layer.UnknownKeys = strictMissingKeys(strictErr)
+	}
+	return nil
+}
+
+func strictMissingKeys(err *toml.StrictMissingError) []string {
+	if err == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(err.Errors))
+	for _, decodeErr := range err.Errors {
+		if key := decodeErr.Key(); len(key) > 0 {
+			keys = append(keys, strings.Join(key, "."))
+		}
+	}
+	return keys
 }
 
 func resolveHomeDir(explicit string) (string, error) {

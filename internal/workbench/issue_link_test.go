@@ -8,21 +8,37 @@ import (
 )
 
 type fakeIssueCheckDiscovery struct {
-	issues []IssueRef
-	checks CheckSummary
-	err    error
+	issues      []IssueRef
+	issueErr    error
+	checks      CheckSummary
+	checksByRef map[string]CheckSummary
+	checkErr    error
+	checkErrs   map[string]error
+	err         error
 }
 
 func (f fakeIssueCheckDiscovery) Issues(context.Context, string) ([]IssueRef, error) {
+	if f.issueErr != nil {
+		return nil, f.issueErr
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.issues, nil
 }
 
-func (f fakeIssueCheckDiscovery) CheckSummary(context.Context, string, string) (CheckSummary, error) {
+func (f fakeIssueCheckDiscovery) CheckSummary(_ context.Context, _ string, ref string) (CheckSummary, error) {
+	if err := f.checkErrs[ref]; err != nil {
+		return CheckSummary{}, err
+	}
+	if f.checkErr != nil {
+		return CheckSummary{}, f.checkErr
+	}
 	if f.err != nil {
 		return CheckSummary{}, f.err
+	}
+	if checks, ok := f.checksByRef[ref]; ok {
+		return checks, nil
 	}
 	return f.checks, nil
 }
@@ -116,6 +132,72 @@ func TestIssueCheckLinkService_AddsChecks(t *testing.T) {
 	}
 	if got[0].Checks.State != CheckPassing || got[0].Checks.Passing != 2 {
 		t.Fatalf("expected check summary, got %+v", got[0].Checks)
+	}
+}
+
+func TestIssueCheckLinkService_ContinuesWhenIssueDiscoveryFails(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	service := IssueCheckLinkService{
+		GitHub: fakeIssueCheckDiscovery{
+			issueErr: errors.New("issues failed"),
+			checks:   CheckSummary{State: CheckPassing, Passing: 1},
+		},
+	}
+
+	got := service.LinkForRepo(context.Background(), repo, []WorkItem{{
+		ID:     "feature",
+		Repo:   repo,
+		Branch: &BranchRef{Name: "feature/issue-123-config"},
+		PullRequest: &PullRequestRef{
+			Number:     24,
+			HeadBranch: "feature/issue-123-config",
+			LinkedIssues: []IssueRef{
+				{Number: 123, Title: "Config discovery", State: "open", URL: "https://example.test/issues/123", Certain: true},
+			},
+		},
+	}})
+	if len(got) != 2 {
+		t.Fatalf("expected enriched item plus error item, got %+v", got)
+	}
+	if got[0].Issue == nil || got[0].Issue.Number != 123 {
+		t.Fatalf("expected PR metadata issue despite issue discovery failure, got %+v", got[0].Issue)
+	}
+	if got[0].Checks.State != CheckPassing || got[0].Checks.Passing != 1 {
+		t.Fatalf("expected checks to continue after issue discovery failure, got %+v", got[0].Checks)
+	}
+	if got[1].Local == nil || !strings.Contains(got[1].Local.Summary, "issues failed") {
+		t.Fatalf("expected issue discovery error summary, got %+v", got[1].Local)
+	}
+}
+
+func TestIssueCheckLinkService_ContinuesWhenSingleCheckFails(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	service := IssueCheckLinkService{
+		GitHub: fakeIssueCheckDiscovery{
+			checksByRef: map[string]CheckSummary{
+				"second": {State: CheckPassing, Passing: 2},
+			},
+			checkErrs: map[string]error{
+				"first": errors.New("first checks failed"),
+			},
+		},
+	}
+
+	got := service.LinkForRepo(context.Background(), repo, []WorkItem{
+		{ID: "first", Repo: repo, Branch: &BranchRef{Name: "first"}, PullRequest: &PullRequestRef{Number: 1, HeadBranch: "first"}},
+		{ID: "second", Repo: repo, Branch: &BranchRef{Name: "second"}, PullRequest: &PullRequestRef{Number: 2, HeadBranch: "second"}},
+	})
+	if len(got) != 3 {
+		t.Fatalf("expected two items plus one error item, got %+v", got)
+	}
+	if got[0].Checks.State != CheckUnknown {
+		t.Fatalf("expected failed check item to remain unknown, got %+v", got[0].Checks)
+	}
+	if got[1].Checks.State != CheckPassing || got[1].Checks.Passing != 2 {
+		t.Fatalf("expected later PR checks to be linked, got %+v", got[1].Checks)
+	}
+	if got[2].Local == nil || !strings.Contains(got[2].Local.Summary, "first checks failed") {
+		t.Fatalf("expected check discovery error summary, got %+v", got[2].Local)
 	}
 }
 
