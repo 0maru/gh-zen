@@ -85,6 +85,14 @@ func TestPorcelainStatusEntries(t *testing.T) {
 	}
 }
 
+func TestTrimGitOutputPreservesLeadingStatusColumns(t *testing.T) {
+	got := trimGitOutput([]byte(" M file.go\n?? new.go\n"))
+	want := " M file.go\n?? new.go"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestService_DiscoverWorktreesSkipsStatusForPrunableWorktrees(t *testing.T) {
 	repoDir := t.TempDir()
 	staleDir := filepath.Join(t.TempDir(), "stale")

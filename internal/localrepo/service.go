@@ -29,14 +29,14 @@ type Runner interface {
 // GitRunner runs real Git commands.
 type GitRunner struct{}
 
-// Run executes git with -C dir and returns trimmed combined output.
+// Run executes git with -C dir and returns combined output without trailing newlines.
 func (GitRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
-	return strings.TrimSpace(string(output)), nil
+	return trimGitOutput(output), nil
 }
 
 // Service discovers local repository state behind a Git command boundary.
@@ -131,6 +131,10 @@ func porcelainStatusEntries(output string) []string {
 		return nil
 	}
 	return strings.Split(output, "\n")
+}
+
+func trimGitOutput(output []byte) string {
+	return strings.TrimRight(string(output), "\r\n")
 }
 
 func missingPath(path string) bool {
