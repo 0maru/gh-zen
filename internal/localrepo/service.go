@@ -58,6 +58,12 @@ func (s Service) DiscoverWorktrees(ctx context.Context, repoPath string) ([]Work
 	}
 	for i := range worktrees {
 		worktree := &worktrees[i]
+		if worktree.Prunable {
+			if missingPath(worktree.Path) {
+				worktree.Missing = true
+			}
+			continue
+		}
 		if missingPath(worktree.Path) {
 			worktree.Missing = true
 			continue
@@ -120,7 +126,7 @@ func ParseWorktreeListPorcelain(output string) ([]Worktree, error) {
 }
 
 func porcelainStatusEntries(output string) []string {
-	output = strings.TrimSpace(output)
+	output = strings.TrimRight(output, "\r\n")
 	if output == "" {
 		return nil
 	}

@@ -2,6 +2,7 @@ package localrepo
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,25 @@ import (
 	"strings"
 	"testing"
 )
+
+type fakeRunner struct {
+	outputs map[string]string
+	errors  map[string]error
+	calls   []string
+}
+
+func (r *fakeRunner) Run(_ context.Context, dir string, args ...string) (string, error) {
+	call := dir + " " + strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	if err := r.errors[call]; err != nil {
+		return "", err
+	}
+	output, ok := r.outputs[call]
+	if !ok {
+		return "", fmt.Errorf("unexpected git call %s", call)
+	}
+	return output, nil
+}
 
 func TestParseWorktreeListPorcelain(t *testing.T) {
 	output := strings.TrimSpace(`
@@ -56,12 +76,57 @@ func TestParseWorktreeListPorcelain_RejectsMalformedBlocks(t *testing.T) {
 
 func TestPorcelainStatusEntries(t *testing.T) {
 	got := porcelainStatusEntries(" M file.go\n?? new.go\n")
-	want := []string{"M file.go", "?? new.go"}
+	want := []string{" M file.go", "?? new.go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected status entries %#v, got %#v", want, got)
 	}
 	if entries := porcelainStatusEntries(""); len(entries) != 0 {
 		t.Fatalf("expected empty status entries, got %#v", entries)
+	}
+}
+
+func TestService_DiscoverWorktreesSkipsStatusForPrunableWorktrees(t *testing.T) {
+	repoDir := t.TempDir()
+	staleDir := filepath.Join(t.TempDir(), "stale")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatalf("mkdir stale worktree: %v", err)
+	}
+
+	listCall := repoDir + " worktree list --porcelain"
+	repoStatusCall := repoDir + " status --porcelain=v1"
+	staleStatusCall := staleDir + " status --porcelain=v1"
+	runner := &fakeRunner{
+		outputs: map[string]string{
+			listCall: strings.Join([]string{
+				"worktree " + repoDir,
+				"HEAD 1111111111111111111111111111111111111111",
+				"branch refs/heads/main",
+				"",
+				"worktree " + staleDir,
+				"HEAD 2222222222222222222222222222222222222222",
+				"branch refs/heads/stale",
+				"prunable gitdir file points to non-existent location",
+			}, "\n"),
+			repoStatusCall: "",
+		},
+		errors: map[string]error{
+			staleStatusCall: fmt.Errorf("status should not be called"),
+		},
+	}
+
+	worktrees, err := (Service{Runner: runner}).DiscoverWorktrees(context.Background(), repoDir)
+	if err != nil {
+		t.Fatalf("expected prunable worktree to be skipped, got %v", err)
+	}
+
+	stale := requireWorktree(t, worktrees, staleDir)
+	if !stale.Prunable || stale.Dirty || len(stale.StatusEntries) != 0 {
+		t.Fatalf("expected prunable worktree without status, got %+v", stale)
+	}
+	for _, call := range runner.calls {
+		if call == staleStatusCall {
+			t.Fatalf("expected status call for prunable worktree to be skipped, calls=%#v", runner.calls)
+		}
 	}
 }
 
