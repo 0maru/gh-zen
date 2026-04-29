@@ -85,6 +85,45 @@ func TestPorcelainStatusEntries(t *testing.T) {
 	}
 }
 
+func TestParseBranchRefs(t *testing.T) {
+	output := strings.TrimSpace(`
+refs/heads/main
+refs/heads/feature/local
+refs/remotes/origin/HEAD
+refs/remotes/origin/main
+refs/remotes/upstream/feature/remote
+`)
+
+	got := ParseBranchRefs(output)
+	want := []Branch{
+		{Name: "main"},
+		{Name: "feature/local"},
+		{Name: "main", Remote: "origin", RemoteOnly: true},
+		{Name: "feature/remote", Remote: "upstream", RemoteOnly: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected branches %+v, got %+v", want, got)
+	}
+}
+
+func TestParseBranchRefsWithRemotes_DisambiguatesRemoteNamesContainingSlash(t *testing.T) {
+	output := strings.TrimSpace(`
+refs/remotes/foo/bar/main
+refs/remotes/foo/bar/feature/remote
+refs/remotes/foo/other
+`)
+
+	got := ParseBranchRefsWithRemotes(output, []string{"foo", "foo/bar"})
+	want := []Branch{
+		{Name: "main", Remote: "foo/bar", RemoteOnly: true},
+		{Name: "feature/remote", Remote: "foo/bar", RemoteOnly: true},
+		{Name: "other", Remote: "foo", RemoteOnly: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected branches %+v, got %+v", want, got)
+	}
+}
+
 func TestTrimGitOutputPreservesLeadingStatusColumns(t *testing.T) {
 	got := trimGitOutput([]byte(" M file.go\n?? new.go\n"))
 	want := " M file.go\n?? new.go"
@@ -174,6 +213,59 @@ func TestService_DiscoverWorktrees(t *testing.T) {
 	}
 }
 
+func TestService_DiscoverBranches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repository branch refs")
+	}
+
+	repoDir := initTempGitRepo(t)
+	writeFile(t, filepath.Join(repoDir, "README.md"), "initial\n")
+	runGit(t, repoDir, "add", "README.md")
+	runGit(t, repoDir, "commit", "-m", "initial")
+	runGit(t, repoDir, "branch", "local-only")
+	runGit(t, repoDir, "update-ref", "refs/remotes/origin/remote-only", "HEAD")
+	runGit(t, repoDir, "remote", "add", "origin", "https://github.com/0maru/gh-zen.git")
+
+	branches, err := (Service{}).DiscoverBranches(context.Background(), repoDir)
+	if err != nil {
+		t.Fatalf("expected branches to be discovered, got %v", err)
+	}
+
+	if !hasBranch(branches, Branch{Name: "local-only"}) {
+		t.Fatalf("expected local-only branch in %+v", branches)
+	}
+	if !hasBranch(branches, Branch{Name: "remote-only", Remote: "origin", RemoteOnly: true}) {
+		t.Fatalf("expected remote-only branch in %+v", branches)
+	}
+}
+
+func TestService_DiscoverBranchesUsesRemoteNames(t *testing.T) {
+	repoDir := t.TempDir()
+	refCall := repoDir + " for-each-ref --format=%(refname) refs/heads refs/remotes"
+	remoteCall := repoDir + " remote"
+	runner := &fakeRunner{
+		outputs: map[string]string{
+			refCall: strings.Join([]string{
+				"refs/remotes/foo/bar/main",
+				"refs/remotes/foo/bar/feature/remote",
+			}, "\n"),
+			remoteCall: "foo/bar",
+		},
+	}
+
+	branches, err := (Service{Runner: runner}).DiscoverBranches(context.Background(), repoDir)
+	if err != nil {
+		t.Fatalf("expected branches to be discovered, got %v", err)
+	}
+	want := []Branch{
+		{Name: "main", Remote: "foo/bar", RemoteOnly: true},
+		{Name: "feature/remote", Remote: "foo/bar", RemoteOnly: true},
+	}
+	if !reflect.DeepEqual(branches, want) {
+		t.Fatalf("expected branches %+v, got %+v", want, branches)
+	}
+}
+
 func TestService_DiscoverWorktreesMarksMissingWorktrees(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary Git repositories and worktrees")
@@ -210,6 +302,15 @@ func requireWorktree(t *testing.T, worktrees []Worktree, path string) Worktree {
 	}
 	t.Fatalf("worktree %q not found in %+v", path, worktrees)
 	return Worktree{}
+}
+
+func hasBranch(branches []Branch, want Branch) bool {
+	for _, branch := range branches {
+		if branch == want {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalPath(t *testing.T, path string) string {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -19,6 +20,13 @@ type Worktree struct {
 	PrunableReason string
 	Dirty          bool
 	StatusEntries  []string
+}
+
+// Branch describes one local or remote branch ref discoverable in Git.
+type Branch struct {
+	Name       string
+	Remote     string
+	RemoteOnly bool
 }
 
 // Runner executes Git commands for the local repository service.
@@ -78,6 +86,20 @@ func (s Service) DiscoverWorktrees(ctx context.Context, repoPath string) ([]Work
 	return worktrees, nil
 }
 
+// DiscoverBranches lists local and remote branch refs known to the repository.
+func (s Service) DiscoverBranches(ctx context.Context, repoPath string) ([]Branch, error) {
+	runner := s.runner()
+	output, err := runner.Run(ctx, repoPath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
+	if err != nil {
+		return nil, fmt.Errorf("list branches: %w", err)
+	}
+	remoteOutput, err := runner.Run(ctx, repoPath, "remote")
+	if err != nil {
+		return nil, fmt.Errorf("list remotes: %w", err)
+	}
+	return ParseBranchRefsWithRemotes(output, parseRemoteNames(remoteOutput)), nil
+}
+
 func (s Service) runner() Runner {
 	if s.Runner != nil {
 		return s.Runner
@@ -123,6 +145,62 @@ func ParseWorktreeListPorcelain(output string) ([]Worktree, error) {
 		worktrees = append(worktrees, worktree)
 	}
 	return worktrees, nil
+}
+
+// ParseBranchRefs parses refnames from git for-each-ref --format=%(refname).
+func ParseBranchRefs(output string) []Branch {
+	return ParseBranchRefsWithRemotes(output, nil)
+}
+
+// ParseBranchRefsWithRemotes parses refnames using known remote names for disambiguation.
+func ParseBranchRefsWithRemotes(output string, remotes []string) []Branch {
+	branches := []Branch{}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		ref := strings.TrimSpace(line)
+		switch {
+		case ref == "":
+			continue
+		case strings.HasPrefix(ref, "refs/heads/"):
+			branches = append(branches, Branch{Name: strings.TrimPrefix(ref, "refs/heads/")})
+		case strings.HasPrefix(ref, "refs/remotes/"):
+			remoteRef := strings.TrimPrefix(ref, "refs/remotes/")
+			remote, name, ok := splitRemoteBranch(remoteRef, remotes)
+			if !ok || name == "" || name == "HEAD" {
+				continue
+			}
+			branches = append(branches, Branch{Name: name, Remote: remote, RemoteOnly: true})
+		}
+	}
+	return branches
+}
+
+func parseRemoteNames(output string) []string {
+	remotes := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		remote := strings.TrimSpace(line)
+		if remote != "" {
+			remotes = append(remotes, remote)
+		}
+	}
+	return remotes
+}
+
+func splitRemoteBranch(remoteRef string, remotes []string) (string, string, bool) {
+	for _, remote := range remotesByLength(remotes) {
+		prefix := remote + "/"
+		if strings.HasPrefix(remoteRef, prefix) {
+			return remote, strings.TrimPrefix(remoteRef, prefix), true
+		}
+	}
+	return strings.Cut(remoteRef, "/")
+}
+
+func remotesByLength(remotes []string) []string {
+	out := append([]string(nil), remotes...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return len(out[i]) > len(out[j])
+	})
+	return out
 }
 
 func porcelainStatusEntries(output string) []string {
