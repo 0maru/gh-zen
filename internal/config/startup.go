@@ -36,6 +36,7 @@ type StartupRepositoryOptions struct {
 	WorkingDir          string
 	Env                 map[string]string
 	CurrentRepoResolver CurrentRepoResolver
+	AllowMissingCurrent bool
 }
 
 // ResolveStartupRepository applies the ADR 0007 startup repository precedence.
@@ -56,6 +57,9 @@ func ResolveStartupRepository(options StartupRepositoryOptions) (StartupReposito
 	}
 	repo, err := resolver(options.WorkingDir)
 	if err != nil {
+		if options.AllowMissingCurrent {
+			return StartupRepository{Source: StartupRepoCurrentGit}, nil
+		}
 		return StartupRepository{}, fmt.Errorf("resolve startup repository from current Git repository: %w", err)
 	}
 	return startupRepoFromValue(repo, StartupRepoCurrentGit, "current Git repository")

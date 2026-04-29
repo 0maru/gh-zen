@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -11,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	cfgpkg "github.com/0maru/gh-zen/internal/config"
 	ghsvc "github.com/0maru/gh-zen/internal/github"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
@@ -81,6 +84,7 @@ type model struct {
 	githubService        ghsvc.Service
 	githubSummary        ghsvc.RepositorySummary
 	githubError          string
+	workbenchFilter      cfgpkg.WorkbenchFilter
 	styles               Styles
 	keys                 workbenchKeyMap
 	help                 help.Model
@@ -109,19 +113,33 @@ func New() tea.Model {
 	return newModel()
 }
 
+func NewWithConfig(cfg cfgpkg.Config, startupRepo string) tea.Model {
+	return newModelWithRuntimeConfig(cfg, startupRepo, fakeDelayedPreviewLoader(defaultPreviewDelay))
+}
+
 func newModel() model {
 	return newModelWithPreviewLoader(fakeDelayedPreviewLoader(defaultPreviewDelay))
 }
 
 func newModelWithPreviewLoader(loader previewLoader) model {
+	return newModelWithRuntimeConfig(cfgpkg.Defaults(), "", loader)
+}
+
+func newModelWithRuntimeConfig(cfg cfgpkg.Config, startupRepo string, loader previewLoader) model {
 	m := model{
-		repos:         workbench.FakeRepos(),
-		workItems:     workbench.FakeWorkItems(),
-		previewLoader: loader,
-		styles:        DefaultStyles(),
-		keys:          DefaultKeyMap(),
-		help:          newHelpModel(),
+		repos:           workbench.FakeRepos(),
+		workItems:       workbench.FakeWorkItems(),
+		previewLoader:   loader,
+		workbenchFilter: cfg.Workbench.Filter,
+		styles:          DefaultStyles(),
+		keys:            DefaultKeyMap(),
+		help:            newHelpModel(),
 	}
+	m.applyStartupView(cfg.Startup.View)
+	if startupRepo == "" {
+		startupRepo = cfg.Startup.Repo
+	}
+	m.applyStartupRepo(startupRepo)
 	_ = m.startPreviewLoadForCurrentItem()
 	return m
 }
@@ -472,7 +490,9 @@ func (m model) visibleWorkItems() []workbench.WorkItem {
 		if !ok {
 			return nil
 		}
-		return filterWorkItems(m.workItems, view.matches)
+		return filterWorkItems(m.workItems, func(item workbench.WorkItem) bool {
+			return view.matches(item) && matchesWorkbenchFilter(item, m.workbenchFilter)
+		})
 	}
 
 	repo, ok := m.selectedRepoRef()
@@ -480,7 +500,7 @@ func (m model) visibleWorkItems() []workbench.WorkItem {
 		return nil
 	}
 	return filterWorkItems(m.workItems, func(item workbench.WorkItem) bool {
-		return item.Repo == repo
+		return item.Repo == repo && matchesWorkbenchFilter(item, m.workbenchFilter)
 	})
 }
 
@@ -519,6 +539,87 @@ func (v repoView) matches(item workbench.WorkItem) bool {
 	default:
 		return false
 	}
+}
+
+func (m *model) applyStartupView(view cfgpkg.StartupView) {
+	if view == cfgpkg.StartupViewWorkbench {
+		m.viewSelected = false
+	}
+}
+
+func (m *model) applyStartupRepo(repoName string) {
+	owner, name, ok := strings.Cut(repoName, "/")
+	if !ok || owner == "" || name == "" {
+		return
+	}
+	repo := workbench.RepoRef{Owner: owner, Name: name}
+	for i, existing := range m.repos {
+		if existing == repo {
+			m.selectedRepo = i
+			m.viewSelected = false
+			m.selectedItem = 0
+			return
+		}
+	}
+	m.repos = append(m.repos, repo)
+	m.selectedRepo = len(m.repos) - 1
+	m.viewSelected = false
+	m.selectedItem = 0
+}
+
+func matchesWorkbenchFilter(item workbench.WorkItem, filter cfgpkg.WorkbenchFilter) bool {
+	if filter.Worktree != "" {
+		if item.Worktree == nil || !matchPathFilter(filter.Worktree, item.Worktree.Path) {
+			return false
+		}
+	}
+	if filter.BranchPattern != "" {
+		if item.Branch == nil || !matchBranchFilter(filter.BranchPattern, item.Branch.Name) {
+			return false
+		}
+	}
+	switch filter.PullRequest {
+	case "", cfgpkg.PullRequestAny:
+	case cfgpkg.PullRequestPresent:
+		if item.PullRequest == nil {
+			return false
+		}
+	case cfgpkg.PullRequestAbsent:
+		if item.PullRequest != nil {
+			return false
+		}
+	}
+	switch filter.LocalStatus {
+	case "", cfgpkg.LocalStatusAny:
+	default:
+		if item.Local == nil || string(item.Local.State) != string(filter.LocalStatus) {
+			return false
+		}
+	}
+	return true
+}
+
+func workbenchFilterActive(filter cfgpkg.WorkbenchFilter) bool {
+	return filter.Worktree != "" ||
+		filter.BranchPattern != "" ||
+		(filter.PullRequest != "" && filter.PullRequest != cfgpkg.PullRequestAny) ||
+		(filter.LocalStatus != "" && filter.LocalStatus != cfgpkg.LocalStatusAny)
+}
+
+func matchBranchFilter(pattern string, branch string) bool {
+	return matchFilterPattern(pattern, branch, path.Match)
+}
+
+func matchPathFilter(pattern string, value string) bool {
+	return matchFilterPattern(pattern, value, filepath.Match)
+}
+
+func matchFilterPattern(pattern string, value string, match func(pattern string, name string) (bool, error)) bool {
+	if pattern == value {
+		return true
+	}
+	matched, err := match(pattern, value)
+	return err == nil && matched
 }
 
 func (m model) View() string {
@@ -596,7 +697,7 @@ func (m model) repoLines(width int, focused bool) []string {
 func (m model) workItemLines(width int, focused bool) []string {
 	items := m.visibleWorkItems()
 	if len(items) == 0 {
-		return []string{"  no work items"}
+		return []string{m.emptyWorkItemLine()}
 	}
 	lines := []string{}
 	for i, item := range items {
@@ -605,6 +706,13 @@ func (m model) workItemLines(width int, focused bool) []string {
 		lines = append(lines, truncate(row, width))
 	}
 	return lines
+}
+
+func (m model) emptyWorkItemLine() string {
+	if workbenchFilterActive(m.workbenchFilter) {
+		return "  no work items match filters"
+	}
+	return "  no work items"
 }
 
 func (m model) previewLines(width int) []string {

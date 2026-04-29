@@ -198,6 +198,51 @@ branch_patterns = ["agent/*"]
 	}
 }
 
+func TestLoad_TerminalProfileOverridesWorkbenchFilter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary filesystem config files")
+	}
+
+	homeDir := t.TempDir()
+	projectDir := t.TempDir()
+	writeFile(t, filepath.Join(projectDir, ".gh-zen.toml"), `
+[workbench.filter]
+branch_pattern = "feat/*"
+pull_request = "absent"
+local_status = "clean"
+`)
+	writeFile(t, filepath.Join(homeDir, ".config", "gh-zen", "terminals", "agent-a.toml"), `
+[workbench.filter]
+branch_pattern = "agent/*"
+pull_request = "present"
+local_status = "dirty"
+worktree = "~/worktrees/agent-a"
+`)
+
+	result, err := Load(LoadOptions{
+		HomeDir:    homeDir,
+		ProjectDir: projectDir,
+		Env:        map[string]string{envTerminalID: "agent-a"},
+	})
+	if err != nil {
+		t.Fatalf("expected config to load, got %v", err)
+	}
+
+	filter := result.Config.Workbench.Filter
+	if filter.BranchPattern != "agent/*" {
+		t.Fatalf("expected terminal branch pattern, got %q", filter.BranchPattern)
+	}
+	if filter.PullRequest != PullRequestPresent {
+		t.Fatalf("expected terminal pull request filter, got %q", filter.PullRequest)
+	}
+	if filter.LocalStatus != LocalStatusDirty {
+		t.Fatalf("expected terminal local status filter, got %q", filter.LocalStatus)
+	}
+	if filter.Worktree != "~/worktrees/agent-a" {
+		t.Fatalf("expected terminal worktree filter, got %q", filter.Worktree)
+	}
+}
+
 func TestLoad_UnknownKeysProduceDiagnostics(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary filesystem config files")

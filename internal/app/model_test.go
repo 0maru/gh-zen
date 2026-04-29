@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	cfgpkg "github.com/0maru/gh-zen/internal/config"
 	ghsvc "github.com/0maru/gh-zen/internal/github"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
@@ -517,6 +518,98 @@ func TestUpdate_RepositoryViewsFilterWorkItems(t *testing.T) {
 	failedChecks := mm.visibleWorkItems()
 	if len(failedChecks) != 1 || failedChecks[0].Checks.State != workbench.CheckFailing {
 		t.Fatalf("expected failed checks view to include only failing-check work, got %+v", failedChecks)
+	}
+}
+
+func TestNewWithConfig_AppliesStartupRepository(t *testing.T) {
+	cfg := cfgpkg.Defaults()
+	cfg.Startup.Repo = "0maru/dotfiles"
+
+	got := NewWithConfig(cfg, "").(model)
+	repo, ok := got.selectedRepoRef()
+	if !ok {
+		t.Fatalf("expected selected repository")
+	}
+	if repo.FullName() != "0maru/dotfiles" {
+		t.Fatalf("expected dotfiles startup repo, got %q", repo.FullName())
+	}
+}
+
+func TestVisibleWorkItems_AppliesWorkbenchFilter(t *testing.T) {
+	cfg := cfgpkg.Defaults()
+	cfg.Workbench.Filter = cfgpkg.WorkbenchFilter{
+		BranchPattern: "feat/*",
+		PullRequest:   cfgpkg.PullRequestPresent,
+		LocalStatus:   cfgpkg.LocalStatusDirty,
+	}
+	start := NewWithConfig(cfg, "0maru/gh-zen").(model)
+
+	items := start.visibleWorkItems()
+	if len(items) != 1 || items[0].ID != "worktree-config-loader" {
+		t.Fatalf("expected config loader work item, got %+v", items)
+	}
+}
+
+func TestMatchesWorkbenchFilter_CoversConfigFields(t *testing.T) {
+	item := workbench.WorkItem{
+		Branch:      &workbench.BranchRef{Name: "feat/config-loader"},
+		Worktree:    &workbench.WorktreeRef{Path: "~/workspaces/github.com/0maru/gh-zen-agent-a"},
+		PullRequest: &workbench.PullRequestRef{Number: 24},
+		Local:       &workbench.LocalStatus{State: workbench.LocalDirty},
+	}
+	cases := []struct {
+		name   string
+		filter cfgpkg.WorkbenchFilter
+		want   bool
+	}{
+		{
+			name:   "worktree exact path",
+			filter: cfgpkg.WorkbenchFilter{Worktree: "~/workspaces/github.com/0maru/gh-zen-agent-a"},
+			want:   true,
+		},
+		{
+			name:   "branch glob",
+			filter: cfgpkg.WorkbenchFilter{BranchPattern: "feat/*"},
+			want:   true,
+		},
+		{
+			name:   "pull request present",
+			filter: cfgpkg.WorkbenchFilter{PullRequest: cfgpkg.PullRequestPresent},
+			want:   true,
+		},
+		{
+			name:   "pull request absent mismatch",
+			filter: cfgpkg.WorkbenchFilter{PullRequest: cfgpkg.PullRequestAbsent},
+			want:   false,
+		},
+		{
+			name:   "local status",
+			filter: cfgpkg.WorkbenchFilter{LocalStatus: cfgpkg.LocalStatusDirty},
+			want:   true,
+		},
+		{
+			name:   "local status mismatch",
+			filter: cfgpkg.WorkbenchFilter{LocalStatus: cfgpkg.LocalStatusClean},
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesWorkbenchFilter(item, tc.filter); got != tc.want {
+				t.Fatalf("expected filter result %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestWorkItemLines_EmptyFilteredViewRendersClearly(t *testing.T) {
+	cfg := cfgpkg.Defaults()
+	cfg.Workbench.Filter = cfgpkg.WorkbenchFilter{BranchPattern: "missing/*"}
+	start := NewWithConfig(cfg, "0maru/gh-zen").(model)
+
+	lines := strings.Join(start.workItemLines(80, false), "\n")
+	if !strings.Contains(lines, "no work items match filters") {
+		t.Fatalf("expected filtered empty state, got %q", lines)
 	}
 }
 

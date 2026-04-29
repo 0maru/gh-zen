@@ -86,6 +86,21 @@ func TestResolveStartupRepository_RejectsInvalidStrongerSources(t *testing.T) {
 	}
 }
 
+func TestResolveStartupRepository_AllowsMissingCurrentGit(t *testing.T) {
+	got, err := ResolveStartupRepository(StartupRepositoryOptions{
+		Config:              Defaults(),
+		Env:                 map[string]string{},
+		CurrentRepoResolver: func(string) (string, error) { return "", os.ErrNotExist },
+		AllowMissingCurrent: true,
+	})
+	if err != nil {
+		t.Fatalf("expected missing current Git repository to be non-fatal, got %v", err)
+	}
+	if got.Repo != "" || got.Source != StartupRepoCurrentGit {
+		t.Fatalf("expected empty current Git fallback, got %+v", got)
+	}
+}
+
 func TestParseGitHubRemoteURL(t *testing.T) {
 	cases := []struct {
 		name    string
