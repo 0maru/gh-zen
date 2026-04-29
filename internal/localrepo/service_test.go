@@ -56,12 +56,33 @@ func TestParseWorktreeListPorcelain_RejectsMalformedBlocks(t *testing.T) {
 
 func TestPorcelainStatusEntries(t *testing.T) {
 	got := porcelainStatusEntries(" M file.go\n?? new.go\n")
-	want := []string{"M file.go", "?? new.go"}
+	want := []string{" M file.go", "?? new.go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected status entries %#v, got %#v", want, got)
 	}
 	if entries := porcelainStatusEntries(""); len(entries) != 0 {
 		t.Fatalf("expected empty status entries, got %#v", entries)
+	}
+}
+
+func TestParseBranchRefs(t *testing.T) {
+	output := strings.TrimSpace(`
+refs/heads/main
+refs/heads/feature/local
+refs/remotes/origin/HEAD
+refs/remotes/origin/main
+refs/remotes/upstream/feature/remote
+`)
+
+	got := ParseBranchRefs(output)
+	want := []Branch{
+		{Name: "main"},
+		{Name: "feature/local"},
+		{Name: "main", Remote: "origin", RemoteOnly: true},
+		{Name: "feature/remote", Remote: "upstream", RemoteOnly: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected branches %+v, got %+v", want, got)
 	}
 }
 
@@ -101,6 +122,31 @@ func TestService_DiscoverWorktrees(t *testing.T) {
 	}
 }
 
+func TestService_DiscoverBranches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repository branch refs")
+	}
+
+	repoDir := initTempGitRepo(t)
+	writeFile(t, filepath.Join(repoDir, "README.md"), "initial\n")
+	runGit(t, repoDir, "add", "README.md")
+	runGit(t, repoDir, "commit", "-m", "initial")
+	runGit(t, repoDir, "branch", "local-only")
+	runGit(t, repoDir, "update-ref", "refs/remotes/origin/remote-only", "HEAD")
+
+	branches, err := (Service{}).DiscoverBranches(context.Background(), repoDir)
+	if err != nil {
+		t.Fatalf("expected branches to be discovered, got %v", err)
+	}
+
+	if !hasBranch(branches, Branch{Name: "local-only"}) {
+		t.Fatalf("expected local-only branch in %+v", branches)
+	}
+	if !hasBranch(branches, Branch{Name: "remote-only", Remote: "origin", RemoteOnly: true}) {
+		t.Fatalf("expected remote-only branch in %+v", branches)
+	}
+}
+
 func TestService_DiscoverWorktreesMarksMissingWorktrees(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary Git repositories and worktrees")
@@ -137,6 +183,15 @@ func requireWorktree(t *testing.T, worktrees []Worktree, path string) Worktree {
 	}
 	t.Fatalf("worktree %q not found in %+v", path, worktrees)
 	return Worktree{}
+}
+
+func hasBranch(branches []Branch, want Branch) bool {
+	for _, branch := range branches {
+		if branch == want {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalPath(t *testing.T, path string) string {
