@@ -139,6 +139,27 @@ func TestInit_LoadsInitialPreview(t *testing.T) {
 	}
 }
 
+func TestInit_BuildsInitialPreviewCommand(t *testing.T) {
+	loaderCalls := 0
+	loader := func(req previewRequest) tea.Cmd {
+		loaderCalls++
+		return fakeDelayedPreviewLoader(0)(req)
+	}
+
+	start := newModelWithPreviewLoader(loader)
+	if loaderCalls != 0 {
+		t.Fatalf("expected constructor to avoid building preview command, got %d loader calls", loaderCalls)
+	}
+
+	cmd := start.Init()
+	if cmd == nil {
+		t.Fatalf("expected Init to build preview command")
+	}
+	if loaderCalls != 1 {
+		t.Fatalf("expected Init to build one preview command, got %d loader calls", loaderCalls)
+	}
+}
+
 func TestUpdate_WindowSizeMsg_StoresDimensions(t *testing.T) {
 	got, cmd := (model{}).Update(tea.WindowSizeMsg{Width: 40, Height: 24})
 	if cmd != nil {

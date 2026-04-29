@@ -117,11 +117,15 @@ func newModelWithPreviewLoader(loader previewLoader) model {
 		keys:          DefaultKeyMap(),
 		help:          newHelpModel(),
 	}
-	_ = m.startPreviewLoadForCurrentItem()
+	m.beginPreviewLoadForCurrentItem()
 	return m
 }
 
 func (m model) Init() tea.Cmd {
+	return m.previewLoadCmdForCurrentItem()
+}
+
+func (m model) previewLoadCmdForCurrentItem() tea.Cmd {
 	if m.preview.status != previewLoading || m.previewLoader == nil {
 		return nil
 	}
@@ -172,11 +176,16 @@ func (m *model) startPreviewLoadIfFocusedItemChanged() tea.Cmd {
 }
 
 func (m *model) startPreviewLoadForCurrentItem() tea.Cmd {
+	m.beginPreviewLoadForCurrentItem()
+	return m.previewLoadCmdForCurrentItem()
+}
+
+func (m *model) beginPreviewLoadForCurrentItem() {
 	item, ok := m.selectedWorkItem()
 	if !ok || item.ID == "" {
 		m.focusedWorkItemID = ""
 		m.preview = previewState{status: previewEmpty}
-		return nil
+		return
 	}
 
 	m.nextPreviewRequestID++
@@ -187,14 +196,6 @@ func (m *model) startPreviewLoadForCurrentItem() tea.Cmd {
 		requestID:         requestID,
 		focusedWorkItemID: item.ID,
 	}
-	if m.previewLoader == nil {
-		return nil
-	}
-	return m.previewLoader(previewRequest{
-		requestID:  requestID,
-		workItemID: item.ID,
-		item:       item,
-	})
 }
 
 func (m *model) handlePreviewResult(msg previewResultMsg) {
