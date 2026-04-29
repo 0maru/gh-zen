@@ -56,7 +56,7 @@ func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
 }
 
 func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","reviewDecision":"REVIEW_REQUIRED"}]`)}
+	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"reviewDecision":"REVIEW_REQUIRED"}]`)}
 	service := CLIService{Runner: runner}
 
 	got, err := service.PullRequests(context.Background(), "0maru/gh-zen")
@@ -68,6 +68,8 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		Title:       "Add feature",
 		State:       "open",
 		URL:         "https://example.test/pr/12",
+		HeadOwner:   "0maru",
+		HeadBranch:  "feature",
 		ReviewState: "review required",
 	}}
 	if !reflect.DeepEqual(got, want) {
@@ -78,6 +80,9 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	}
 	if !hasArgPair(runner.args, "--limit", listLimit) {
 		t.Fatalf("expected gh pr list limit, got %#v", runner.args)
+	}
+	if !hasArgValue(runner.args, "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision") {
+		t.Fatalf("expected gh pr list to request head repository owner, got %#v", runner.args)
 	}
 }
 
@@ -147,6 +152,15 @@ func TestIsPendingChecksExit(t *testing.T) {
 func hasArgPair(args []string, key string, value string) bool {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasArgValue(args []string, value string) bool {
+	for _, arg := range args {
+		if arg == value {
 			return true
 		}
 	}

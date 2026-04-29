@@ -104,15 +104,19 @@ func (s CLIService) RepositorySummary(ctx context.Context, repo string) (Reposit
 
 // PullRequests loads pull request summaries through gh.
 func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.PullRequestRef, error) {
-	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url,reviewDecision")
+	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision")
 	if err != nil {
 		return nil, err
 	}
 	var payload []struct {
-		Number         int    `json:"number"`
-		Title          string `json:"title"`
-		State          string `json:"state"`
-		URL            string `json:"url"`
+		Number              int    `json:"number"`
+		Title               string `json:"title"`
+		State               string `json:"state"`
+		URL                 string `json:"url"`
+		HeadRefName         string `json:"headRefName"`
+		HeadRepositoryOwner struct {
+			Login string `json:"login"`
+		} `json:"headRepositoryOwner"`
 		ReviewDecision string `json:"reviewDecision"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
@@ -125,6 +129,8 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			Title:       pr.Title,
 			State:       strings.ToLower(pr.State),
 			URL:         pr.URL,
+			HeadOwner:   pr.HeadRepositoryOwner.Login,
+			HeadBranch:  pr.HeadRefName,
 			ReviewState: reviewState(pr.ReviewDecision),
 		})
 	}
