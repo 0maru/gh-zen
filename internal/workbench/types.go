@@ -51,6 +51,7 @@ type PullRequestRef struct {
 	Title       string
 	State       string
 	URL         string
+	HeadBranch  string
 	ReviewState string
 }
 

@@ -98,7 +98,7 @@ func (s CLIService) RepositorySummary(ctx context.Context, repo string) (Reposit
 
 // PullRequests loads pull request summaries through gh.
 func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.PullRequestRef, error) {
-	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--json", "number,title,state,url,reviewDecision")
+	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--json", "number,title,state,url,headRefName,reviewDecision")
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +107,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 		Title          string `json:"title"`
 		State          string `json:"state"`
 		URL            string `json:"url"`
+		HeadRefName    string `json:"headRefName"`
 		ReviewDecision string `json:"reviewDecision"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
@@ -119,6 +120,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			Title:       pr.Title,
 			State:       strings.ToLower(pr.State),
 			URL:         pr.URL,
+			HeadBranch:  pr.HeadRefName,
 			ReviewState: reviewState(pr.ReviewDecision),
 		})
 	}

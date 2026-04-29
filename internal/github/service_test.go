@@ -44,7 +44,7 @@ func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
 }
 
 func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","reviewDecision":"REVIEW_REQUIRED"}]`)}
+	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","headRefName":"feature","reviewDecision":"REVIEW_REQUIRED"}]`)}
 	service := CLIService{Runner: runner}
 
 	got, err := service.PullRequests(context.Background(), "0maru/gh-zen")
@@ -56,6 +56,7 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		Title:       "Add feature",
 		State:       "open",
 		URL:         "https://example.test/pr/12",
+		HeadBranch:  "feature",
 		ReviewState: "review required",
 	}}
 	if !reflect.DeepEqual(got, want) {
