@@ -227,6 +227,54 @@ func TestUpdate_RefreshPreservesCurrentSelectionAfterMove(t *testing.T) {
 	}
 }
 
+func TestUpdate_RefreshPreservesSelectedWorkItemRepo(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	repoAOriginal := workbench.WorkItem{
+		ID:       "branch:main",
+		Repo:     repoA,
+		Branch:   &workbench.BranchRef{Name: "main"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/gh-zen"},
+		Local:    &workbench.LocalStatus{State: workbench.LocalClean},
+	}
+	repoAReloaded := repoAOriginal
+	repoAReloaded.Local = &workbench.LocalStatus{State: workbench.LocalDirty, Summary: "1 status entry"}
+	repoBItem := workbench.WorkItem{
+		ID:       "branch:main",
+		Repo:     repoB,
+		Branch:   &workbench.BranchRef{Name: "main"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/dotfiles"},
+		Local:    &workbench.LocalStatus{State: workbench.LocalClean},
+	}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repoA.FullName(): {
+				Repo:  repoA,
+				Items: []workbench.WorkItem{repoAReloaded},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{repoAOriginal, repoBItem},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.setRepoPaneIndex(len(start.repos))
+	start.selectedItem = 1
+	start.focusedWorkItemID = repoBItem.ID
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	mm := got.(model)
+
+	if mm.selectedItem != 1 {
+		t.Fatalf("expected selected item to remain on repo B at index 1, got %d", mm.selectedItem)
+	}
+	if item, ok := mm.selectedWorkItem(); !ok || item.Repo != repoB || item.ID != repoBItem.ID {
+		t.Fatalf("expected selected work item %+v, got %+v ok=%v", repoBItem, item, ok)
+	}
+}
+
 func TestUpdate_StaleRefreshResultIsDiscarded(t *testing.T) {
 	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}

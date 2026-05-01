@@ -478,12 +478,14 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		return nil
 	}
 
+	selectedWorkItemRepo := workbench.RepoRef{}
 	selectedWorkItemID := ""
 	if item, ok := m.selectedWorkItem(); ok {
+		selectedWorkItemRepo = item.Repo
 		selectedWorkItemID = item.ID
 	}
 	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
-	m.restoreSelectedWorkItem(selectedWorkItemID)
+	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
 	m.statusMessage = "Reloaded workbench data"
 	return m.startPreviewLoadForCurrentItem()
 }
@@ -707,7 +709,7 @@ func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, re
 	return out
 }
 
-func (m *model) restoreSelectedWorkItem(workItemID string) {
+func (m *model) restoreSelectedWorkItem(repo workbench.RepoRef, workItemID string) {
 	items := m.visibleWorkItems()
 	if len(items) == 0 {
 		m.selectedItem = 0
@@ -715,7 +717,7 @@ func (m *model) restoreSelectedWorkItem(workItemID string) {
 	}
 	if workItemID != "" {
 		for i, item := range items {
-			if item.ID == workItemID {
+			if item.Repo == repo && item.ID == workItemID {
 				m.selectedItem = i
 				return
 			}
