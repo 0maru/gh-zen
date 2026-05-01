@@ -79,12 +79,15 @@ func (r *fakeActionRunner) Copy(_ context.Context, text string) error {
 }
 
 type fakeWorkbenchReloader struct {
-	results map[string]workbench.RuntimeLoadResult
-	calls   []workbench.RepoRef
+	results     map[string]workbench.RuntimeLoadResult
+	calls       []workbench.RepoRef
+	deadlineSet []bool
 }
 
-func (r *fakeWorkbenchReloader) Load(_ context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+func (r *fakeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
 	r.calls = append(r.calls, repo)
+	_, hasDeadline := ctx.Deadline()
+	r.deadlineSet = append(r.deadlineSet, hasDeadline)
 	if result, ok := r.results[repo.FullName()]; ok {
 		return result
 	}
@@ -227,6 +230,54 @@ func TestUpdate_RefreshPreservesCurrentSelectionAfterMove(t *testing.T) {
 	}
 }
 
+func TestUpdate_RefreshPreservesSelectedWorkItemRepo(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	repoAOriginal := workbench.WorkItem{
+		ID:       "branch:main",
+		Repo:     repoA,
+		Branch:   &workbench.BranchRef{Name: "main"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/gh-zen"},
+		Local:    &workbench.LocalStatus{State: workbench.LocalClean},
+	}
+	repoAReloaded := repoAOriginal
+	repoAReloaded.Local = &workbench.LocalStatus{State: workbench.LocalDirty, Summary: "1 status entry"}
+	repoBItem := workbench.WorkItem{
+		ID:       "branch:main",
+		Repo:     repoB,
+		Branch:   &workbench.BranchRef{Name: "main"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/dotfiles"},
+		Local:    &workbench.LocalStatus{State: workbench.LocalClean},
+	}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repoA.FullName(): {
+				Repo:  repoA,
+				Items: []workbench.WorkItem{repoAReloaded},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{repoAOriginal, repoBItem},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.setRepoPaneIndex(len(start.repos))
+	start.selectedItem = 1
+	start.focusedWorkItemID = repoBItem.ID
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	mm := got.(model)
+
+	if mm.selectedItem != 1 {
+		t.Fatalf("expected selected item to remain on repo B at index 1, got %d", mm.selectedItem)
+	}
+	if item, ok := mm.selectedWorkItem(); !ok || item.Repo != repoB || item.ID != repoBItem.ID {
+		t.Fatalf("expected selected work item %+v, got %+v ok=%v", repoBItem, item, ok)
+	}
+}
+
 func TestUpdate_StaleRefreshResultIsDiscarded(t *testing.T) {
 	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
@@ -346,8 +397,27 @@ func TestUpdate_OlderRefreshResultDoesNotClearNewerStatus(t *testing.T) {
 	if status := mm.statusMessage; status != "Reloading workbench data..." {
 		t.Fatalf("expected newer reload status to remain, got %q", status)
 	}
+	if !mm.workbenchLoading {
+		t.Fatalf("expected newer reload loading state to remain")
+	}
 	if len(mm.workItems) != 1 || mm.workItems[0].ID != original.ID {
 		t.Fatalf("expected older reload result not to replace work items, got %+v", mm.workItems)
+	}
+}
+
+func TestWorkbenchReloadCommandUsesTimeout(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	reloader := &fakeWorkbenchReloader{}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:    []workbench.RepoRef{repo},
+		Reloader: reloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	_, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	requireWorkbenchReloadMsg(t, cmd)
+
+	if len(reloader.deadlineSet) != 1 || !reloader.deadlineSet[0] {
+		t.Fatalf("expected reload context to have a deadline, got %+v", reloader.deadlineSet)
 	}
 }
 
