@@ -544,12 +544,14 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		return nil
 	}
 
+	selectedWorkItemRepo := workbench.RepoRef{}
 	selectedWorkItemID := ""
 	if item, ok := m.selectedWorkItem(); ok {
+		selectedWorkItemRepo = item.Repo
 		selectedWorkItemID = item.ID
 	}
 	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
-	m.restoreSelectedWorkItem(selectedWorkItemID)
+	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
 	m.workbenchLoading = false
 	if hasWorkbenchErrorItems(msg.result.Items) {
 		m.statusMessage = "Workbench loaded with partial errors"
@@ -789,7 +791,7 @@ func hasWorkbenchErrorItems(items []workbench.WorkItem) bool {
 	return false
 }
 
-func (m *model) restoreSelectedWorkItem(workItemID string) {
+func (m *model) restoreSelectedWorkItem(repo workbench.RepoRef, workItemID string) {
 	items := m.visibleWorkItems()
 	if len(items) == 0 {
 		m.selectedItem = 0
@@ -797,7 +799,7 @@ func (m *model) restoreSelectedWorkItem(workItemID string) {
 	}
 	if workItemID != "" {
 		for i, item := range items {
-			if item.ID == workItemID {
+			if item.Repo == repo && item.ID == workItemID {
 				m.selectedItem = i
 				return
 			}
