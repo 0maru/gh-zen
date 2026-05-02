@@ -6,7 +6,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -34,7 +33,6 @@ const (
 	frameBottomRightGlyph  = "┘"
 	previewPaneMinWidth    = 28
 	fullLayoutMinWidth     = repoPaneWidth + workItemPaneWidth + previewPaneMinWidth + paneBorderWidth*3 + paneGapWidth*2
-	workbenchReloadTimeout = 5 * time.Second
 )
 
 // paneFocus tracks the pane that owns pane-scoped key handling.
@@ -530,12 +528,9 @@ func (m *model) beginWorkbenchReload(status string) bool {
 
 func (m model) workbenchReloadCommand(request workbenchReloadRequest) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), workbenchReloadTimeout)
-		defer cancel()
-
 		return workbenchReloadMsg{
 			request: request,
-			result:  m.workbenchReloader.Load(ctx, request.repo),
+			result:  m.workbenchReloader.Load(context.Background(), request.repo),
 		}
 	}
 }

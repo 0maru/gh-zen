@@ -443,7 +443,7 @@ func TestUpdate_OlderRefreshResultDoesNotClearNewerStatus(t *testing.T) {
 	}
 }
 
-func TestWorkbenchReloadCommandUsesTimeout(t *testing.T) {
+func TestWorkbenchReloadCommandDoesNotDeadlineFullReload(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	reloader := &fakeWorkbenchReloader{}
 	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
@@ -454,8 +454,8 @@ func TestWorkbenchReloadCommandUsesTimeout(t *testing.T) {
 	_, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	requireWorkbenchReloadMsg(t, cmd)
 
-	if len(reloader.deadlineSet) != 1 || !reloader.deadlineSet[0] {
-		t.Fatalf("expected reload context to have a deadline, got %+v", reloader.deadlineSet)
+	if len(reloader.deadlineSet) != 1 || reloader.deadlineSet[0] {
+		t.Fatalf("expected reload context without a deadline, got %+v", reloader.deadlineSet)
 	}
 }
 
