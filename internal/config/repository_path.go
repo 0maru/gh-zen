@@ -70,11 +70,16 @@ func findRepositoryInRoot(root string, repoName string, rootIndex int) (string, 
 	if !info.IsDir() {
 		return "", []Diagnostic{repositoryRootDiagnostic(rootIndex, fmt.Sprintf("%q is not a directory", root))}
 	}
+	walkRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", []Diagnostic{repositoryRootDiagnostic(rootIndex, fmt.Sprintf("resolve %q: %v", root, err))}
+	}
 
 	var matchedPath string
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		diagnosticPath := repositoryWalkDiagnosticPath(root, walkRoot, path)
 		if walkErr != nil {
-			diagnostics = append(diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("read %q: %v", path, walkErr)))
+			diagnostics = append(diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("read %q: %v", diagnosticPath, walkErr)))
 			if entry != nil && entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -93,7 +98,7 @@ func findRepositoryInRoot(root string, repoName string, rootIndex int) (string, 
 		repo, err := CurrentGitRepository(path)
 		if err != nil {
 			diagnostics = append(diagnostics, Diagnostic{
-				Path:    path,
+				Path:    diagnosticPath,
 				Message: err.Error(),
 			})
 			return nil
@@ -102,7 +107,7 @@ func findRepositoryInRoot(root string, repoName string, rootIndex int) (string, 
 			matchedRoot, err := CurrentGitRepositoryRoot(path)
 			if err != nil {
 				diagnostics = append(diagnostics, Diagnostic{
-					Path:    path,
+					Path:    diagnosticPath,
 					Message: err.Error(),
 				})
 				return filepath.SkipDir
@@ -116,6 +121,20 @@ func findRepositoryInRoot(root string, repoName string, rootIndex int) (string, 
 		diagnostics = append(diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("scan %q: %v", root, err)))
 	}
 	return matchedPath, diagnostics
+}
+
+func repositoryWalkDiagnosticPath(root string, walkRoot string, path string) string {
+	if root == walkRoot {
+		return path
+	}
+	rel, err := filepath.Rel(walkRoot, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return path
+	}
+	if rel == "." {
+		return root
+	}
+	return filepath.Join(root, rel)
 }
 
 func hasGitMetadata(path string) bool {
