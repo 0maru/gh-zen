@@ -16,6 +16,11 @@ type fakeRunner struct {
 	args   []string
 }
 
+type fakeRunnerByCommand struct {
+	outputs map[string][]byte
+	calls   [][]string
+}
+
 type fakeExitError struct {
 	code int
 }
@@ -31,6 +36,16 @@ func (e fakeExitError) ExitCode() int {
 func (r *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 	r.args = append([]string(nil), args...)
 	return r.output, r.err
+}
+
+func (r *fakeRunnerByCommand) Run(_ context.Context, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string(nil), args...))
+	key := commandKey(args...)
+	output, ok := r.outputs[key]
+	if !ok {
+		return nil, errors.New("unexpected gh command: " + key)
+	}
+	return output, nil
 }
 
 func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
@@ -125,6 +140,51 @@ func TestCLIService_CheckSummaryParsesGHOutput(t *testing.T) {
 	}
 }
 
+func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	prFields := "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision,closingIssuesReferences"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("pr", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", prFields):                    []byte(`[{"number":24,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/pull/24","headRefName":"feature/issue-123-runtime","headRepositoryOwner":{"login":"0maru"},"reviewDecision":"APPROVED","closingIssuesReferences":[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123"}]}]`),
+		commandKey("issue", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", "number,title,state,url"): []byte(`[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123"}]`),
+		commandKey("pr", "checks", "feature/issue-123-runtime", "--repo", repo.FullName(), "--json", "name,state"):                         []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"SUCCESS"}]`),
+	}}
+	service := CLIService{Runner: runner}
+
+	prs, err := service.PullRequests(context.Background(), repo.FullName())
+	if err != nil {
+		t.Fatalf("expected pull requests to parse, got %v", err)
+	}
+	issues, err := service.Issues(context.Background(), repo.FullName())
+	if err != nil {
+		t.Fatalf("expected issues to parse, got %v", err)
+	}
+	checks, err := service.CheckSummary(context.Background(), repo.FullName(), "feature/issue-123-runtime")
+	if err != nil {
+		t.Fatalf("expected checks to parse, got %v", err)
+	}
+
+	items := workbench.LinkPullRequests([]workbench.WorkItem{{
+		ID:     "feature",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "feature/issue-123-runtime"},
+	}}, prs)
+	items = workbench.LinkIssues(items, issues)
+	items[0].Checks = checks
+
+	if items[0].PullRequest == nil || items[0].PullRequest.Number != 24 || items[0].PullRequest.ReviewState != "approved" {
+		t.Fatalf("expected CLI PR data to enrich work item, got %+v", items[0])
+	}
+	if items[0].Issue == nil || items[0].Issue.Number != 123 || items[0].Issue.Title != "Runtime pipeline" {
+		t.Fatalf("expected CLI issue data to enrich work item, got %+v", items[0])
+	}
+	if items[0].Checks.State != workbench.CheckPassing || items[0].Checks.Passing != 2 {
+		t.Fatalf("expected CLI check data to enrich work item, got %+v", items[0])
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected three gh calls, got %#v", runner.calls)
+	}
+}
+
 func TestClassifyError(t *testing.T) {
 	err := classifyError("gh pr list", []byte("run gh auth login"), errors.New("exit status 1"))
 	if err.Kind != ErrorAuth {
@@ -150,6 +210,10 @@ func TestIsPendingChecksExit(t *testing.T) {
 	if isPendingChecksExit([]string{"pr", "list"}, fakeExitError{code: 8}) {
 		t.Fatal("expected exit 8 from a different gh command to remain an error")
 	}
+}
+
+func commandKey(args ...string) string {
+	return strings.Join(args, "\x00")
 }
 
 func hasArgPair(args []string, key string, value string) bool {

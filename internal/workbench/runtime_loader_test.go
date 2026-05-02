@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -199,6 +200,84 @@ func TestRuntimeLoader_ContinuesWhenSingleCheckFails(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoader_WithTemporaryGitRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoDir := initLocalServiceRepo(t)
+	featureDir := filepath.Join(t.TempDir(), "feature")
+	runLocalServiceGit(t, repoDir, "worktree", "add", "-b", "feature/issue-123-runtime", featureDir)
+	writeLocalServiceFile(t, filepath.Join(featureDir, "dirty.txt"), "dirty\n")
+	runLocalServiceGit(t, repoDir, "update-ref", "refs/remotes/origin/remote-only", "HEAD")
+
+	result := RuntimeLoader{
+		Repo:     repo,
+		RepoPath: repoDir,
+		Local:    localrepo.Service{},
+		GitHub: fakeRuntimeGitHub{
+			prs: []PullRequestRef{{
+				Number:     24,
+				Title:      "Runtime pipeline",
+				State:      "open",
+				URL:        "https://example.test/pull/24",
+				HeadOwner:  "0maru",
+				HeadBranch: "feature/issue-123-runtime",
+				LinkedIssues: []IssueRef{{
+					Number:  123,
+					Certain: true,
+				}},
+			}},
+			issues: []IssueRef{{
+				Number:  123,
+				Title:   "Runtime pipeline",
+				State:   "open",
+				URL:     "https://example.test/issues/123",
+				Certain: true,
+			}},
+			checks: CheckSummary{State: CheckPassing, Passing: 3},
+		},
+	}.Load(context.Background())
+
+	if !hasWorkItem(result.Items, func(item WorkItem) bool {
+		return item.Worktree != nil &&
+			sameRuntimeTestPath(t, item.Worktree.Path, repoDir) &&
+			item.Branch != nil &&
+			item.Branch.Name == "main" &&
+			item.Local != nil &&
+			item.Local.State == LocalClean
+	}) {
+		t.Fatalf("expected clean main worktree item, got %+v", result.Items)
+	}
+	if !hasWorkItem(result.Items, func(item WorkItem) bool {
+		return item.Worktree != nil &&
+			sameRuntimeTestPath(t, item.Worktree.Path, featureDir) &&
+			item.Branch != nil &&
+			item.Branch.Name == "feature/issue-123-runtime" &&
+			item.Local != nil &&
+			item.Local.State == LocalDirty &&
+			item.PullRequest != nil &&
+			item.PullRequest.Number == 24 &&
+			item.Issue != nil &&
+			item.Issue.Number == 123 &&
+			item.Checks.State == CheckPassing &&
+			item.Checks.Passing == 3
+	}) {
+		t.Fatalf("expected dirty feature worktree enriched with PR, issue, and checks, got %+v", result.Items)
+	}
+	if !hasWorkItem(result.Items, func(item WorkItem) bool {
+		return item.Worktree == nil &&
+			item.Branch != nil &&
+			item.Branch.Name == "remote-only" &&
+			item.Branch.RemoteOnly &&
+			item.Local != nil &&
+			item.Local.State == LocalMissing
+	}) {
+		t.Fatalf("expected remote-only branch item, got %+v", result.Items)
+	}
+}
+
 func hasRuntimeErrorItem(items []WorkItem, prefix string, detail string) bool {
 	return hasWorkItem(items, func(item WorkItem) bool {
 		return item.Local != nil &&
@@ -214,4 +293,17 @@ func runtimeWorkItemByBranch(items []WorkItem, branch string) *WorkItem {
 		}
 	}
 	return nil
+}
+
+func sameRuntimeTestPath(t *testing.T, got string, want string) bool {
+	t.Helper()
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatalf("resolve got path %q: %v", got, err)
+	}
+	wantResolved, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatalf("resolve want path %q: %v", want, err)
+	}
+	return gotResolved == wantResolved
 }

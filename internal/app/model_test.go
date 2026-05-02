@@ -79,12 +79,15 @@ func (r *fakeActionRunner) Copy(_ context.Context, text string) error {
 }
 
 type fakeWorkbenchReloader struct {
-	results map[string]workbench.RuntimeLoadResult
-	calls   []workbench.RepoRef
+	results     map[string]workbench.RuntimeLoadResult
+	calls       []workbench.RepoRef
+	deadlineSet []bool
 }
 
-func (r *fakeWorkbenchReloader) Load(_ context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+func (r *fakeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
 	r.calls = append(r.calls, repo)
+	_, hasDeadline := ctx.Deadline()
+	r.deadlineSet = append(r.deadlineSet, hasDeadline)
 	if result, ok := r.results[repo.FullName()]; ok {
 		return result
 	}
@@ -158,8 +161,8 @@ func TestUpdate_RefreshReloadsWorkbenchData(t *testing.T) {
 	if mm.selectedItem != 0 || mm.focusedWorkItemID != original.ID {
 		t.Fatalf("expected selection to remain on %q, got item=%d focused=%q", original.ID, mm.selectedItem, mm.focusedWorkItemID)
 	}
-	if status := mm.statusMessage; status != "Reloaded workbench data" {
-		t.Fatalf("expected reloaded status, got %q", status)
+	if status := mm.statusMessage; status != "" {
+		t.Fatalf("expected successful reload to clear transient status, got %q", status)
 	}
 }
 
@@ -310,6 +313,9 @@ func TestUpdate_StaleRefreshResultIsDiscarded(t *testing.T) {
 	if len(mm.workItems) != 1 || mm.workItems[0].ID != original.ID {
 		t.Fatalf("expected stale reload not to replace work items, got %+v", mm.workItems)
 	}
+	if mm.workbenchLoading {
+		t.Fatalf("expected stale reload to clear loading state")
+	}
 	if mm.statusMessage != "" {
 		t.Fatalf("expected stale reload to clear loading status, got %q", mm.statusMessage)
 	}
@@ -354,8 +360,8 @@ func TestUpdate_RefreshAppliesAfterViewSelectionChange(t *testing.T) {
 	if len(items) != 1 || items[0].Local == nil || items[0].Local.State != workbench.LocalDirty {
 		t.Fatalf("expected reload result to apply after view selection, got %+v", items)
 	}
-	if status := mm.statusMessage; status != "Reloaded workbench data" {
-		t.Fatalf("expected reloaded status, got %q", status)
+	if status := mm.statusMessage; status != "" {
+		t.Fatalf("expected successful reload to clear status, got %q", status)
 	}
 }
 
@@ -391,8 +397,27 @@ func TestUpdate_OlderRefreshResultDoesNotClearNewerStatus(t *testing.T) {
 	if status := mm.statusMessage; status != "Reloading workbench data..." {
 		t.Fatalf("expected newer reload status to remain, got %q", status)
 	}
+	if !mm.workbenchLoading {
+		t.Fatalf("expected newer reload loading state to remain")
+	}
 	if len(mm.workItems) != 1 || mm.workItems[0].ID != original.ID {
 		t.Fatalf("expected older reload result not to replace work items, got %+v", mm.workItems)
+	}
+}
+
+func TestWorkbenchReloadCommandUsesTimeout(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	reloader := &fakeWorkbenchReloader{}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:    []workbench.RepoRef{repo},
+		Reloader: reloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	_, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	requireWorkbenchReloadMsg(t, cmd)
+
+	if len(reloader.deadlineSet) != 1 || !reloader.deadlineSet[0] {
+		t.Fatalf("expected reload context to have a deadline, got %+v", reloader.deadlineSet)
 	}
 }
 
@@ -417,6 +442,113 @@ func TestReplaceRepoWorkItems_PreservesRepositoryOrder(t *testing.T) {
 	wantIDs := []string{"a1", "a2", "b2", "b3", "c1"}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("expected replacement to preserve repo order %+v, got %+v", wantIDs, gotIDs)
+	}
+}
+
+func TestInit_StartsInitialWorkbenchLoad(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	loaded := workbench.WorkItem{
+		ID:     "branch:loaded",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "loaded"},
+	}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {Repo: repo, Items: []workbench.WorkItem{loaded}},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:          []workbench.RepoRef{repo},
+		Reloader:       reloader,
+		InitialLoading: true,
+	}, fakeDelayedPreviewLoader(0))
+
+	if !start.workbenchLoading {
+		t.Fatalf("expected initial workbench loading state")
+	}
+	if got := strings.Join(start.workItemLines(80, false), "\n"); !strings.Contains(got, "loading workbench data") {
+		t.Fatalf("expected loading workbench line, got %q", got)
+	}
+
+	msg := requireWorkbenchReloadMsg(t, start.Init())
+	got, _ := start.Update(msg)
+	mm := got.(model)
+	if mm.workbenchLoading {
+		t.Fatalf("expected initial workbench load to finish")
+	}
+	if items := mm.visibleWorkItems(); len(items) != 1 || items[0].ID != loaded.ID {
+		t.Fatalf("expected loaded work item, got %+v", items)
+	}
+}
+
+func TestUpdate_RefreshKeepsPartialDataVisibleWhileLoading(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	item := workbench.WorkItem{
+		ID:     "branch:feature",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "feature"},
+	}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {Repo: repo, Items: []workbench.WorkItem{item}},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{item},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	mm := got.(model)
+	if !mm.workbenchLoading {
+		t.Fatalf("expected refresh loading state")
+	}
+	lines := strings.Join(mm.workItemLines(80, false), "\n")
+	if !strings.Contains(lines, "feature") {
+		t.Fatalf("expected existing partial data to remain visible, got %q", lines)
+	}
+	if !strings.Contains(strings.Join(mm.headerLines("gh-zen", 80), "\n"), "Reloading workbench data") {
+		t.Fatalf("expected refresh status in header")
+	}
+}
+
+func TestUpdate_ReloadPartialErrorsSetStatus(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	errorItem := workbench.WorkItem{
+		ID:     "local-discovery-error:" + repo.FullName(),
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "local discovery error"},
+		Local:  &workbench.LocalStatus{State: workbench.LocalUnknown, Summary: "local discovery failed: git failed"},
+	}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {Repo: repo, Items: []workbench.WorkItem{errorItem}},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:    []workbench.RepoRef{repo},
+		Reloader: reloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	mm := got.(model)
+
+	if status := mm.statusMessage; status != "Workbench loaded with partial errors" {
+		t.Fatalf("expected partial error status, got %q", status)
+	}
+	if lines := strings.Join(mm.workItemLines(80, false), "\n"); !strings.Contains(lines, "local discovery error") {
+		t.Fatalf("expected error item to be visible, got %q", lines)
+	}
+}
+
+func TestHasWorkbenchErrorItems_UsesKnownErrorPrefixes(t *testing.T) {
+	if hasWorkbenchErrorItems([]workbench.WorkItem{{ID: "branch:error-handling"}}) {
+		t.Fatalf("expected normal branch IDs containing error not to count as partial errors")
+	}
+	if !hasWorkbenchErrorItems([]workbench.WorkItem{{ID: "repository-path-error:0maru/gh-zen"}}) {
+		t.Fatalf("expected repository path error item to count as a partial error")
 	}
 }
 
@@ -507,6 +639,9 @@ func TestNewWithWorkbenchData_EmptyDataDoesNotFallbackToFakeItems(t *testing.T) 
 	}
 	if got.preview.status != previewEmpty {
 		t.Fatalf("expected empty preview, got %v", got.preview.status)
+	}
+	if lines := strings.Join(got.workItemLines(80, false), "\n"); !strings.Contains(lines, "no live work items") {
+		t.Fatalf("expected live empty state, got %q", lines)
 	}
 }
 
