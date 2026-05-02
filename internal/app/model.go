@@ -174,6 +174,7 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 type workbenchReloadRequest struct {
 	requestID int
 	repo      workbench.RepoRef
+	status    string
 }
 
 type workbenchReloadMsg struct {
@@ -325,12 +326,11 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.jumpFocusedSelection(true)
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionRefresh:
-		cmd := m.refreshWorkbenchData()
+		cmd := m.refreshWorkbenchData("Reloading workbench data...")
 		if cmd == nil {
 			m.statusMessage = "Refresh unavailable"
 			return nil
 		}
-		m.statusMessage = "Reloading workbench data..."
 		return cmd
 	case actionOpenPullRequest:
 		return m.openPullRequest()
@@ -446,7 +446,7 @@ func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
 	return "", "", false
 }
 
-func (m *model) refreshWorkbenchData() tea.Cmd {
+func (m *model) refreshWorkbenchData(status string) tea.Cmd {
 	if m.workbenchReloader == nil {
 		return nil
 	}
@@ -458,8 +458,10 @@ func (m *model) refreshWorkbenchData() tea.Cmd {
 	request := workbenchReloadRequest{
 		requestID: m.nextReloadRequestID,
 		repo:      repo,
+		status:    status,
 	}
 	m.activeReloadRequest = request
+	m.statusMessage = status
 	return func() tea.Msg {
 		return workbenchReloadMsg{
 			request: request,
@@ -474,7 +476,9 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	}
 	repo, ok := m.selectedRepoRef()
 	if !ok || repo != msg.request.repo {
-		m.statusMessage = ""
+		if m.statusMessage == msg.request.status {
+			m.statusMessage = ""
+		}
 		return nil
 	}
 
