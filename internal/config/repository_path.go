@@ -75,21 +75,50 @@ func findRepositoryInRoot(root string, repoName string, rootIndex int) (string, 
 		return "", []Diagnostic{repositoryRootDiagnostic(rootIndex, fmt.Sprintf("resolve %q: %v", root, err))}
 	}
 
+	visited := map[string]struct{}{walkRoot: {}}
 	var matchedPath string
-	err = filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = walkRepositoryRoot(root, walkRoot, repoName, rootIndex, visited, &matchedPath, &diagnostics)
+	if err != nil {
+		diagnostics = append(diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("scan %q: %v", root, err)))
+	}
+	return matchedPath, diagnostics
+}
+
+func walkRepositoryRoot(root string, walkRoot string, repoName string, rootIndex int, visited map[string]struct{}, matchedPath *string, diagnostics *[]Diagnostic) error {
+	return filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		diagnosticPath := repositoryWalkDiagnosticPath(root, walkRoot, path)
 		if walkErr != nil {
-			diagnostics = append(diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("read %q: %v", diagnosticPath, walkErr)))
+			*diagnostics = append(*diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("read %q: %v", diagnosticPath, walkErr)))
 			if entry != nil && entry.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !entry.IsDir() {
+		if entry.Name() == ".git" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		if entry.Name() == ".git" {
-			return filepath.SkipDir
+		if !entry.IsDir() {
+			if entry.Type()&fs.ModeSymlink == 0 {
+				return nil
+			}
+			linkedRoot, ok := repositorySymlinkDir(path, diagnosticPath, diagnostics)
+			if !ok {
+				return nil
+			}
+			if _, seen := visited[linkedRoot]; seen {
+				return nil
+			}
+			visited[linkedRoot] = struct{}{}
+			if err := walkRepositoryRoot(diagnosticPath, linkedRoot, repoName, rootIndex, visited, matchedPath, diagnostics); err != nil {
+				*diagnostics = append(*diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("scan %q: %v", diagnosticPath, err)))
+			}
+			if *matchedPath != "" {
+				return fs.SkipAll
+			}
+			return nil
 		}
 		if !hasGitMetadata(path) {
 			return nil
@@ -97,7 +126,7 @@ func findRepositoryInRoot(root string, repoName string, rootIndex int) (string, 
 
 		repo, err := CurrentGitRepository(path)
 		if err != nil {
-			diagnostics = append(diagnostics, Diagnostic{
+			*diagnostics = append(*diagnostics, Diagnostic{
 				Path:    diagnosticPath,
 				Message: err.Error(),
 			})
@@ -106,21 +135,40 @@ func findRepositoryInRoot(root string, repoName string, rootIndex int) (string, 
 		if sameRepoName(repo, repoName) {
 			matchedRoot, err := CurrentGitRepositoryRoot(path)
 			if err != nil {
-				diagnostics = append(diagnostics, Diagnostic{
+				*diagnostics = append(*diagnostics, Diagnostic{
 					Path:    diagnosticPath,
 					Message: err.Error(),
 				})
 				return filepath.SkipDir
 			}
-			matchedPath = matchedRoot
+			*matchedPath = matchedRoot
 			return fs.SkipAll
 		}
 		return nil
 	})
+}
+
+func repositorySymlinkDir(path string, diagnosticPath string, diagnostics *[]Diagnostic) (string, bool) {
+	info, err := os.Stat(path)
 	if err != nil {
-		diagnostics = append(diagnostics, repositoryRootDiagnostic(rootIndex, fmt.Sprintf("scan %q: %v", root, err)))
+		*diagnostics = append(*diagnostics, Diagnostic{
+			Path:    diagnosticPath,
+			Message: err.Error(),
+		})
+		return "", false
 	}
-	return matchedPath, diagnostics
+	if !info.IsDir() {
+		return "", false
+	}
+	linkedRoot, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		*diagnostics = append(*diagnostics, Diagnostic{
+			Path:    diagnosticPath,
+			Message: fmt.Sprintf("resolve symlink: %v", err),
+		})
+		return "", false
+	}
+	return linkedRoot, true
 }
 
 func repositoryWalkDiagnosticPath(root string, walkRoot string, path string) string {
@@ -128,7 +176,7 @@ func repositoryWalkDiagnosticPath(root string, walkRoot string, path string) str
 		return path
 	}
 	rel, err := filepath.Rel(walkRoot, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return path
 	}
 	if rel == "." {
