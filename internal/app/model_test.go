@@ -321,6 +321,44 @@ func TestUpdate_StaleRefreshResultIsDiscarded(t *testing.T) {
 	}
 }
 
+func TestUpdate_StaleRefreshResultPreservesNewerStatus(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repoA.FullName(): {
+				Repo: repoA,
+				Items: []workbench.WorkItem{{
+					ID:     "branch:updated",
+					Repo:   repoA,
+					Branch: &workbench.BranchRef{Name: "updated"},
+				}},
+			},
+		},
+	}
+	original := workbench.WorkItem{ID: "branch:original", Repo: repoA, Branch: &workbench.BranchRef{Name: "original"}}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{original},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	msg := requireWorkbenchReloadMsg(t, cmd)
+	mm := got.(model)
+	mm.setRepoPaneIndex(1)
+	mm.statusMessage = "Copied PR URL"
+
+	got, cmd = mm.Update(msg)
+	if cmd != nil {
+		t.Fatalf("expected stale reload to skip preview command, got %T", cmd)
+	}
+	mm = got.(model)
+	if mm.statusMessage != "Copied PR URL" {
+		t.Fatalf("expected stale reload to preserve newer status, got %q", mm.statusMessage)
+	}
+}
+
 func TestUpdate_RefreshAppliesAfterViewSelectionChange(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	original := workbench.WorkItem{
