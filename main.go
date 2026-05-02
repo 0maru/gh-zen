@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -36,10 +35,8 @@ func run() error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	reloader := runtimeWorkbenchReloader{config: loadResult.Config}
-	data := loadStartupWorkbenchData(ctx, startupRepo, reloader)
+	data := loadStartupWorkbenchData(context.Background(), startupRepo, reloader)
 
 	_, err = tea.NewProgram(app.NewWithWorkbenchData(loadResult.Config, startupRepo.Repo, data), tea.WithAltScreen()).Run()
 	return err
