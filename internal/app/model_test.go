@@ -79,12 +79,15 @@ func (r *fakeActionRunner) Copy(_ context.Context, text string) error {
 }
 
 type fakeWorkbenchReloader struct {
-	results map[string]workbench.RuntimeLoadResult
-	calls   []workbench.RepoRef
+	results     map[string]workbench.RuntimeLoadResult
+	calls       []workbench.RepoRef
+	deadlineSet []bool
 }
 
-func (r *fakeWorkbenchReloader) Load(_ context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+func (r *fakeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
 	r.calls = append(r.calls, repo)
+	_, hasDeadline := ctx.Deadline()
+	r.deadlineSet = append(r.deadlineSet, hasDeadline)
 	if result, ok := r.results[repo.FullName()]; ok {
 		return result
 	}
@@ -394,8 +397,27 @@ func TestUpdate_OlderRefreshResultDoesNotClearNewerStatus(t *testing.T) {
 	if status := mm.statusMessage; status != "Reloading workbench data..." {
 		t.Fatalf("expected newer reload status to remain, got %q", status)
 	}
+	if !mm.workbenchLoading {
+		t.Fatalf("expected newer reload loading state to remain")
+	}
 	if len(mm.workItems) != 1 || mm.workItems[0].ID != original.ID {
 		t.Fatalf("expected older reload result not to replace work items, got %+v", mm.workItems)
+	}
+}
+
+func TestWorkbenchReloadCommandUsesTimeout(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	reloader := &fakeWorkbenchReloader{}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:    []workbench.RepoRef{repo},
+		Reloader: reloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	_, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	requireWorkbenchReloadMsg(t, cmd)
+
+	if len(reloader.deadlineSet) != 1 || !reloader.deadlineSet[0] {
+		t.Fatalf("expected reload context to have a deadline, got %+v", reloader.deadlineSet)
 	}
 }
 
