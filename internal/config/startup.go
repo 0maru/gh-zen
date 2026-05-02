@@ -67,6 +67,23 @@ func ResolveStartupRepository(options StartupRepositoryOptions) (StartupReposito
 
 // CurrentGitRepository resolves owner/repo from the current Git repository's origin remote.
 func CurrentGitRepository(workingDir string) (string, error) {
+	root, err := CurrentGitRepositoryRoot(workingDir)
+	if err != nil {
+		return "", err
+	}
+	remote, err := runGit(root, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("origin remote is not configured for %q", root)
+	}
+	repo, err := ParseGitHubRemoteURL(remote)
+	if err != nil {
+		return "", err
+	}
+	return repo, nil
+}
+
+// CurrentGitRepositoryRoot resolves the root path for the current Git checkout.
+func CurrentGitRepositoryRoot(workingDir string) (string, error) {
 	if workingDir == "" {
 		var err error
 		workingDir, err = os.Getwd()
@@ -79,15 +96,7 @@ func CurrentGitRepository(workingDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%q is not inside a Git repository", workingDir)
 	}
-	remote, err := runGit(root, "remote", "get-url", "origin")
-	if err != nil {
-		return "", fmt.Errorf("origin remote is not configured for %q", root)
-	}
-	repo, err := ParseGitHubRemoteURL(remote)
-	if err != nil {
-		return "", err
-	}
-	return repo, nil
+	return root, nil
 }
 
 // ParseGitHubRemoteURL converts supported GitHub remote URLs into owner/repo.
