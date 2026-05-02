@@ -63,6 +63,34 @@ func TestResolveRepositoryPath_FindsConfiguredRootCheckout(t *testing.T) {
 	}
 }
 
+func TestResolveRepositoryPath_FindsCheckoutUnderSymlinkedRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	checkout := filepath.Join(root, "owner", "repo")
+	initTempGitRepoAt(t, checkout)
+	runGitCommand(t, checkout, "remote", "add", "origin", "https://github.com/owner/repo.git")
+
+	linkRoot := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(root, linkRoot); err != nil {
+		t.Skipf("create symlink root: %v", err)
+	}
+
+	cfg := Defaults()
+	cfg.Repos.Roots = []string{linkRoot}
+	got := ResolveRepositoryPath(RepositoryPathOptions{
+		Repo:       "owner/repo",
+		Config:     cfg,
+		WorkingDir: t.TempDir(),
+	})
+
+	if !sameResolvedPath(t, got.Path, checkout) {
+		t.Fatalf("expected checkout under symlinked root %q, got %+v", checkout, got)
+	}
+}
+
 func TestResolveRepositoryPath_DiagnosticsForMissingAndUnsupportedPaths(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary Git repositories")

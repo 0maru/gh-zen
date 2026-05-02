@@ -203,6 +203,7 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 type workbenchReloadRequest struct {
 	requestID int
 	repo      workbench.RepoRef
+	status    string
 }
 
 type workbenchReloadMsg struct {
@@ -519,6 +520,7 @@ func (m *model) beginWorkbenchReload(status string) bool {
 	request := workbenchReloadRequest{
 		requestID: m.nextReloadRequestID,
 		repo:      repo,
+		status:    status,
 	}
 	m.activeReloadRequest = request
 	m.workbenchLoading = true
@@ -545,7 +547,9 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	repo, ok := m.selectedRepoRef()
 	if !ok || repo != msg.request.repo {
 		m.workbenchLoading = false
-		m.statusMessage = ""
+		if m.statusMessage == msg.request.status {
+			m.statusMessage = ""
+		}
 		return nil
 	}
 
