@@ -88,11 +88,14 @@ func TestLinkIssues_UsesPRMetadataBeforeBranchHeuristic(t *testing.T) {
 	}}
 
 	got := LinkIssues(items, []IssueRef{
-		{Number: 10, Title: "Config discovery", State: "open", URL: "https://example.test/issues/10", Certain: true},
+		{Number: 10, Title: "Config discovery", State: "open", URL: "https://example.test/issues/10", Body: "Detailed config issue", Labels: []string{"enhancement"}, Certain: true},
 		{Number: 123, Title: "Branch issue", State: "open", URL: "https://example.test/issues/123", Certain: true},
 	})
 	if got[0].Issue == nil || got[0].Issue.Number != 10 || !got[0].Issue.Certain {
 		t.Fatalf("expected PR metadata issue to win, got %+v", got[0].Issue)
+	}
+	if got[0].Issue.Body != "Detailed config issue" || len(got[0].Issue.Labels) != 1 || got[0].Issue.Labels[0] != "enhancement" {
+		t.Fatalf("expected PR issue to be enriched with issue details, got %+v", got[0].Issue)
 	}
 }
 
@@ -105,10 +108,13 @@ func TestLinkIssues_EnrichesBranchHeuristicFromIssueList(t *testing.T) {
 	}}
 
 	got := LinkIssues(items, []IssueRef{
-		{Number: 123, Title: "Config discovery", State: "open", URL: "https://example.test/issues/123", Certain: true},
+		{Number: 123, Title: "Config discovery", State: "open", URL: "https://example.test/issues/123", Body: "Detailed branch issue", Labels: []string{"bug"}, Assignees: []string{"0maru"}, Certain: true},
 	})
 	if got[0].Issue == nil || got[0].Issue.Title != "Config discovery" || got[0].Issue.Certain {
 		t.Fatalf("expected enriched uncertain issue, got %+v", got[0].Issue)
+	}
+	if got[0].Issue.Body != "Detailed branch issue" || len(got[0].Issue.Labels) != 1 || got[0].Issue.Labels[0] != "bug" || len(got[0].Issue.Assignees) != 1 {
+		t.Fatalf("expected enriched issue details to be preserved, got %+v", got[0].Issue)
 	}
 }
 

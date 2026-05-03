@@ -83,6 +83,27 @@ func workItemPreviewLines(item workbench.WorkItem, width int) []string {
 	}
 	lines = append(lines, truncate("Local: "+item.LocalLabel(), width))
 	lines = append(lines, truncate("Issue: "+item.IssueLabel(), width))
+	if item.Issue != nil {
+		lines = append(lines, truncate("Issue link: "+issueCertaintyLabel(*item.Issue), width))
+		if item.Issue.State != "" {
+			lines = append(lines, truncate("Issue state: "+item.Issue.State, width))
+		}
+		if labels := strings.Join(item.Issue.Labels, ", "); labels != "" {
+			lines = append(lines, truncate("Labels: "+labels, width))
+		}
+		if assignees := strings.Join(item.Issue.Assignees, ", "); assignees != "" {
+			lines = append(lines, truncate("Assignees: "+assignees, width))
+		}
+		if item.Issue.Milestone != "" {
+			lines = append(lines, truncate("Milestone: "+item.Issue.Milestone, width))
+		}
+		if item.Issue.UpdatedAt != "" {
+			lines = append(lines, truncate("Issue updated: "+item.Issue.UpdatedAt, width))
+		}
+		if excerpt := issueBodyExcerpt(item.Issue.Body); excerpt != "" {
+			lines = append(lines, truncate("Issue body: "+excerpt, width))
+		}
+	}
 	lines = append(lines, truncate("PR: "+item.PullRequestLabel(), width))
 	if item.PullRequest != nil {
 		if head := item.PullRequest.HeadLabel(); head != "" {

@@ -107,7 +107,7 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	if item.PullRequest == nil || item.PullRequest.Number != 24 || item.PullRequest.ReviewState != "approved" {
 		t.Fatalf("expected linked PR, got %+v", item.PullRequest)
 	}
-	if item.Issue == nil || item.Issue.Number != 123 || item.Issue.Title != "Runtime pipeline" || !item.Issue.Certain {
+	if item.Issue == nil || item.Issue.Number != 123 || item.Issue.Title != "Runtime pipeline" || item.Issue.Body != "Runtime pipeline issue details" || !item.Issue.Certain {
 		t.Fatalf("expected linked issue, got %+v", item.Issue)
 	}
 	if item.Checks.State != CheckPassing || item.Checks.Passing != 2 {
