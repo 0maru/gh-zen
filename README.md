@@ -6,10 +6,19 @@
 
 ## Installation
 
-Install the latest release with GitHub CLI:
+Install the latest published release with GitHub CLI:
 
 ```sh
 gh extension install 0maru/gh-zen
+```
+
+Until the first release is published, install this repository as a local
+extension:
+
+```sh
+git clone https://github.com/0maru/gh-zen
+cd gh-zen
+make install-extension
 ```
 
 Run it with:
