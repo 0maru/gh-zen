@@ -35,33 +35,48 @@ func run() error {
 		return err
 	}
 
-	data := loadStartupWorkbenchData(context.Background(), loadResult.Config, startupRepo)
+	reloader := runtimeWorkbenchReloader{config: loadResult.Config}
+	data := loadStartupWorkbenchData(context.Background(), startupRepo, reloader)
 
 	_, err = tea.NewProgram(app.NewWithWorkbenchData(loadResult.Config, startupRepo.Repo, data), tea.WithAltScreen()).Run()
 	return err
 }
 
-func loadStartupWorkbenchData(ctx context.Context, cfg config.Config, startupRepo config.StartupRepository) app.WorkbenchData {
-	repo, ok := repoRefFromFullName(startupRepo.Repo)
-	if !ok {
-		return app.WorkbenchData{}
-	}
+type runtimeWorkbenchReloader struct {
+	config config.Config
+}
 
-	data := app.WorkbenchData{Repos: []workbench.RepoRef{repo}}
+func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
 	resolvedPath := config.ResolveRepositoryPath(config.RepositoryPathOptions{
-		Repo:   startupRepo.Repo,
-		Config: cfg,
+		Repo:   repo.FullName(),
+		Config: r.config,
 	})
 	if resolvedPath.Path == "" {
-		return data
+		return workbench.RuntimeLoadResult{Repo: repo}
 	}
-
-	result := (workbench.RuntimeLoader{
+	return (workbench.RuntimeLoader{
 		Repo:     repo,
 		RepoPath: resolvedPath.Path,
 		Local:    localrepo.Service{},
 		GitHub:   github.CLIService{},
 	}).Load(ctx)
+}
+
+func loadStartupWorkbenchData(ctx context.Context, startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {
+	repo, ok := repoRefFromFullName(startupRepo.Repo)
+	if !ok {
+		return app.WorkbenchData{}
+	}
+
+	data := app.WorkbenchData{
+		Repos:    []workbench.RepoRef{repo},
+		Reloader: reloader,
+	}
+	if reloader == nil {
+		return data
+	}
+
+	result := reloader.Load(ctx, repo)
 	data.WorkItems = result.Items
 	return data
 }
