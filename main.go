@@ -36,7 +36,7 @@ func run() error {
 	}
 
 	reloader := runtimeWorkbenchReloader{config: loadResult.Config}
-	data := loadStartupWorkbenchData(context.Background(), startupRepo, reloader)
+	data := loadStartupWorkbenchData(startupRepo, reloader)
 
 	_, err = tea.NewProgram(app.NewWithWorkbenchData(loadResult.Config, startupRepo.Repo, data), tea.WithAltScreen()).Run()
 	return err
@@ -52,7 +52,10 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 		Config: r.config,
 	})
 	if resolvedPath.Path == "" {
-		return workbench.RuntimeLoadResult{Repo: repo}
+		return workbench.RuntimeLoadResult{
+			Repo:  repo,
+			Items: []workbench.WorkItem{repositoryPathErrorItem(repo, resolvedPath.Diagnostics)},
+		}
 	}
 	return (workbench.RuntimeLoader{
 		Repo:     repo,
@@ -62,23 +65,47 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 	}).Load(ctx)
 }
 
-func loadStartupWorkbenchData(ctx context.Context, startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {
+func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {
 	repo, ok := repoRefFromFullName(startupRepo.Repo)
 	if !ok {
 		return app.WorkbenchData{}
 	}
 
 	data := app.WorkbenchData{
-		Repos:    []workbench.RepoRef{repo},
-		Reloader: reloader,
+		Repos:          []workbench.RepoRef{repo},
+		Reloader:       reloader,
+		InitialLoading: reloader != nil,
 	}
-	if reloader == nil {
-		return data
-	}
-
-	result := reloader.Load(ctx, repo)
-	data.WorkItems = result.Items
 	return data
+}
+
+func repositoryPathErrorItem(repo workbench.RepoRef, diagnostics []config.Diagnostic) workbench.WorkItem {
+	summary := "repository path resolution failed"
+	if len(diagnostics) > 0 {
+		summary += ": " + diagnosticSummary(diagnostics)
+	}
+	return workbench.WorkItem{
+		ID:     "repository-path-error:" + repo.FullName(),
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "repository path error"},
+		Local: &workbench.LocalStatus{
+			State:   workbench.LocalUnknown,
+			Summary: summary,
+		},
+		Checks: workbench.CheckSummary{State: workbench.CheckUnknown},
+	}
+}
+
+func diagnosticSummary(diagnostics []config.Diagnostic) string {
+	parts := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Path == "" {
+			parts = append(parts, diagnostic.Message)
+			continue
+		}
+		parts = append(parts, diagnostic.Path+": "+diagnostic.Message)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func repoRefFromFullName(repoName string) (workbench.RepoRef, bool) {
