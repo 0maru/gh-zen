@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/0maru/gh-zen/internal/workbench"
@@ -17,6 +19,7 @@ type Service interface {
 	PullRequests(ctx context.Context, repo string) ([]workbench.PullRequestRef, error)
 	Issues(ctx context.Context, repo string) ([]workbench.IssueRef, error)
 	CheckSummary(ctx context.Context, repo string, ref string) (workbench.CheckSummary, error)
+	ViewerReviewSubjects(ctx context.Context) (workbench.ReviewSubjects, error)
 }
 
 // RepositorySummary contains lightweight GitHub data for a repository refresh.
@@ -48,7 +51,14 @@ const (
 	ErrorNetwork ErrorKind = "network"
 	ErrorCommand ErrorKind = "command"
 
-	listLimit = "1000"
+	issueListFields = "number,title,state,url,body,labels,assignees,milestone,updatedAt"
+	listLimit       = "1000"
+	prListFields    = "number,title,state,url,headRefName,headRepositoryOwner,baseRefName,isDraft,updatedAt,author,reviewRequests,latestReviews,reviewDecision,body"
+)
+
+var (
+	closingIssueTextPattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[^\n\r.]*`)
+	issueNumberPattern      = regexp.MustCompile(`#(\d+)`)
 )
 
 // Error describes a gh-backed service failure.
@@ -104,7 +114,7 @@ func (s CLIService) RepositorySummary(ctx context.Context, repo string) (Reposit
 
 // PullRequests loads pull request summaries through gh.
 func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.PullRequestRef, error) {
-	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision,closingIssuesReferences")
+	output, err := s.runner().Run(ctx, "pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", prListFields)
 	if err != nil {
 		return nil, err
 	}
@@ -114,16 +124,17 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 		State               string `json:"state"`
 		URL                 string `json:"url"`
 		HeadRefName         string `json:"headRefName"`
+		BaseRefName         string `json:"baseRefName"`
+		IsDraft             bool   `json:"isDraft"`
+		UpdatedAt           string `json:"updatedAt"`
+		Body                string `json:"body"`
+		Author              ghUser `json:"author"`
 		HeadRepositoryOwner struct {
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
-		ReviewDecision string `json:"reviewDecision"`
-		ClosingIssues  []struct {
-			Number int    `json:"number"`
-			Title  string `json:"title"`
-			State  string `json:"state"`
-			URL    string `json:"url"`
-		} `json:"closingIssuesReferences"`
+		ReviewDecision string             `json:"reviewDecision"`
+		ReviewRequests []ghReviewRequest  `json:"reviewRequests"`
+		LatestReviews  []ghPullReviewItem `json:"latestReviews"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("parse gh pr list output: %w", err)
@@ -131,14 +142,20 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 	prs := make([]workbench.PullRequestRef, 0, len(payload))
 	for _, pr := range payload {
 		prs = append(prs, workbench.PullRequestRef{
-			Number:       pr.Number,
-			Title:        pr.Title,
-			State:        strings.ToLower(pr.State),
-			URL:          pr.URL,
-			HeadOwner:    pr.HeadRepositoryOwner.Login,
-			HeadBranch:   pr.HeadRefName,
-			LinkedIssues: linkedIssues(pr.ClosingIssues),
-			ReviewState:  reviewState(pr.ReviewDecision),
+			Number:         pr.Number,
+			Title:          pr.Title,
+			State:          strings.ToLower(pr.State),
+			URL:            pr.URL,
+			AuthorLogin:    pr.Author.Login,
+			HeadOwner:      pr.HeadRepositoryOwner.Login,
+			HeadBranch:     pr.HeadRefName,
+			BaseBranch:     pr.BaseRefName,
+			IsDraft:        pr.IsDraft,
+			UpdatedAt:      pr.UpdatedAt,
+			LinkedIssues:   linkedIssuesFromBody(pr.Body),
+			ReviewState:    reviewState(pr.ReviewDecision),
+			ReviewRequests: reviewRequests(pr.ReviewRequests),
+			LatestReviews:  latestReviews(pr.LatestReviews),
 		})
 	}
 	return prs, nil
@@ -146,15 +163,22 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 
 // Issues loads issue summaries through gh.
 func (s CLIService) Issues(ctx context.Context, repo string) ([]workbench.IssueRef, error) {
-	output, err := s.runner().Run(ctx, "issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", "number,title,state,url")
+	output, err := s.runner().Run(ctx, "issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields)
 	if err != nil {
 		return nil, err
 	}
 	var payload []struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		State  string `json:"state"`
-		URL    string `json:"url"`
+		Number    int       `json:"number"`
+		Title     string    `json:"title"`
+		State     string    `json:"state"`
+		URL       string    `json:"url"`
+		Body      string    `json:"body"`
+		Labels    []ghLabel `json:"labels"`
+		Assignees []ghUser  `json:"assignees"`
+		Milestone *struct {
+			Title string `json:"title"`
+		} `json:"milestone"`
+		UpdatedAt string `json:"updatedAt"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("parse gh issue list output: %w", err)
@@ -195,6 +219,22 @@ func (s CLIService) CheckSummary(ctx context.Context, repo string, ref string) (
 	return summarizeCheckStates(states), nil
 }
 
+// ViewerReviewSubjects loads the authenticated viewer and team slugs used for review request matching.
+func (s CLIService) ViewerReviewSubjects(ctx context.Context) (workbench.ReviewSubjects, error) {
+	output, err := s.runner().Run(ctx, "api", "user", "--jq", ".login")
+	if err != nil {
+		return workbench.ReviewSubjects{}, err
+	}
+	subjects := workbench.ReviewSubjects{Login: strings.TrimSpace(string(output))}
+
+	output, err = s.runner().Run(ctx, "api", "user/teams", "--jq", ".[].slug")
+	if err != nil {
+		return subjects, err
+	}
+	subjects.TeamSlugs = nonEmptyLines(string(output))
+	return subjects, nil
+}
+
 func (s CLIService) runner() Runner {
 	if s.Runner != nil {
 		return s.Runner
@@ -202,23 +242,122 @@ func (s CLIService) runner() Runner {
 	return GHRunner{}
 }
 
-func linkedIssues(payload []struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
+type ghUser struct {
+	Login string `json:"login"`
+}
+
+type ghLabel struct {
+	Name string `json:"name"`
+}
+
+type ghReviewRequest struct {
+	TypeName string `json:"__typename"`
+	Login    string `json:"login"`
+	Name     string `json:"name"`
+	Slug     string `json:"slug"`
+}
+
+type ghPullReviewItem struct {
+	Author ghUser `json:"author"`
 	State  string `json:"state"`
-	URL    string `json:"url"`
-}) []workbench.IssueRef {
-	issues := make([]workbench.IssueRef, 0, len(payload))
-	for _, issue := range payload {
-		issues = append(issues, workbench.IssueRef{
-			Number:  issue.Number,
-			Title:   issue.Title,
-			State:   strings.ToLower(issue.State),
-			URL:     issue.URL,
-			Certain: true,
-		})
+}
+
+func linkedIssuesFromBody(body string) []workbench.IssueRef {
+	seen := map[int]bool{}
+	issues := []workbench.IssueRef{}
+	for _, text := range closingIssueTextPattern.FindAllString(body, -1) {
+		for _, match := range issueNumberPattern.FindAllStringSubmatch(text, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			number, err := strconv.Atoi(match[1])
+			if err != nil || seen[number] {
+				continue
+			}
+			issues = append(issues, workbench.IssueRef{
+				Number:  number,
+				Certain: true,
+			})
+			seen[number] = true
+		}
 	}
 	return issues
+}
+
+func labelNames(labels []ghLabel) []string {
+	names := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label.Name != "" {
+			names = append(names, label.Name)
+		}
+	}
+	return names
+}
+
+func userLogins(users []ghUser) []string {
+	logins := make([]string, 0, len(users))
+	for _, user := range users {
+		if user.Login != "" {
+			logins = append(logins, user.Login)
+		}
+	}
+	return logins
+}
+
+func milestoneTitle(milestone *struct {
+	Title string `json:"title"`
+}) string {
+	if milestone == nil {
+		return ""
+	}
+	return milestone.Title
+}
+
+func reviewRequests(payload []ghReviewRequest) []workbench.ReviewRequestRef {
+	requests := make([]workbench.ReviewRequestRef, 0, len(payload))
+	for _, request := range payload {
+		requests = append(requests, workbench.ReviewRequestRef{
+			Kind:  request.TypeName,
+			Login: request.Login,
+			Name:  reviewRequestName(request),
+			Slug:  request.Slug,
+		})
+	}
+	return requests
+}
+
+func reviewRequestName(request ghReviewRequest) string {
+	switch {
+	case request.Name != "":
+		return request.Name
+	case request.Slug != "":
+		return request.Slug
+	default:
+		return request.Login
+	}
+}
+
+func latestReviews(payload []ghPullReviewItem) []workbench.PullRequestReviewRef {
+	reviews := make([]workbench.PullRequestReviewRef, 0, len(payload))
+	for _, review := range payload {
+		reviews = append(reviews, workbench.PullRequestReviewRef{
+			AuthorLogin: review.Author.Login,
+			State:       reviewState(review.State),
+		})
+	}
+	return reviews
+}
+
+func nonEmptyLines(value string) []string {
+	lines := strings.Split(value, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 func isPendingChecksExit(args []string, err error) bool {

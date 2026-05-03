@@ -13,6 +13,8 @@ import (
 type fakeRuntimeGitHub struct {
 	prs         []PullRequestRef
 	prErr       error
+	subjects    ReviewSubjects
+	subjectErr  error
 	issues      []IssueRef
 	issueErr    error
 	checks      CheckSummary
@@ -26,6 +28,13 @@ func (f fakeRuntimeGitHub) PullRequests(context.Context, string) ([]PullRequestR
 		return nil, f.prErr
 	}
 	return f.prs, nil
+}
+
+func (f fakeRuntimeGitHub) ViewerReviewSubjects(context.Context) (ReviewSubjects, error) {
+	if f.subjectErr != nil {
+		return f.subjects, f.subjectErr
+	}
+	return f.subjects, nil
 }
 
 func (f fakeRuntimeGitHub) Issues(context.Context, string) ([]IssueRef, error) {
@@ -78,6 +87,8 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 				Title:   "Runtime pipeline",
 				State:   "open",
 				URL:     "https://example.test/issues/123",
+				Body:    "Runtime pipeline issue details",
+				Labels:  []string{"enhancement"},
 				Certain: true,
 			}},
 			checks: CheckSummary{State: CheckPassing, Passing: 2},
@@ -101,6 +112,64 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	}
 	if item.Checks.State != CheckPassing || item.Checks.Passing != 2 {
 		t.Fatalf("expected passing checks, got %+v", item.Checks)
+	}
+}
+
+func TestRuntimeLoader_AddsPullRequestBackedItems(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	loader := RuntimeLoader{
+		Repo:     repo,
+		RepoPath: "/repo",
+		Local: fakeLocalDiscovery{
+			branches: []localrepo.Branch{{Name: "main"}},
+		},
+		GitHub: fakeRuntimeGitHub{
+			prs: []PullRequestRef{{
+				Number:     31,
+				Title:      "Review fork work",
+				State:      "open",
+				URL:        "https://example.test/pull/31",
+				HeadOwner:  "contributor",
+				HeadBranch: "feature/issue-77-review",
+				BaseBranch: "main",
+				LinkedIssues: []IssueRef{{
+					Number:  77,
+					Certain: true,
+				}},
+			}},
+			issues: []IssueRef{{
+				Number:  77,
+				Title:   "Review queue",
+				State:   "open",
+				URL:     "https://example.test/issues/77",
+				Certain: true,
+			}},
+			checksByRef: map[string]CheckSummary{
+				"31": {State: CheckPassing, Passing: 2},
+			},
+		},
+	}
+
+	result := loader.Load(context.Background())
+
+	item := runtimeWorkItemByPullRequest(result.Items, 31)
+	if item == nil {
+		t.Fatalf("expected PR-backed item, got %+v", result.Items)
+	}
+	if item.Worktree != nil {
+		t.Fatalf("expected PR-backed item without local worktree, got %+v", item.Worktree)
+	}
+	if item.Branch == nil || item.Branch.Name != "feature/issue-77-review" || item.Branch.Base != "main" || !item.Branch.RemoteOnly {
+		t.Fatalf("expected remote PR branch context, got %+v", item.Branch)
+	}
+	if item.Location() != "contributor/feature/issue-77-review" {
+		t.Fatalf("expected fork head location, got %q", item.Location())
+	}
+	if item.Issue == nil || item.Issue.Number != 77 || item.Issue.Title != "Review queue" || !item.Issue.Certain {
+		t.Fatalf("expected linked issue enrichment, got %+v", item.Issue)
+	}
+	if item.Checks.State != CheckPassing || item.Checks.Passing != 2 {
+		t.Fatalf("expected checks to use PR number for PR-only item, got %+v", item.Checks)
 	}
 }
 
@@ -289,6 +358,15 @@ func hasRuntimeErrorItem(items []WorkItem, prefix string, detail string) bool {
 func runtimeWorkItemByBranch(items []WorkItem, branch string) *WorkItem {
 	for i := range items {
 		if items[i].Branch != nil && items[i].Branch.Name == branch {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func runtimeWorkItemByPullRequest(items []WorkItem, number int) *WorkItem {
+	for i := range items {
+		if items[i].PullRequest != nil && items[i].PullRequest.Number == number {
 			return &items[i]
 		}
 	}

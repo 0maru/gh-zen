@@ -71,7 +71,7 @@ func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
 }
 
 func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"reviewDecision":"REVIEW_REQUIRED","closingIssuesReferences":[{"number":9,"title":"Issue","state":"OPEN","url":"https://example.test/issues/9"}]}]`)}
+	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","author":{"login":"0maru"},"headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"REVIEW_REQUIRED","reviewRequests":[{"__typename":"User","login":"alice","name":"Alice"},{"__typename":"Team","slug":"core","name":"Core"}],"latestReviews":[{"author":{"login":"bob"},"state":"APPROVED"}],"body":"Fixes #9"}]`)}
 	service := CLIService{Runner: runner}
 
 	got, err := service.PullRequests(context.Background(), "0maru/gh-zen")
@@ -79,16 +79,26 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		t.Fatalf("expected pull requests to parse, got %v", err)
 	}
 	want := []workbench.PullRequestRef{{
-		Number:     12,
-		Title:      "Add feature",
-		State:      "open",
-		URL:        "https://example.test/pr/12",
-		HeadOwner:  "0maru",
-		HeadBranch: "feature",
+		Number:      12,
+		Title:       "Add feature",
+		State:       "open",
+		URL:         "https://example.test/pr/12",
+		AuthorLogin: "0maru",
+		HeadOwner:   "0maru",
+		HeadBranch:  "feature",
+		BaseBranch:  "main",
+		UpdatedAt:   "2026-05-03T12:00:00Z",
 		LinkedIssues: []workbench.IssueRef{
-			{Number: 9, Title: "Issue", State: "open", URL: "https://example.test/issues/9", Certain: true},
+			{Number: 9, Certain: true},
 		},
 		ReviewState: "review required",
+		ReviewRequests: []workbench.ReviewRequestRef{
+			{Kind: "User", Login: "alice", Name: "Alice"},
+			{Kind: "Team", Name: "Core", Slug: "core"},
+		},
+		LatestReviews: []workbench.PullRequestReviewRef{
+			{AuthorLogin: "bob", State: "approved"},
+		},
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)
@@ -99,13 +109,13 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	if !hasArgPair(runner.args, "--limit", listLimit) {
 		t.Fatalf("expected gh pr list limit, got %#v", runner.args)
 	}
-	if !hasArgValue(runner.args, "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision,closingIssuesReferences") {
+	if !hasArgValue(runner.args, prListFields) {
 		t.Fatalf("expected gh pr list to request head repository owner, got %#v", runner.args)
 	}
 }
 
 func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9"}]`)}
+	runner := &fakeRunner{output: []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[{"name":"enhancement"}],"assignees":[{"login":"0maru"}],"milestone":{"title":"v1"},"updatedAt":"2026-05-03T12:00:00Z"}]`)}
 	service := CLIService{Runner: runner}
 
 	got, err := service.Issues(context.Background(), "0maru/gh-zen")
@@ -140,13 +150,29 @@ func TestCLIService_CheckSummaryParsesGHOutput(t *testing.T) {
 	}
 }
 
+func TestCLIService_ViewerReviewSubjectsParsesGHOutput(t *testing.T) {
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "user", "--jq", ".login"):         []byte("0maru\n"),
+		commandKey("api", "user/teams", "--jq", ".[].slug"): []byte("frontend\nplatform\n"),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.ViewerReviewSubjects(context.Background())
+	if err != nil {
+		t.Fatalf("expected viewer subjects to parse, got %v", err)
+	}
+	want := workbench.ReviewSubjects{Login: "0maru", TeamSlugs: []string{"frontend", "platform"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected %+v, got %+v", want, got)
+	}
+}
+
 func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
-	prFields := "number,title,state,url,headRefName,headRepositoryOwner,reviewDecision,closingIssuesReferences"
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
-		commandKey("pr", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", prFields):                    []byte(`[{"number":24,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/pull/24","headRefName":"feature/issue-123-runtime","headRepositoryOwner":{"login":"0maru"},"reviewDecision":"APPROVED","closingIssuesReferences":[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123"}]}]`),
-		commandKey("issue", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", "number,title,state,url"): []byte(`[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123"}]`),
-		commandKey("pr", "checks", "feature/issue-123-runtime", "--repo", repo.FullName(), "--json", "name,state"):                         []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"SUCCESS"}]`),
+		commandKey("pr", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", prListFields):       []byte(`[{"number":24,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/pull/24","author":{"login":"0maru"},"headRefName":"feature/issue-123-runtime","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"APPROVED","reviewRequests":[],"latestReviews":[],"body":"Closes #123"}]`),
+		commandKey("issue", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", issueListFields): []byte(`[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123","body":"Runtime issue","labels":[],"assignees":[],"milestone":null,"updatedAt":"2026-05-03T12:00:00Z"}]`),
+		commandKey("pr", "checks", "feature/issue-123-runtime", "--repo", repo.FullName(), "--json", "name,state"):                []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"SUCCESS"}]`),
 	}}
 	service := CLIService{Runner: runner}
 
