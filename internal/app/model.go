@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	cfgpkg "github.com/0maru/gh-zen/internal/config"
-	ghsvc "github.com/0maru/gh-zen/internal/github"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -76,14 +75,16 @@ type model struct {
 	viewSelected         bool
 	workItems            []workbench.WorkItem
 	selectedItem         int
+	workbenchSource      workbenchDataSource
+	workbenchLoading     bool
 	focusedPane          paneFocus
 	focusedWorkItemID    string
 	preview              previewState
 	nextPreviewRequestID int
 	previewLoader        previewLoader
-	githubService        ghsvc.Service
-	githubSummary        ghsvc.RepositorySummary
-	githubError          string
+	workbenchReloader    WorkbenchReloader
+	nextReloadRequestID  int
+	activeReloadRequest  workbenchReloadRequest
 	workbenchFilter      cfgpkg.WorkbenchFilter
 	actionRunner         actionRunner
 	statusMessage        string
@@ -94,16 +95,31 @@ type model struct {
 
 // WorkbenchData contains resolved repository workbench state for app startup.
 type WorkbenchData struct {
-	Repos     []workbench.RepoRef
-	WorkItems []workbench.WorkItem
+	Repos          []workbench.RepoRef
+	WorkItems      []workbench.WorkItem
+	Reloader       WorkbenchReloader
+	InitialLoading bool
+	Demo           bool
+}
+
+// WorkbenchReloader reloads runtime workbench data for one selected repository.
+type WorkbenchReloader interface {
+	Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult
 }
 
 type repoViewFilter int
+
+type workbenchDataSource int
 
 const (
 	repoViewActiveWorktrees repoViewFilter = iota
 	repoViewReviewRequested
 	repoViewFailedChecks
+)
+
+const (
+	workbenchDataLive workbenchDataSource = iota
+	workbenchDataDemo
 )
 
 type repoView struct {
@@ -115,6 +131,13 @@ var repoViews = []repoView{
 	{label: "Active worktrees", filter: repoViewActiveWorktrees},
 	{label: "Review requested", filter: repoViewReviewRequested},
 	{label: "Failed checks", filter: repoViewFailedChecks},
+}
+
+var workbenchErrorIDPrefixes = []string{
+	"local-discovery-error:",
+	"pull-request-discovery-error:",
+	"issue-check-discovery-error:",
+	"repository-path-error:",
 }
 
 func New() tea.Model {
@@ -142,53 +165,85 @@ func newModelWithRuntimeConfig(cfg cfgpkg.Config, startupRepo string, loader pre
 	return newModelWithRuntimeData(cfg, startupRepo, WorkbenchData{
 		Repos:     workbench.FakeRepos(),
 		WorkItems: workbench.FakeWorkItems(),
+		Demo:      true,
 	}, loader)
 }
 
 func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data WorkbenchData, loader previewLoader) model {
+	source := workbenchDataLive
+	if data.Demo {
+		source = workbenchDataDemo
+	}
 	m := model{
-		repos:           cloneRepoRefs(data.Repos),
-		workItems:       cloneWorkItems(data.WorkItems),
-		previewLoader:   loader,
-		workbenchFilter: cfg.Workbench.Filter,
-		actionRunner:    systemActionRunner{},
-		styles:          DefaultStyles(),
-		keys:            DefaultKeyMap(),
-		help:            newHelpModel(),
+		repos:             cloneRepoRefs(data.Repos),
+		workItems:         cloneWorkItems(data.WorkItems),
+		workbenchSource:   source,
+		previewLoader:     loader,
+		workbenchReloader: data.Reloader,
+		workbenchFilter:   cfg.Workbench.Filter,
+		actionRunner:      systemActionRunner{},
+		styles:            DefaultStyles(),
+		keys:              DefaultKeyMap(),
+		help:              newHelpModel(),
 	}
 	m.applyStartupView(cfg.Startup.View)
 	if startupRepo == "" {
 		startupRepo = cfg.Startup.Repo
 	}
 	m.applyStartupRepo(startupRepo)
+	if data.InitialLoading {
+		m.beginWorkbenchReload("Loading workbench data...")
+	}
 	_ = m.startPreviewLoadForCurrentItem()
 	return m
 }
 
-func newModelWithGitHubService(service ghsvc.Service) model {
-	m := newModelWithPreviewLoader(fakeDelayedPreviewLoader(defaultPreviewDelay))
-	m.githubService = service
-	return m
+type workbenchReloadRequest struct {
+	requestID int
+	repo      workbench.RepoRef
+	status    string
 }
 
-type githubSummaryMsg struct {
-	summary ghsvc.RepositorySummary
-	err     error
+type workbenchReloadMsg struct {
+	request workbenchReloadRequest
+	result  workbench.RuntimeLoadResult
 }
 
 func (m model) Init() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.workbenchLoading && m.activeReloadRequest.requestID != 0 {
+		cmds = append(cmds, m.workbenchReloadCommand(m.activeReloadRequest))
+	}
 	if m.preview.status != previewLoading || m.previewLoader == nil {
-		return nil
+		return batchCommands(cmds...)
 	}
 	item, ok := m.selectedWorkItem()
 	if !ok || item.ID != m.focusedWorkItemID {
-		return nil
+		return batchCommands(cmds...)
 	}
-	return m.previewLoader(previewRequest{
+	cmds = append(cmds, m.previewLoader(previewRequest{
 		requestID:  m.preview.requestID,
 		workItemID: item.ID,
 		item:       item,
-	})
+	}))
+	return batchCommands(cmds...)
+}
+
+func batchCommands(cmds ...tea.Cmd) tea.Cmd {
+	filtered := make([]tea.Cmd, 0, len(cmds))
+	for _, cmd := range cmds {
+		if cmd != nil {
+			filtered = append(filtered, cmd)
+		}
+	}
+	switch len(filtered) {
+	case 0:
+		return nil
+	case 1:
+		return filtered[0]
+	default:
+		return tea.Batch(filtered...)
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -203,9 +258,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionResultMsg:
 		m.handleActionResult(msg)
 		return m, nil
-	case githubSummaryMsg:
-		m.handleGitHubSummary(msg)
-		return m, nil
+	case workbenchReloadMsg:
+		return m, m.handleWorkbenchReload(msg)
 	case tea.KeyMsg:
 		if action, ok := m.matchedAction(msg); ok {
 			return m, m.handleAction(action)
@@ -321,12 +375,11 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.jumpFocusedSelection(true)
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionRefresh:
-		cmd := m.refreshGitHubSummary()
+		cmd := m.refreshWorkbenchData()
 		if cmd == nil {
 			m.statusMessage = "Refresh unavailable"
 			return nil
 		}
-		m.statusMessage = "Refreshing GitHub data..."
 		return cmd
 	case actionOpenPullRequest:
 		return m.openPullRequest()
@@ -442,30 +495,74 @@ func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
 	return "", "", false
 }
 
-func (m model) refreshGitHubSummary() tea.Cmd {
-	if m.githubService == nil {
+func (m *model) refreshWorkbenchData() tea.Cmd {
+	return m.startWorkbenchReload("Reloading workbench data...")
+}
+
+func (m *model) startWorkbenchReload(status string) tea.Cmd {
+	if !m.beginWorkbenchReload(status) {
 		return nil
+	}
+	return m.workbenchReloadCommand(m.activeReloadRequest)
+}
+
+func (m *model) beginWorkbenchReload(status string) bool {
+	if m.workbenchReloader == nil {
+		return false
 	}
 	repo, ok := m.selectedRepoRef()
 	if !ok {
-		return nil
+		return false
 	}
-	repoName := repo.FullName()
+	m.nextReloadRequestID++
+	request := workbenchReloadRequest{
+		requestID: m.nextReloadRequestID,
+		repo:      repo,
+		status:    status,
+	}
+	m.activeReloadRequest = request
+	m.workbenchLoading = true
+	m.statusMessage = status
+	return true
+}
+
+func (m model) workbenchReloadCommand(request workbenchReloadRequest) tea.Cmd {
 	return func() tea.Msg {
-		summary, err := m.githubService.RepositorySummary(context.Background(), repoName)
-		return githubSummaryMsg{summary: summary, err: err}
+		return workbenchReloadMsg{
+			request: request,
+			result:  m.workbenchReloader.Load(context.Background(), request.repo),
+		}
 	}
 }
 
-func (m *model) handleGitHubSummary(msg githubSummaryMsg) {
-	if msg.err != nil {
-		m.githubError = msg.err.Error()
-		m.statusMessage = "Refresh failed: " + msg.err.Error()
-		return
+func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
+	if msg.request != m.activeReloadRequest {
+		return nil
 	}
-	m.githubError = ""
-	m.githubSummary = msg.summary
-	m.statusMessage = "Refreshed GitHub data"
+	repo, ok := m.selectedRepoRef()
+	if !ok || repo != msg.request.repo {
+		m.workbenchLoading = false
+		if m.statusMessage == msg.request.status {
+			m.statusMessage = ""
+		}
+		return nil
+	}
+
+	selectedWorkItemRepo := workbench.RepoRef{}
+	selectedWorkItemID := ""
+	if item, ok := m.selectedWorkItem(); ok {
+		selectedWorkItemRepo = item.Repo
+		selectedWorkItemID = item.ID
+	}
+	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
+	m.workbenchLoading = false
+	if hasWorkbenchErrorItems(msg.result.Items) {
+		m.statusMessage = "Workbench loaded with partial errors"
+	} else {
+		m.statusMessage = ""
+	}
+	return m.startPreviewLoadForCurrentItem()
 }
 
 func (m *model) focusNextPane() {
@@ -668,6 +765,53 @@ func filterWorkItems(items []workbench.WorkItem, keep func(workbench.WorkItem) b
 	return out
 }
 
+func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, replacement []workbench.WorkItem) []workbench.WorkItem {
+	out := make([]workbench.WorkItem, 0, len(items)+len(replacement))
+	replaced := false
+	for _, item := range items {
+		if item.Repo == repo {
+			if !replaced {
+				out = append(out, replacement...)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, item)
+	}
+	if !replaced {
+		out = append(out, replacement...)
+	}
+	return out
+}
+
+func hasWorkbenchErrorItems(items []workbench.WorkItem) bool {
+	for _, item := range items {
+		for _, prefix := range workbenchErrorIDPrefixes {
+			if strings.HasPrefix(item.ID, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m *model) restoreSelectedWorkItem(repo workbench.RepoRef, workItemID string) {
+	items := m.visibleWorkItems()
+	if len(items) == 0 {
+		m.selectedItem = 0
+		return
+	}
+	if workItemID != "" {
+		for i, item := range items {
+			if item.Repo == repo && item.ID == workItemID {
+				m.selectedItem = i
+				return
+			}
+		}
+	}
+	m.selectedItem = clamp(m.selectedItem, 0, len(items)-1)
+}
+
 func cloneRepoRefs(repos []workbench.RepoRef) []workbench.RepoRef {
 	return append([]workbench.RepoRef(nil), repos...)
 }
@@ -857,8 +1001,14 @@ func (m model) workItemLines(width int, focused bool) []string {
 }
 
 func (m model) emptyWorkItemLine() string {
+	if m.workbenchLoading {
+		return "  loading workbench data..."
+	}
 	if workbenchFilterActive(m.workbenchFilter) {
 		return "  no work items match filters"
+	}
+	if m.workbenchSource == workbenchDataLive {
+		return "  no live work items"
 	}
 	return "  no work items"
 }
