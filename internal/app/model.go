@@ -113,7 +113,8 @@ type workbenchDataSource int
 
 const (
 	repoViewActiveWorktrees repoViewFilter = iota
-	repoViewReviewRequested
+	repoViewNeedsMyReview
+	repoViewWaitingOnReview
 	repoViewFailedChecks
 )
 
@@ -129,7 +130,8 @@ type repoView struct {
 
 var repoViews = []repoView{
 	{label: "Active worktrees", filter: repoViewActiveWorktrees},
-	{label: "Review requested", filter: repoViewReviewRequested},
+	{label: "Needs my review", filter: repoViewNeedsMyReview},
+	{label: "Waiting on review", filter: repoViewWaitingOnReview},
 	{label: "Failed checks", filter: repoViewFailedChecks},
 }
 
@@ -824,8 +826,10 @@ func (v repoView) matches(item workbench.WorkItem) bool {
 	switch v.filter {
 	case repoViewActiveWorktrees:
 		return item.Worktree != nil
-	case repoViewReviewRequested:
-		return item.PullRequest != nil && item.PullRequest.ReviewState == "review requested"
+	case repoViewNeedsMyReview:
+		return item.PullRequest != nil && item.PullRequest.ViewerReviewRequested
+	case repoViewWaitingOnReview:
+		return item.PullRequest != nil && item.PullRequest.WaitingOnReview
 	case repoViewFailedChecks:
 		return item.Checks.State == workbench.CheckFailing
 	default:

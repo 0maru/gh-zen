@@ -1116,9 +1116,16 @@ func TestUpdate_RepositoryViewsFilterWorkItems(t *testing.T) {
 
 	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	mm = got.(model)
-	reviewRequested := mm.visibleWorkItems()
-	if len(reviewRequested) != 1 || reviewRequested[0].PullRequest == nil || reviewRequested[0].PullRequest.ReviewState != "review requested" {
-		t.Fatalf("expected review requested view to include only review-requested PR work, got %+v", reviewRequested)
+	needsMyReview := mm.visibleWorkItems()
+	if len(needsMyReview) != 1 || needsMyReview[0].PullRequest == nil || !needsMyReview[0].PullRequest.ViewerReviewRequested {
+		t.Fatalf("expected needs-my-review view to include only viewer-requested PR work, got %+v", needsMyReview)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm = got.(model)
+	waitingOnReview := mm.visibleWorkItems()
+	if len(waitingOnReview) != 0 {
+		t.Fatalf("expected fake data to have no waiting-on-review work, got %+v", waitingOnReview)
 	}
 
 	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
@@ -1126,6 +1133,81 @@ func TestUpdate_RepositoryViewsFilterWorkItems(t *testing.T) {
 	failedChecks := mm.visibleWorkItems()
 	if len(failedChecks) != 1 || failedChecks[0].Checks.State != workbench.CheckFailing {
 		t.Fatalf("expected failed checks view to include only failing-check work, got %+v", failedChecks)
+	}
+}
+
+func TestRepoViewMatchesReviewFocusedWorkItems(t *testing.T) {
+	needsMyReview := repoView{filter: repoViewNeedsMyReview}
+	waitingOnReview := repoView{filter: repoViewWaitingOnReview}
+
+	cases := []struct {
+		name    string
+		item    workbench.WorkItem
+		view    repoView
+		matches bool
+	}{
+		{
+			name: "needs my review",
+			item: workbench.WorkItem{PullRequest: &workbench.PullRequestRef{ViewerReviewRequested: true}},
+			view: needsMyReview, matches: true,
+		},
+		{
+			name: "needs my review excludes unrelated PR",
+			item: workbench.WorkItem{PullRequest: &workbench.PullRequestRef{}},
+			view: needsMyReview, matches: false,
+		},
+		{
+			name: "waiting on review",
+			item: workbench.WorkItem{PullRequest: &workbench.PullRequestRef{WaitingOnReview: true}},
+			view: waitingOnReview, matches: true,
+		},
+		{
+			name: "waiting on review excludes unrelated PR",
+			item: workbench.WorkItem{PullRequest: &workbench.PullRequestRef{}},
+			view: waitingOnReview, matches: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.view.matches(tc.item); got != tc.matches {
+				t.Fatalf("expected matches=%v, got %v", tc.matches, got)
+			}
+		})
+	}
+}
+
+func TestWorkItemPreviewLines_ShowsReviewPerspective(t *testing.T) {
+	item := workbench.WorkItem{
+		Repo: workbench.RepoRef{Owner: "0maru", Name: "gh-zen"},
+		PullRequest: &workbench.PullRequestRef{
+			Number:                24,
+			State:                 "open",
+			AuthorLogin:           "teammate",
+			HeadOwner:             "0maru",
+			HeadBranch:            "feature",
+			ViewerReviewRequested: true,
+			ReviewRequests: []workbench.ReviewRequestRef{
+				{Kind: "User", Login: "0maru"},
+				{Kind: "Team", Slug: "frontend"},
+			},
+			LatestReviews: []workbench.PullRequestReviewRef{
+				{AuthorLogin: "alice", State: "commented"},
+			},
+		},
+	}
+
+	got := strings.Join(workItemPreviewLines(item, 100), "\n")
+	for _, want := range []string{
+		"Head: 0maru/feature",
+		"Author: teammate",
+		"Reason: needs your review",
+		"Requested: 0maru, team/frontend",
+		"Reviews: alice commented",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected preview to contain %q, got:\n%s", want, got)
+		}
 	}
 }
 
