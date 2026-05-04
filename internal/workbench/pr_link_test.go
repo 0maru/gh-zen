@@ -101,6 +101,135 @@ func TestLinkPullRequests_PrefersOpenPullRequestForSameHead(t *testing.T) {
 	}
 }
 
+func TestLinkPullRequestsForRepo_AppendsOpenPRBackedItems(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	items := []WorkItem{
+		{ID: "main", Repo: repo, Branch: &BranchRef{Name: "main"}},
+	}
+	prs := []PullRequestRef{{
+		Number:     12,
+		Title:      "Review fork work",
+		State:      "open",
+		URL:        "https://example.test/pr/12",
+		HeadOwner:  "contributor",
+		HeadBranch: "feature",
+		BaseBranch: "main",
+	}}
+
+	got := LinkPullRequestsForRepo(repo, items, prs)
+	if len(got) != 2 {
+		t.Fatalf("expected local item plus PR-backed item, got %+v", got)
+	}
+	item := got[1]
+	if item.ID != "pull-request:0maru/gh-zen:#12" {
+		t.Fatalf("expected stable PR-backed ID, got %q", item.ID)
+	}
+	if item.Repo != repo {
+		t.Fatalf("expected repo context to be preserved, got %+v", item.Repo)
+	}
+	if item.PullRequest == nil || item.PullRequest.Number != 12 {
+		t.Fatalf("expected PR metadata, got %+v", item.PullRequest)
+	}
+	if item.Branch == nil || item.Branch.Name != "feature" || item.Branch.Base != "main" || !item.Branch.RemoteOnly {
+		t.Fatalf("expected remote PR branch context, got %+v", item.Branch)
+	}
+	if item.Local == nil || item.Local.State != LocalMissing || !strings.Contains(item.Local.Summary, "fork head contributor") {
+		t.Fatalf("expected missing local fork summary, got %+v", item.Local)
+	}
+	if item.Checks.State != CheckUnknown {
+		t.Fatalf("expected unknown checks placeholder, got %+v", item.Checks)
+	}
+}
+
+func TestLinkPullRequestsForRepo_DeduplicatesLocalBackedPullRequests(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	items := []WorkItem{
+		{ID: "feature", Repo: repo, Branch: &BranchRef{Name: "feature"}},
+	}
+	prs := []PullRequestRef{{
+		Number:     12,
+		State:      "open",
+		HeadOwner:  "0maru",
+		HeadBranch: "feature",
+	}}
+
+	got := LinkPullRequestsForRepo(repo, items, prs)
+	if len(got) != 1 {
+		t.Fatalf("expected linked PR not to be duplicated, got %+v", got)
+	}
+	if got[0].PullRequest == nil || got[0].PullRequest.Number != 12 {
+		t.Fatalf("expected local item to keep linked PR, got %+v", got[0])
+	}
+}
+
+func TestLinkPullRequestsForRepo_SkipsClosedPRBackedItems(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	items := []WorkItem{
+		{ID: "main", Repo: repo, Branch: &BranchRef{Name: "main"}},
+	}
+	prs := []PullRequestRef{{
+		Number:     12,
+		State:      "closed",
+		HeadOwner:  "0maru",
+		HeadBranch: "closed-feature",
+	}}
+
+	got := LinkPullRequestsForRepo(repo, items, prs)
+	if len(got) != 1 {
+		t.Fatalf("expected closed unmatched PR to stay hidden, got %+v", got)
+	}
+}
+
+func TestApplyReviewPerspective_MarksViewerReviewRequestsAndWaitingPRs(t *testing.T) {
+	subjects := ReviewSubjects{Login: "0maru", TeamSlugs: []string{"frontend"}}
+	prs := []PullRequestRef{
+		{
+			Number: 1,
+			State:  "open",
+			ReviewRequests: []ReviewRequestRef{
+				{Kind: "User", Login: "0maru"},
+			},
+		},
+		{
+			Number:      2,
+			State:       "open",
+			AuthorLogin: "0maru",
+			ReviewRequests: []ReviewRequestRef{
+				{Kind: "User", Login: "alice"},
+			},
+		},
+		{
+			Number: 3,
+			State:  "open",
+			ReviewRequests: []ReviewRequestRef{
+				{Kind: "Team", Slug: "frontend"},
+			},
+		},
+		{
+			Number:  4,
+			State:   "open",
+			IsDraft: true,
+			ReviewRequests: []ReviewRequestRef{
+				{Kind: "User", Login: "0maru"},
+			},
+		},
+	}
+
+	got := ApplyReviewPerspective(prs, subjects)
+	if !got[0].ViewerReviewRequested {
+		t.Fatalf("expected direct viewer review request to be marked: %+v", got[0])
+	}
+	if !got[1].ViewerAuthored || !got[1].WaitingOnReview {
+		t.Fatalf("expected viewer-authored pending request to be marked waiting: %+v", got[1])
+	}
+	if !got[2].ViewerReviewRequested {
+		t.Fatalf("expected viewer team review request to be marked: %+v", got[2])
+	}
+	if got[3].ViewerReviewRequested {
+		t.Fatalf("expected draft PR to be excluded from actionable review requests: %+v", got[3])
+	}
+}
+
 func TestPullRequestLinkService_LoadsPullRequestsForRepo(t *testing.T) {
 	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
 	service := PullRequestLinkService{

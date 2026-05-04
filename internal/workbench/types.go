@@ -1,6 +1,9 @@
 package workbench
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type RepoRef struct {
 	Owner string
@@ -29,11 +32,16 @@ type WorktreeRef struct {
 }
 
 type IssueRef struct {
-	Number  int
-	Title   string
-	State   string
-	URL     string
-	Certain bool
+	Number    int
+	Title     string
+	State     string
+	URL       string
+	Body      string
+	Labels    []string
+	Assignees []string
+	Milestone string
+	UpdatedAt string
+	Certain   bool
 }
 
 func (i IssueRef) Label() string {
@@ -47,14 +55,24 @@ func (i IssueRef) Label() string {
 }
 
 type PullRequestRef struct {
-	Number       int
-	Title        string
-	State        string
-	URL          string
-	HeadOwner    string
-	HeadBranch   string
-	LinkedIssues []IssueRef
-	ReviewState  string
+	Number         int
+	Title          string
+	State          string
+	URL            string
+	AuthorLogin    string
+	HeadOwner      string
+	HeadBranch     string
+	BaseBranch     string
+	IsDraft        bool
+	UpdatedAt      string
+	LinkedIssues   []IssueRef
+	ReviewState    string
+	ReviewRequests []ReviewRequestRef
+	LatestReviews  []PullRequestReviewRef
+
+	ViewerReviewRequested bool
+	ViewerAuthored        bool
+	WaitingOnReview       bool
 }
 
 func (p PullRequestRef) Label() string {
@@ -70,6 +88,89 @@ func (p PullRequestRef) NumberLabel() string {
 		return "PR"
 	}
 	return fmt.Sprintf("PR #%d", p.Number)
+}
+
+func (p PullRequestRef) HeadLabel() string {
+	switch {
+	case p.HeadOwner != "" && p.HeadBranch != "":
+		return p.HeadOwner + "/" + p.HeadBranch
+	case p.HeadBranch != "":
+		return p.HeadBranch
+	case p.HeadOwner != "":
+		return p.HeadOwner
+	default:
+		return ""
+	}
+}
+
+type ReviewRequestRef struct {
+	Kind  string
+	Login string
+	Name  string
+	Slug  string
+}
+
+type PullRequestReviewRef struct {
+	AuthorLogin string
+	State       string
+}
+
+type ReviewSubjects struct {
+	Login     string
+	TeamSlugs []string
+}
+
+func (s ReviewSubjects) Empty() bool {
+	return s.Login == "" && len(s.TeamSlugs) == 0
+}
+
+func (p PullRequestRef) WithReviewPerspective(subjects ReviewSubjects) PullRequestRef {
+	p.ViewerAuthored = sameLogin(p.AuthorLogin, subjects.Login)
+	p.ViewerReviewRequested = p.needsReviewFrom(subjects)
+	p.WaitingOnReview = p.waitingOnReviewFromOthers(subjects)
+	return p
+}
+
+func (p PullRequestRef) needsReviewFrom(subjects ReviewSubjects) bool {
+	if !p.openForReview() {
+		return false
+	}
+	for _, request := range p.ReviewRequests {
+		if reviewRequestMatches(subjects, request) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p PullRequestRef) waitingOnReviewFromOthers(subjects ReviewSubjects) bool {
+	if !p.openForReview() || !sameLogin(p.AuthorLogin, subjects.Login) {
+		return false
+	}
+	return len(p.ReviewRequests) > 0 || p.ReviewState == "review required"
+}
+
+func (p PullRequestRef) openForReview() bool {
+	return strings.EqualFold(p.State, "open") && !p.IsDraft
+}
+
+func reviewRequestMatches(subjects ReviewSubjects, request ReviewRequestRef) bool {
+	if request.Login != "" && sameLogin(request.Login, subjects.Login) {
+		return true
+	}
+	if request.Slug == "" {
+		return false
+	}
+	for _, team := range subjects.TeamSlugs {
+		if strings.EqualFold(team, request.Slug) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameLogin(left string, right string) bool {
+	return left != "" && right != "" && strings.EqualFold(left, right)
 }
 
 type CheckState string
@@ -170,6 +271,11 @@ func (w WorkItem) Location() string {
 	switch {
 	case w.Worktree != nil && w.Worktree.Path != "":
 		return w.Worktree.Path
+	case w.PullRequest != nil && w.Worktree == nil && w.Branch != nil && w.Branch.RemoteOnly:
+		if head := w.PullRequest.HeadLabel(); head != "" {
+			return head
+		}
+		return "remote only"
 	case w.Branch != nil && w.Branch.RemoteOnly:
 		return "remote only"
 	case w.Issue != nil && w.Branch == nil && w.PullRequest == nil:

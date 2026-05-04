@@ -12,6 +12,7 @@ type FakeService struct {
 	PullRequestsByRepo map[string][]workbench.PullRequestRef
 	IssuesByRepo       map[string][]workbench.IssueRef
 	Checks             map[string]workbench.CheckSummary
+	ReviewSubjects     workbench.ReviewSubjects
 	Err                error
 }
 
@@ -57,6 +58,13 @@ func (f FakeService) CheckSummary(_ context.Context, repo string, ref string) (w
 		return summary, nil
 	}
 	return workbench.CheckSummary{State: workbench.CheckUnknown}, nil
+}
+
+func (f FakeService) ViewerReviewSubjects(context.Context) (workbench.ReviewSubjects, error) {
+	if f.Err != nil {
+		return workbench.ReviewSubjects{}, f.Err
+	}
+	return f.ReviewSubjects, nil
 }
 
 func (f FakeService) PullRequestsForRepo(repo string) ([]workbench.PullRequestRef, error) {

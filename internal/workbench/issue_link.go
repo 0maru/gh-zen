@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 var (
@@ -37,10 +38,14 @@ func (s IssueCheckLinkService) LinkForRepo(ctx context.Context, repo RepoRef, it
 
 	out := LinkIssues(items, issues)
 	for i := range out {
-		if out[i].PullRequest == nil || out[i].PullRequest.HeadBranch == "" {
+		if out[i].PullRequest == nil {
 			continue
 		}
-		checks, err := s.GitHub.CheckSummary(ctx, repo.FullName(), out[i].PullRequest.HeadBranch)
+		ref := pullRequestCheckRef(out[i])
+		if ref == "" {
+			continue
+		}
+		checks, err := s.GitHub.CheckSummary(ctx, repo.FullName(), ref)
 		if err != nil {
 			discoveryErrors = append(discoveryErrors, err)
 			if out[i].Checks.State == "" {
@@ -140,6 +145,16 @@ func enrichIssue(issue IssueRef, byNumber map[int]IssueRef) *IssueRef {
 		return &known
 	}
 	return &issue
+}
+
+func pullRequestCheckRef(item WorkItem) string {
+	if item.PullRequest == nil {
+		return ""
+	}
+	if strings.HasPrefix(item.ID, "pull-request:") && item.PullRequest.Number > 0 {
+		return strconv.Itoa(item.PullRequest.Number)
+	}
+	return item.PullRequest.HeadBranch
 }
 
 func issueCheckDiscoveryErrorItem(repo RepoRef, err error) WorkItem {

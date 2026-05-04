@@ -54,6 +54,24 @@ func TestWorkItem_IssueLabel_MarksUncertainIssue(t *testing.T) {
 	}
 }
 
+func TestPullRequestRef_HeadLabel(t *testing.T) {
+	pr := PullRequestRef{HeadOwner: "contributor", HeadBranch: "feature"}
+	if got := pr.HeadLabel(); got != "contributor/feature" {
+		t.Fatalf("expected owner-qualified head label, got %q", got)
+	}
+}
+
+func TestWorkItem_LocationShowsPullRequestHeadForRemotePRBranch(t *testing.T) {
+	item := WorkItem{
+		Repo:        RepoRef{Owner: "0maru", Name: "gh-zen"},
+		Branch:      &BranchRef{Name: "feature", RemoteOnly: true},
+		PullRequest: &PullRequestRef{HeadOwner: "contributor", HeadBranch: "feature"},
+	}
+	if got := item.Location(); got != "contributor/feature" {
+		t.Fatalf("expected PR head location, got %q", got)
+	}
+}
+
 func TestFakeWorkItems_CoverRequiredShapes(t *testing.T) {
 	items := FakeWorkItems()
 	if len(items) < 5 {
