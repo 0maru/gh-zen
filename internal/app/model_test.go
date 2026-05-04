@@ -1211,6 +1211,55 @@ func TestWorkItemPreviewLines_ShowsReviewPerspective(t *testing.T) {
 	}
 }
 
+func TestWorkItemPreviewLines_ShowsIssueDetails(t *testing.T) {
+	item := workbench.WorkItem{
+		Repo:   workbench.RepoRef{Owner: "0maru", Name: "gh-zen"},
+		Branch: &workbench.BranchRef{Name: "feature/66-issue-detail"},
+		Issue: &workbench.IssueRef{
+			Number:    66,
+			Title:     "Issue detail workflow",
+			State:     "open",
+			Body:      "Show enough issue context inside the preview pane.",
+			Labels:    []string{"enhancement", "ux"},
+			Assignees: []string{"0maru"},
+			Milestone: "v1",
+			UpdatedAt: "2026-05-03T12:00:00Z",
+			Certain:   false,
+		},
+	}
+
+	got := strings.Join(workItemPreviewLines(item, 120), "\n")
+	for _, want := range []string{
+		"Issue: #66 Issue detail workflow (uncertain)",
+		"Issue link: heuristic",
+		"Issue state: open",
+		"Labels: enhancement, ux",
+		"Assignees: 0maru",
+		"Milestone: v1",
+		"Issue updated: 2026-05-03T12:00:00Z",
+		"Issue body: Show enough issue context inside the preview pane.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected preview to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestWorkItemPreviewLines_ShowsNoIssueWithoutError(t *testing.T) {
+	item := workbench.WorkItem{
+		Repo:   workbench.RepoRef{Owner: "0maru", Name: "gh-zen"},
+		Branch: &workbench.BranchRef{Name: "feature/no-issue"},
+	}
+
+	got := strings.Join(workItemPreviewLines(item, 100), "\n")
+	if !strings.Contains(got, "Issue: no issue") {
+		t.Fatalf("expected preview to show no issue state, got:\n%s", got)
+	}
+	if strings.Contains(got, "Preview failed") {
+		t.Fatalf("expected missing issue not to be a preview error, got:\n%s", got)
+	}
+}
+
 func TestNewWithConfig_AppliesStartupRepository(t *testing.T) {
 	cfg := cfgpkg.Defaults()
 	cfg.Startup.Repo = "0maru/dotfiles"
