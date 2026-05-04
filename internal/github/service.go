@@ -54,6 +54,29 @@ const (
 	issueListFields = "number,title,state,url,body,labels,assignees,milestone,updatedAt"
 	listLimit       = "1000"
 	prListFields    = "number,title,state,url,headRefName,headRepositoryOwner,baseRefName,isDraft,updatedAt,author,reviewRequests,latestReviews,reviewDecision,body"
+
+	pullRequestClosingIssuesQuery = `
+query($owner:String!, $name:String!, $after:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequests(first:100, after:$after, states:[OPEN, CLOSED, MERGED], orderBy:{field:UPDATED_AT, direction:DESC}) {
+      nodes {
+        number
+        closingIssuesReferences(first:20) {
+          nodes {
+            number
+            title
+            state
+            url
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}`
 )
 
 var (
@@ -139,6 +162,8 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("parse gh pr list output: %w", err)
 	}
+	closingIssuesByPR, _ := s.pullRequestClosingIssues(ctx, repo)
+
 	prs := make([]workbench.PullRequestRef, 0, len(payload))
 	for _, pr := range payload {
 		prs = append(prs, workbench.PullRequestRef{
@@ -152,7 +177,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			BaseBranch:     pr.BaseRefName,
 			IsDraft:        pr.IsDraft,
 			UpdatedAt:      pr.UpdatedAt,
-			LinkedIssues:   linkedIssuesFromBody(pr.Body),
+			LinkedIssues:   linkedIssues(closingIssuesByPR[pr.Number], pr.Body),
 			ReviewState:    reviewState(pr.ReviewDecision),
 			ReviewRequests: reviewRequests(pr.ReviewRequests),
 			LatestReviews:  latestReviews(pr.LatestReviews),
@@ -186,11 +211,16 @@ func (s CLIService) Issues(ctx context.Context, repo string) ([]workbench.IssueR
 	issues := make([]workbench.IssueRef, 0, len(payload))
 	for _, issue := range payload {
 		issues = append(issues, workbench.IssueRef{
-			Number:  issue.Number,
-			Title:   issue.Title,
-			State:   strings.ToLower(issue.State),
-			URL:     issue.URL,
-			Certain: true,
+			Number:    issue.Number,
+			Title:     issue.Title,
+			State:     strings.ToLower(issue.State),
+			URL:       issue.URL,
+			Body:      issue.Body,
+			Labels:    labelNames(issue.Labels),
+			Assignees: userLogins(issue.Assignees),
+			Milestone: milestoneTitle(issue.Milestone),
+			UpdatedAt: issue.UpdatedAt,
+			Certain:   true,
 		})
 	}
 	return issues, nil
@@ -235,6 +265,55 @@ func (s CLIService) ViewerReviewSubjects(ctx context.Context) (workbench.ReviewS
 	return subjects, nil
 }
 
+func (s CLIService) pullRequestClosingIssues(ctx context.Context, repo string) (map[int][]workbench.IssueRef, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, nil
+	}
+
+	issuesByPR := map[int][]workbench.IssueRef{}
+	after := ""
+	for {
+		output, err := s.runner().Run(ctx, "api", "graphql", "-f", "owner="+owner, "-f", "name="+name, "-f", "after="+after, "-f", "query="+pullRequestClosingIssuesQuery)
+		if err != nil {
+			return issuesByPR, err
+		}
+		var payload struct {
+			Data struct {
+				Repository struct {
+					PullRequests struct {
+						Nodes []struct {
+							Number        int `json:"number"`
+							ClosingIssues struct {
+								Nodes []ghIssue `json:"nodes"`
+							} `json:"closingIssuesReferences"`
+						} `json:"nodes"`
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+					} `json:"pullRequests"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(output, &payload); err != nil {
+			return issuesByPR, fmt.Errorf("parse gh pull request closing issues output: %w", err)
+		}
+		for _, pr := range payload.Data.Repository.PullRequests.Nodes {
+			if pr.Number > 0 {
+				issuesByPR[pr.Number] = issuesFromGraphQL(pr.ClosingIssues.Nodes)
+			}
+		}
+		if !payload.Data.Repository.PullRequests.PageInfo.HasNextPage {
+			return issuesByPR, nil
+		}
+		after = payload.Data.Repository.PullRequests.PageInfo.EndCursor
+		if after == "" {
+			return issuesByPR, nil
+		}
+	}
+}
+
 func (s CLIService) runner() Runner {
 	if s.Runner != nil {
 		return s.Runner
@@ -250,6 +329,13 @@ type ghLabel struct {
 	Name string `json:"name"`
 }
 
+type ghIssue struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	URL    string `json:"url"`
+}
+
 type ghReviewRequest struct {
 	TypeName string `json:"__typename"`
 	Login    string `json:"login"`
@@ -260,6 +346,38 @@ type ghReviewRequest struct {
 type ghPullReviewItem struct {
 	Author ghUser `json:"author"`
 	State  string `json:"state"`
+}
+
+func linkedIssues(closingIssues []workbench.IssueRef, body string) []workbench.IssueRef {
+	issues := append([]workbench.IssueRef(nil), closingIssues...)
+	seen := map[int]bool{}
+	for _, issue := range issues {
+		if issue.Number > 0 {
+			seen[issue.Number] = true
+		}
+	}
+	for _, issue := range linkedIssuesFromBody(body) {
+		if issue.Number == 0 || seen[issue.Number] {
+			continue
+		}
+		issues = append(issues, issue)
+		seen[issue.Number] = true
+	}
+	return issues
+}
+
+func issuesFromGraphQL(payload []ghIssue) []workbench.IssueRef {
+	issues := make([]workbench.IssueRef, 0, len(payload))
+	for _, issue := range payload {
+		issues = append(issues, workbench.IssueRef{
+			Number:  issue.Number,
+			Title:   issue.Title,
+			State:   strings.ToLower(issue.State),
+			URL:     issue.URL,
+			Certain: true,
+		})
+	}
+	return issues
 }
 
 func linkedIssuesFromBody(body string) []workbench.IssueRef {

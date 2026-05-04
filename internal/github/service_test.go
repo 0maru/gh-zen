@@ -71,10 +71,14 @@ func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
 }
 
 func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","author":{"login":"0maru"},"headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"REVIEW_REQUIRED","reviewRequests":[{"__typename":"User","login":"alice","name":"Alice"},{"__typename":"Team","slug":"core","name":"Core"}],"latestReviews":[{"author":{"login":"bob"},"state":"APPROVED"}],"body":"Fixes #9"}]`)}
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", prListFields):                             []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","author":{"login":"0maru"},"headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"REVIEW_REQUIRED","reviewRequests":[{"__typename":"User","login":"alice","name":"Alice"},{"__typename":"Team","slug":"core","name":"Core"}],"latestReviews":[{"author":{"login":"bob"},"state":"APPROVED"}],"body":"No closing keyword"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":12,"closingIssuesReferences":{"nodes":[{"number":9,"title":"Issue","state":"OPEN","url":"https://example.test/issues/9"}]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
 	service := CLIService{Runner: runner}
 
-	got, err := service.PullRequests(context.Background(), "0maru/gh-zen")
+	got, err := service.PullRequests(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("expected pull requests to parse, got %v", err)
 	}
@@ -89,7 +93,7 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		BaseBranch:  "main",
 		UpdatedAt:   "2026-05-03T12:00:00Z",
 		LinkedIssues: []workbench.IssueRef{
-			{Number: 9, Certain: true},
+			{Number: 9, Title: "Issue", State: "open", URL: "https://example.test/issues/9", Certain: true},
 		},
 		ReviewState: "review required",
 		ReviewRequests: []workbench.ReviewRequestRef{
@@ -103,14 +107,14 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)
 	}
-	if !reflect.DeepEqual(runner.args[:4], []string{"pr", "list", "--repo", "0maru/gh-zen"}) {
-		t.Fatalf("expected gh pr list args, got %#v", runner.args)
+	if !reflect.DeepEqual(runner.calls[0][:4], []string{"pr", "list", "--repo", repo}) {
+		t.Fatalf("expected gh pr list args, got %#v", runner.calls)
 	}
-	if !hasArgPair(runner.args, "--limit", listLimit) {
-		t.Fatalf("expected gh pr list limit, got %#v", runner.args)
+	if !hasArgPair(runner.calls[0], "--limit", listLimit) {
+		t.Fatalf("expected gh pr list limit, got %#v", runner.calls)
 	}
-	if !hasArgValue(runner.args, prListFields) {
-		t.Fatalf("expected gh pr list to request head repository owner, got %#v", runner.args)
+	if !hasArgValue(runner.calls[0], prListFields) {
+		t.Fatalf("expected gh pr list to request head repository owner, got %#v", runner.calls)
 	}
 }
 
@@ -123,17 +127,25 @@ func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
 		t.Fatalf("expected issues to parse, got %v", err)
 	}
 	want := []workbench.IssueRef{{
-		Number:  9,
-		Title:   "Config",
-		State:   "open",
-		URL:     "https://example.test/issues/9",
-		Certain: true,
+		Number:    9,
+		Title:     "Config",
+		State:     "open",
+		URL:       "https://example.test/issues/9",
+		Body:      "Issue details",
+		Labels:    []string{"enhancement"},
+		Assignees: []string{"0maru"},
+		Milestone: "v1",
+		UpdatedAt: "2026-05-03T12:00:00Z",
+		Certain:   true,
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)
 	}
 	if !hasArgPair(runner.args, "--limit", listLimit) {
 		t.Fatalf("expected gh issue list limit, got %#v", runner.args)
+	}
+	if !hasArgValue(runner.args, issueListFields) {
+		t.Fatalf("expected gh issue list to request issue detail fields, got %#v", runner.args)
 	}
 }
 
@@ -170,9 +182,10 @@ func TestCLIService_ViewerReviewSubjectsParsesGHOutput(t *testing.T) {
 func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
-		commandKey("pr", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", prListFields):       []byte(`[{"number":24,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/pull/24","author":{"login":"0maru"},"headRefName":"feature/issue-123-runtime","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"APPROVED","reviewRequests":[],"latestReviews":[],"body":"Closes #123"}]`),
-		commandKey("issue", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", issueListFields): []byte(`[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123","body":"Runtime issue","labels":[],"assignees":[],"milestone":null,"updatedAt":"2026-05-03T12:00:00Z"}]`),
-		commandKey("pr", "checks", "feature/issue-123-runtime", "--repo", repo.FullName(), "--json", "name,state"):                []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"SUCCESS"}]`),
+		commandKey("pr", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", prListFields):                  []byte(`[{"number":24,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/pull/24","author":{"login":"0maru"},"headRefName":"feature/issue-123-runtime","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"APPROVED","reviewRequests":[],"latestReviews":[],"body":"Closes #123"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":24,"closingIssuesReferences":{"nodes":[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123"}]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+		commandKey("issue", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", issueListFields):            []byte(`[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123","body":"Runtime issue","labels":[],"assignees":[],"milestone":null,"updatedAt":"2026-05-03T12:00:00Z"}]`),
+		commandKey("pr", "checks", "feature/issue-123-runtime", "--repo", repo.FullName(), "--json", "name,state"):                           []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"SUCCESS"}]`),
 	}}
 	service := CLIService{Runner: runner}
 
@@ -206,8 +219,8 @@ func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 	if items[0].Checks.State != workbench.CheckPassing || items[0].Checks.Passing != 2 {
 		t.Fatalf("expected CLI check data to enrich work item, got %+v", items[0])
 	}
-	if len(runner.calls) != 3 {
-		t.Fatalf("expected three gh calls, got %#v", runner.calls)
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected four gh calls, got %#v", runner.calls)
 	}
 }
 
