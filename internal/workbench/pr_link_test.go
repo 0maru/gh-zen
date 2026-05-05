@@ -8,8 +8,10 @@ import (
 )
 
 type fakePullRequestDiscovery struct {
-	prs []PullRequestRef
-	err error
+	prs        []PullRequestRef
+	err        error
+	subjects   ReviewSubjects
+	subjectErr error
 }
 
 func (f fakePullRequestDiscovery) PullRequests(context.Context, string) ([]PullRequestRef, error) {
@@ -17,6 +19,13 @@ func (f fakePullRequestDiscovery) PullRequests(context.Context, string) ([]PullR
 		return nil, f.err
 	}
 	return f.prs, nil
+}
+
+func (f fakePullRequestDiscovery) ViewerReviewSubjects(context.Context) (ReviewSubjects, error) {
+	if f.subjectErr != nil {
+		return f.subjects, f.subjectErr
+	}
+	return f.subjects, nil
 }
 
 func TestLinkPullRequests_MatchesBranchBackedItems(t *testing.T) {
@@ -243,6 +252,41 @@ func TestPullRequestLinkService_LoadsPullRequestsForRepo(t *testing.T) {
 	})
 	if got[0].PullRequest == nil || got[0].PullRequest.Number != 24 {
 		t.Fatalf("expected PR link from discovery service, got %+v", got)
+	}
+}
+
+func TestPullRequestLinkService_ContinuesWhenViewerReviewSubjectDiscoveryFails(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	service := PullRequestLinkService{
+		GitHub: fakePullRequestDiscovery{
+			prs: []PullRequestRef{{
+				Number:     24,
+				HeadOwner:  "0maru",
+				HeadBranch: "feature",
+				State:      "open",
+				ReviewRequests: []ReviewRequestRef{
+					{Kind: "User", Login: "0maru"},
+				},
+			}},
+			subjects:   ReviewSubjects{Login: "0maru"},
+			subjectErr: errors.New("teams failed"),
+		},
+	}
+
+	got := service.LinkForRepo(context.Background(), repo, []WorkItem{
+		{ID: "feature", Repo: repo, Branch: &BranchRef{Name: "feature"}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("expected linked item plus non-fatal error item, got %+v", got)
+	}
+	if got[0].PullRequest == nil || !got[0].PullRequest.ViewerReviewRequested {
+		t.Fatalf("expected partial viewer metadata to mark review request, got %+v", got[0].PullRequest)
+	}
+	if got[1].Title() != "pull request discovery error" {
+		t.Fatalf("expected discovery error item, got %q", got[1].Title())
+	}
+	if got[1].Local == nil || !strings.Contains(got[1].Local.Summary, "viewer review subject discovery failed") {
+		t.Fatalf("expected viewer discovery error summary, got %+v", got[1].Local)
 	}
 }
 
