@@ -1225,6 +1225,7 @@ func TestWorkItemPreviewLines_ShowsIssueDetails(t *testing.T) {
 			Milestone: "v1",
 			UpdatedAt: "2026-05-03T12:00:00Z",
 			Certain:   false,
+			Source:    workbench.IssueLinkSourceBranch,
 		},
 	}
 
@@ -1242,6 +1243,23 @@ func TestWorkItemPreviewLines_ShowsIssueDetails(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected preview to contain %q, got:\n%s", want, got)
 		}
+	}
+}
+
+func TestWorkItemPreviewLines_ShowsUncertainPullRequestIssueLink(t *testing.T) {
+	item := workbench.WorkItem{
+		Repo: workbench.RepoRef{Owner: "0maru", Name: "gh-zen"},
+		Issue: &workbench.IssueRef{
+			Number:  66,
+			Title:   "Issue detail workflow",
+			Certain: false,
+			Source:  workbench.IssueLinkSourcePullRequest,
+		},
+	}
+
+	got := strings.Join(workItemPreviewLines(item, 120), "\n")
+	if !strings.Contains(got, "Issue link: uncertain") {
+		t.Fatalf("expected preview to show uncertain PR issue link, got:\n%s", got)
 	}
 }
 

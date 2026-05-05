@@ -42,6 +42,7 @@ type IssueRef struct {
 	Milestone string
 	UpdatedAt string
 	Certain   bool
+	Source    IssueLinkSource
 }
 
 func (i IssueRef) Label() string {
@@ -53,6 +54,14 @@ func (i IssueRef) Label() string {
 	}
 	return fmt.Sprintf("#%d %s", i.Number, i.Title)
 }
+
+type IssueLinkSource string
+
+const (
+	IssueLinkSourceUnknown     IssueLinkSource = ""
+	IssueLinkSourcePullRequest IssueLinkSource = "pull_request"
+	IssueLinkSourceBranch      IssueLinkSource = "branch"
+)
 
 type PullRequestRef struct {
 	Number         int

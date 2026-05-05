@@ -70,7 +70,7 @@ func FakeWorkItems() []WorkItem {
 		{
 			ID:     "issue-branch-preview-ux",
 			Repo:   repo,
-			Issue:  &IssueRef{Number: 34, Title: "Branch preview UX", State: "open", URL: "https://github.com/0maru/gh-zen/issues/34", Certain: false},
+			Issue:  &IssueRef{Number: 34, Title: "Branch preview UX", State: "open", URL: "https://github.com/0maru/gh-zen/issues/34", Certain: false, Source: IssueLinkSourceBranch},
 			Checks: CheckSummary{State: CheckUnknown},
 			Local:  &LocalStatus{State: LocalUnknown, Summary: "unstarted"},
 		},

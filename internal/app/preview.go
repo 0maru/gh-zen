@@ -139,7 +139,13 @@ func issueCertaintyLabel(issue workbench.IssueRef) string {
 	if issue.Certain {
 		return "certain"
 	}
-	return "heuristic"
+	if issue.Source == workbench.IssueLinkSourceBranch {
+		return "heuristic"
+	}
+	if issue.Source == workbench.IssueLinkSourcePullRequest {
+		return "uncertain"
+	}
+	return "uncertain"
 }
 
 func issueBodyExcerpt(body string) string {

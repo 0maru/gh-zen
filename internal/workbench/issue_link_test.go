@@ -69,6 +69,9 @@ func TestInferIssueFromBranch(t *testing.T) {
 			if got.Number != tc.number || got.Certain != tc.certain {
 				t.Fatalf("expected issue #%d certain=%v, got %+v", tc.number, tc.certain, got)
 			}
+			if got.Source != IssueLinkSourceBranch {
+				t.Fatalf("expected branch issue source, got %+v", got)
+			}
 		})
 	}
 }
@@ -94,8 +97,36 @@ func TestLinkIssues_UsesPRMetadataBeforeBranchHeuristic(t *testing.T) {
 	if got[0].Issue == nil || got[0].Issue.Number != 10 || !got[0].Issue.Certain {
 		t.Fatalf("expected PR metadata issue to win, got %+v", got[0].Issue)
 	}
+	if got[0].Issue.Source != IssueLinkSourcePullRequest {
+		t.Fatalf("expected PR issue source, got %+v", got[0].Issue)
+	}
 	if got[0].Issue.Body != "Detailed config issue" || len(got[0].Issue.Labels) != 1 || got[0].Issue.Labels[0] != "enhancement" {
 		t.Fatalf("expected PR issue to be enriched with issue details, got %+v", got[0].Issue)
+	}
+}
+
+func TestLinkIssues_PreservesUncertainPullRequestMetadataSource(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	items := []WorkItem{{
+		ID:   "feature",
+		Repo: repo,
+		PullRequest: &PullRequestRef{
+			Number: 24,
+			LinkedIssues: []IssueRef{
+				{Number: 10, Title: "Config discovery", State: "open", URL: "https://example.test/issues/10", Certain: true},
+				{Number: 11, Title: "Follow-up", State: "open", URL: "https://example.test/issues/11", Certain: true},
+			},
+		},
+	}}
+
+	got := LinkIssues(items, []IssueRef{
+		{Number: 10, Title: "Config discovery", State: "open", URL: "https://example.test/issues/10", Body: "Detailed config issue", Certain: true},
+	})
+	if got[0].Issue == nil || got[0].Issue.Number != 10 || got[0].Issue.Certain {
+		t.Fatalf("expected uncertain PR metadata issue, got %+v", got[0].Issue)
+	}
+	if got[0].Issue.Source != IssueLinkSourcePullRequest {
+		t.Fatalf("expected uncertain PR issue source to be preserved, got %+v", got[0].Issue)
 	}
 }
 
@@ -112,6 +143,9 @@ func TestLinkIssues_EnrichesBranchHeuristicFromIssueList(t *testing.T) {
 	})
 	if got[0].Issue == nil || got[0].Issue.Title != "Config discovery" || got[0].Issue.Certain {
 		t.Fatalf("expected enriched uncertain issue, got %+v", got[0].Issue)
+	}
+	if got[0].Issue.Source != IssueLinkSourceBranch {
+		t.Fatalf("expected branch issue source, got %+v", got[0].Issue)
 	}
 	if got[0].Issue.Body != "Detailed branch issue" || len(got[0].Issue.Labels) != 1 || got[0].Issue.Labels[0] != "bug" || len(got[0].Issue.Assignees) != 1 {
 		t.Fatalf("expected enriched issue details to be preserved, got %+v", got[0].Issue)
