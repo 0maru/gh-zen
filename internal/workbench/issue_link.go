@@ -95,7 +95,7 @@ func LinkIssues(items []WorkItem, issues []IssueRef) []WorkItem {
 func InferIssueFromBranch(branch string) (IssueRef, bool) {
 	prefixedNumbers := prefixedIssueNumbers(branch)
 	if len(prefixedNumbers) > 0 {
-		return IssueRef{Number: prefixedNumbers[0], Certain: len(prefixedNumbers) == 1}, true
+		return IssueRef{Number: prefixedNumbers[0], Certain: len(prefixedNumbers) == 1, Source: IssueLinkSourceBranch}, true
 	}
 
 	numbers := branchNumberPattern.FindAllString(branch, -1)
@@ -106,7 +106,7 @@ func InferIssueFromBranch(branch string) (IssueRef, bool) {
 	if err != nil {
 		return IssueRef{}, false
 	}
-	return IssueRef{Number: number, Certain: false}, true
+	return IssueRef{Number: number, Certain: false, Source: IssueLinkSourceBranch}, true
 }
 
 func prefixedIssueNumbers(branch string) []int {
@@ -136,12 +136,16 @@ func issueFromPullRequest(pr *PullRequestRef) (IssueRef, bool) {
 	}
 	issue := pr.LinkedIssues[0]
 	issue.Certain = len(pr.LinkedIssues) == 1
+	if issue.Source == IssueLinkSourceUnknown {
+		issue.Source = IssueLinkSourcePullRequest
+	}
 	return issue, true
 }
 
 func enrichIssue(issue IssueRef, byNumber map[int]IssueRef) *IssueRef {
 	if known, ok := byNumber[issue.Number]; ok {
 		known.Certain = issue.Certain
+		known.Source = issue.Source
 		return &known
 	}
 	return &issue

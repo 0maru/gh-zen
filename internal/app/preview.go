@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -82,7 +83,45 @@ func workItemPreviewLines(item workbench.WorkItem, width int) []string {
 	}
 	lines = append(lines, truncate("Local: "+item.LocalLabel(), width))
 	lines = append(lines, truncate("Issue: "+item.IssueLabel(), width))
+	if item.Issue != nil {
+		lines = append(lines, truncate("Issue link: "+issueCertaintyLabel(*item.Issue), width))
+		if item.Issue.State != "" {
+			lines = append(lines, truncate("Issue state: "+item.Issue.State, width))
+		}
+		if labels := strings.Join(item.Issue.Labels, ", "); labels != "" {
+			lines = append(lines, truncate("Labels: "+labels, width))
+		}
+		if assignees := strings.Join(item.Issue.Assignees, ", "); assignees != "" {
+			lines = append(lines, truncate("Assignees: "+assignees, width))
+		}
+		if item.Issue.Milestone != "" {
+			lines = append(lines, truncate("Milestone: "+item.Issue.Milestone, width))
+		}
+		if item.Issue.UpdatedAt != "" {
+			lines = append(lines, truncate("Issue updated: "+item.Issue.UpdatedAt, width))
+		}
+		if excerpt := issueBodyExcerpt(item.Issue.Body); excerpt != "" {
+			lines = append(lines, truncate("Issue body: "+excerpt, width))
+		}
+	}
 	lines = append(lines, truncate("PR: "+item.PullRequestLabel(), width))
+	if item.PullRequest != nil {
+		if head := item.PullRequest.HeadLabel(); head != "" {
+			lines = append(lines, truncate("Head: "+head, width))
+		}
+		if item.PullRequest.AuthorLogin != "" {
+			lines = append(lines, truncate("Author: "+item.PullRequest.AuthorLogin, width))
+		}
+		if reason := reviewReasonLabel(*item.PullRequest); reason != "" {
+			lines = append(lines, truncate("Reason: "+reason, width))
+		}
+		if requested := reviewRequestSummary(item.PullRequest.ReviewRequests); requested != "" {
+			lines = append(lines, truncate("Requested: "+requested, width))
+		}
+		if reviews := latestReviewSummary(item.PullRequest.LatestReviews); reviews != "" {
+			lines = append(lines, truncate("Reviews: "+reviews, width))
+		}
+	}
 	if item.PullRequest != nil && item.PullRequest.ReviewState != "" {
 		lines = append(lines, truncate("Review: "+item.PullRequest.ReviewState, width))
 	}
@@ -94,4 +133,81 @@ func workItemPreviewLines(item workbench.WorkItem, width int) []string {
 		}
 	}
 	return lines
+}
+
+func issueCertaintyLabel(issue workbench.IssueRef) string {
+	if issue.Certain {
+		return "certain"
+	}
+	if issue.Source == workbench.IssueLinkSourceBranch {
+		return "heuristic"
+	}
+	if issue.Source == workbench.IssueLinkSourcePullRequest {
+		return "uncertain"
+	}
+	return "uncertain"
+}
+
+func issueBodyExcerpt(body string) string {
+	fields := strings.Fields(body)
+	if len(fields) == 0 {
+		return ""
+	}
+	const maxWords = 28
+	if len(fields) > maxWords {
+		fields = fields[:maxWords]
+		return strings.Join(fields, " ") + "..."
+	}
+	return strings.Join(fields, " ")
+}
+
+func reviewReasonLabel(pr workbench.PullRequestRef) string {
+	switch {
+	case pr.ViewerReviewRequested:
+		return "needs your review"
+	case pr.WaitingOnReview:
+		return "waiting on review"
+	default:
+		return ""
+	}
+}
+
+func reviewRequestSummary(requests []workbench.ReviewRequestRef) string {
+	if len(requests) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(requests))
+	for _, request := range requests {
+		switch {
+		case request.Login != "":
+			labels = append(labels, request.Login)
+		case request.Slug != "":
+			labels = append(labels, "team/"+request.Slug)
+		case request.Name != "":
+			labels = append(labels, request.Name)
+		}
+	}
+	return strings.Join(labels, ", ")
+}
+
+func latestReviewSummary(reviews []workbench.PullRequestReviewRef) string {
+	if len(reviews) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(reviews))
+	for _, review := range reviews {
+		if review.AuthorLogin == "" && review.State == "" {
+			continue
+		}
+		if review.AuthorLogin == "" {
+			labels = append(labels, review.State)
+			continue
+		}
+		if review.State == "" {
+			labels = append(labels, review.AuthorLogin)
+			continue
+		}
+		labels = append(labels, review.AuthorLogin+" "+review.State)
+	}
+	return strings.Join(labels, ", ")
 }

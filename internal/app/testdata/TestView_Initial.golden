@@ -6,6 +6,7 @@ Work Items keys: j/k move  g/G jump  [1]/[2]/[3] pane  h/l pane  ? help  q quit
 │                       │ │   feat/repo-workbench    clean   #6     │ │                            │
 │ Views                 │ │   agent/preview-state    missing #8     │ │                            │
 │   Active worktrees    │ │   #34 Branch preview UX  unknown #34    │ │                            │
-│   Review requested    │ │                                         │ │                            │
+│   Needs my review     │ │                                         │ │                            │
+│   Waiting on review   │ │                                         │ │                            │
 │   Failed checks       │ │                                         │ │                            │
 └───────────────────────┘ └─────────────────────────────────────────┘ └────────────────────────────┘
