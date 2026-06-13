@@ -34,6 +34,18 @@
 - Use large tests only for real external systems such as GitHub API,
   authenticated `gh`, browser automation, or long-running end-to-end workflows.
 
+## Agent Hooks
+
+- Claude Code hooks live in `.claude/settings.json`; Codex hooks live in
+  `.codex/hooks.json`. Both share the scripts in `scripts/`.
+- After each file edit, `scripts/agent-go-check.sh` formats changed Go files
+  and runs the fast gate (`lint` + `test-small`). Failures are fed back to
+  the agent via exit code 2, so fix them before moving on.
+- When the agent finishes a turn with uncommitted Go changes,
+  `scripts/agent-stop-gate.sh` runs the normal gate (`fmt-check` + `lint` +
+  `test-medium`) and blocks completion until it passes, with a cap of three
+  retries per session to avoid endless loops.
+
 ## GitHub
 
 - Use English for commit messages.
