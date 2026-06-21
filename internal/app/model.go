@@ -667,7 +667,7 @@ func (m *model) beginWorkbenchReload(status string) bool {
 	if m.workbenchReloader == nil {
 		return false
 	}
-	repo, ok := m.selectedRepoRef()
+	repo, ok := m.reloadRepoRef()
 	if !ok {
 		return false
 	}
@@ -700,7 +700,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	if msg.request != m.activeReloadRequest {
 		return nil
 	}
-	repo, ok := m.selectedRepoRef()
+	repo, ok := m.reloadRepoRef()
 	if !ok || repo != msg.request.repo {
 		m.workbenchLoading = false
 		if m.screen == screenIssues {
@@ -720,6 +720,12 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	}
 	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
 	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
+	if m.screen == screenIssues && m.workbenchReturn.valid {
+		m.workbenchReturn.selectedRepo = m.selectedRepo
+		m.workbenchReturn.selectedView = m.selectedView
+		m.workbenchReturn.viewSelected = m.viewSelected
+		m.workbenchReturn.selectedItem = m.selectedItem
+	}
 	m.updateIssueDataFromRuntimeResult(msg.result)
 	m.workbenchLoading = false
 	m.issuesLoading = false
@@ -732,6 +738,13 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		return nil
 	}
 	return m.startPreviewLoadForCurrentItem()
+}
+
+func (m model) reloadRepoRef() (workbench.RepoRef, bool) {
+	if m.screen == screenIssues && hasRepoRef(m.issueRepo) {
+		return m.issueRepo, true
+	}
+	return m.selectedRepoRef()
 }
 
 func (m *model) focusNextPane() {
@@ -930,6 +943,10 @@ func (m model) selectedRepoRef() (workbench.RepoRef, bool) {
 		return workbench.RepoRef{}, false
 	}
 	return m.repos[m.selectedRepo], true
+}
+
+func hasRepoRef(repo workbench.RepoRef) bool {
+	return repo.Owner != "" || repo.Name != ""
 }
 
 func (m model) selectedRepoView() (repoView, bool) {

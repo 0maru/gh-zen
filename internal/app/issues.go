@@ -61,14 +61,19 @@ func (f issueStateFilter) next() issueStateFilter {
 }
 
 func (m *model) enterIssueView() tea.Cmd {
+	item, hasItem := m.selectedWorkItem()
 	repo, ok := m.selectedRepoRef()
+	if hasItem && hasRepoRef(item.Repo) {
+		repo = item.Repo
+		ok = true
+	}
 	if !ok {
 		m.statusMessage = "No repository selected"
 		return nil
 	}
 
 	targetIssueNumber := 0
-	if item, ok := m.selectedWorkItem(); ok && item.Issue != nil {
+	if hasItem && item.Issue != nil {
 		targetIssueNumber = item.Issue.Number
 	}
 
@@ -203,7 +208,7 @@ func issueMatchesFilter(issue workbench.IssueRef, filter issueFilterState, viewe
 	}
 	query := strings.TrimSpace(filter.Search)
 	if query != "" {
-		haystack := strings.ToLower(issue.Title + "\n" + issueBodyExcerpt(issue.Body))
+		haystack := strings.ToLower(issue.Title + "\n" + issue.Body)
 		if !strings.Contains(haystack, strings.ToLower(query)) {
 			return false
 		}

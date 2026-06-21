@@ -53,6 +53,20 @@ func TestIssueFiltering_CoversStateAssigneeLabelMilestoneAndSearch(t *testing.T)
 	assertNumbers("unicode search", issueFilterState{State: issueStateAll, Search: "設定"}, 2)
 }
 
+func TestIssueFiltering_SearchesFullIssueBody(t *testing.T) {
+	body := strings.Repeat("setup details ", 30) + "final diagnostic marker"
+	got := filterIssues([]workbench.IssueRef{{
+		Number: 1,
+		Title:  "Long issue template",
+		State:  "open",
+		Body:   body,
+	}}, issueFilterState{State: issueStateAll, Search: "diagnostic marker"}, "")
+
+	if len(got) != 1 || got[0].Number != 1 {
+		t.Fatalf("expected search to match full issue body, got %+v", got)
+	}
+}
+
 func TestIssuePreviewLines_ShowsLinkedPRsAndComments(t *testing.T) {
 	issue := workbench.IssueRef{
 		Number:        75,
@@ -111,6 +125,86 @@ func TestIssuePreviewLines_OmitsUnavailableLinkedPRsAndZeroComments(t *testing.T
 	}
 }
 
+func TestUpdate_IssueViewUsesSelectedWorkItemRepo(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	repoAItem := workbench.WorkItem{
+		ID:       "branch:repo-a",
+		Repo:     repoA,
+		Branch:   &workbench.BranchRef{Name: "repo-a"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/repo-a"},
+	}
+	repoBItem := workbench.WorkItem{
+		ID:       "branch:repo-b",
+		Repo:     repoB,
+		Branch:   &workbench.BranchRef{Name: "repo-b"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/repo-b"},
+		Issue:    &workbench.IssueRef{Number: 22, Title: "Repo B issue", State: "open"},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{repoAItem, repoBItem},
+	}, fakeDelayedPreviewLoader(0))
+	start.setRepoPaneIndex(len(start.repos))
+	start.selectedItem = 1
+	start.focusedWorkItemID = repoBItem.ID
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if cmd != nil {
+		t.Fatalf("expected issue view transition without command, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.issueRepo != repoB {
+		t.Fatalf("expected issue view repo %+v, got %+v", repoB, mm.issueRepo)
+	}
+	issue, ok := mm.selectedIssueRef()
+	if !ok || issue.Number != 22 {
+		t.Fatalf("expected selected issue #22 from repo B, got %+v ok=%v", issue, ok)
+	}
+}
+
+func TestUpdate_IssueViewRefreshUsesIssueRepo(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	repoAItem := workbench.WorkItem{
+		ID:       "branch:repo-a",
+		Repo:     repoA,
+		Branch:   &workbench.BranchRef{Name: "repo-a"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/repo-a"},
+	}
+	repoBItem := workbench.WorkItem{
+		ID:       "branch:repo-b",
+		Repo:     repoB,
+		Branch:   &workbench.BranchRef{Name: "repo-b"},
+		Worktree: &workbench.WorktreeRef{Path: "/tmp/repo-b"},
+		Issue:    &workbench.IssueRef{Number: 22, Title: "Repo B issue", State: "open"},
+	}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repoB.FullName(): {Repo: repoB, Items: []workbench.WorkItem{repoBItem}},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{repoAItem, repoBItem},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.setRepoPaneIndex(len(start.repos))
+	start.selectedItem = 1
+	start.focusedWorkItemID = repoBItem.ID
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	msg := requireWorkbenchReloadMsg(t, cmd)
+
+	if msg.request.repo != repoB {
+		t.Fatalf("expected issue refresh request for %+v, got %+v", repoB, msg.request.repo)
+	}
+	if len(reloader.calls) != 1 || reloader.calls[0] != repoB {
+		t.Fatalf("expected reload call for %+v, got %+v", repoB, reloader.calls)
+	}
+}
+
 func TestUpdate_IssueViewBackRestoresWorkbenchSelection(t *testing.T) {
 	start := newModel()
 	start.selectedItem = 2
@@ -129,6 +223,43 @@ func TestUpdate_IssueViewBackRestoresWorkbenchSelection(t *testing.T) {
 	mm = got.(model)
 	if mm.screen != screenWorkbench || mm.selectedItem != 2 || mm.focusedPane != paneWorkItems {
 		t.Fatalf("expected workbench selection to be restored, got screen=%v item=%d focus=%v", mm.screen, mm.selectedItem, mm.focusedPane)
+	}
+}
+
+func TestUpdate_IssueViewRefreshUpdatesReturnSelection(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	first := workbench.WorkItem{ID: "branch:first", Repo: repo, Branch: &workbench.BranchRef{Name: "first"}}
+	second := workbench.WorkItem{ID: "branch:second", Repo: repo, Branch: &workbench.BranchRef{Name: "second"}}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {
+				Repo:  repo,
+				Items: []workbench.WorkItem{second, first},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{first, second},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.selectedItem = 1
+	start.focusedWorkItemID = second.ID
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatalf("expected issue refresh command")
+	}
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	got, _ = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	mm := got.(model)
+
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected return selection to follow reloaded item to index 0, got %d", mm.selectedItem)
+	}
+	if item, ok := mm.selectedWorkItem(); !ok || item.ID != second.ID {
+		t.Fatalf("expected selected work item %q, got %+v ok=%v", second.ID, item, ok)
 	}
 }
 
