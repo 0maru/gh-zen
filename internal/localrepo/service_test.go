@@ -332,6 +332,8 @@ func initTempGitRepo(t *testing.T) string {
 	runGit(t, dir, "init", "-b", "main")
 	runGit(t, dir, "config", "user.email", "test@example.com")
 	runGit(t, dir, "config", "user.name", "Test User")
+	runGit(t, dir, "config", "commit.gpgsign", "false")
+	runGit(t, dir, "config", "tag.gpgsign", "false")
 	return dir
 }
 

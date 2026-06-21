@@ -21,6 +21,7 @@ const (
 	defaultWidth           = 100
 	repoPaneWidth          = 23
 	workItemPaneWidth      = 41
+	issueListPaneWidth     = 62
 	paneGapWidth           = 1
 	paneContentPaddingLeft = 1
 	paneBorderGlyph        = "│"
@@ -33,6 +34,14 @@ const (
 	frameBottomRightGlyph  = "┘"
 	previewPaneMinWidth    = 28
 	fullLayoutMinWidth     = repoPaneWidth + workItemPaneWidth + previewPaneMinWidth + paneBorderWidth*3 + paneGapWidth*2
+	issueLayoutMinWidth    = issueListPaneWidth + previewPaneMinWidth + paneBorderWidth*2 + paneGapWidth
+)
+
+type appScreen int
+
+const (
+	screenWorkbench appScreen = iota
+	screenIssues
 )
 
 // paneFocus tracks the pane that owns pane-scoped key handling.
@@ -66,15 +75,50 @@ func (p paneFocus) borderLabel() string {
 	}
 }
 
+func (m model) paneLabel(p paneFocus) string {
+	if m.screen == screenIssues {
+		switch p {
+		case panePreview:
+			return "Preview"
+		default:
+			return "Issues"
+		}
+	}
+	return p.label()
+}
+
+func (m model) paneBorderLabel(p paneFocus) string {
+	if m.screen == screenIssues {
+		switch p {
+		case panePreview:
+			return "Preview"
+		default:
+			return "Issues"
+		}
+	}
+	return p.borderLabel()
+}
+
 type model struct {
 	width                int
 	height               int
+	screen               appScreen
 	repos                []workbench.RepoRef
 	selectedRepo         int
 	selectedView         int
 	viewSelected         bool
 	workItems            []workbench.WorkItem
 	selectedItem         int
+	issueRepo            workbench.RepoRef
+	issues               []workbench.IssueRef
+	selectedIssue        int
+	issueFilter          issueFilterState
+	issueSearchEditing   bool
+	issuesLoading        bool
+	issuesError          string
+	prsByIssueNumber     map[int][]workbench.PullRequestRef
+	viewerLogin          string
+	workbenchReturn      workbenchReturnState
 	workbenchSource      workbenchDataSource
 	workbenchLoading     bool
 	focusedPane          paneFocus
@@ -97,9 +141,21 @@ type model struct {
 type WorkbenchData struct {
 	Repos          []workbench.RepoRef
 	WorkItems      []workbench.WorkItem
+	PullRequests   []workbench.PullRequestRef
+	Issues         []workbench.IssueRef
+	ViewerSubject  workbench.ReviewSubjects
 	Reloader       WorkbenchReloader
 	InitialLoading bool
 	Demo           bool
+}
+
+type workbenchReturnState struct {
+	valid        bool
+	selectedRepo int
+	selectedView int
+	viewSelected bool
+	selectedItem int
+	focusedPane  paneFocus
 }
 
 // WorkbenchReloader reloads runtime workbench data for one selected repository.
@@ -179,6 +235,11 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 	m := model{
 		repos:             cloneRepoRefs(data.Repos),
 		workItems:         cloneWorkItems(data.WorkItems),
+		issues:            cloneIssueRefs(data.Issues),
+		issueFilter:       defaultIssueFilterState(),
+		issuesLoading:     data.InitialLoading,
+		prsByIssueNumber:  pullRequestsByIssueNumber(data.PullRequests),
+		viewerLogin:       data.ViewerSubject.Login,
 		workbenchSource:   source,
 		previewLoader:     loader,
 		workbenchReloader: data.Reloader,
@@ -193,6 +254,15 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 		startupRepo = cfg.Startup.Repo
 	}
 	m.applyStartupRepo(startupRepo)
+	if repo, ok := m.selectedRepoRef(); ok {
+		m.issueRepo = repo
+		if len(m.issues) == 0 {
+			m.issues = issuesFromWorkItems(m.workItems, repo)
+		}
+		if len(m.prsByIssueNumber) == 0 {
+			m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo))
+		}
+	}
 	if data.InitialLoading {
 		m.beginWorkbenchReload("Loading workbench data...")
 	}
@@ -263,6 +333,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case workbenchReloadMsg:
 		return m, m.handleWorkbenchReload(msg)
 	case tea.KeyMsg:
+		if m.screen == screenIssues && m.issueSearchEditing {
+			handled, cmd := m.handleIssueSearchKey(msg)
+			if handled {
+				return m, cmd
+			}
+		}
 		if action, ok := m.matchedAction(msg); ok {
 			return m, m.handleAction(action)
 		}
@@ -340,7 +416,11 @@ func (m *model) handlePreviewResult(msg previewResultMsg) {
 }
 
 func (m model) matchedAction(msg tea.KeyMsg) (actionID, bool) {
-	for _, binding := range m.keys.actionBindings() {
+	bindings := m.keys.workbenchActionBindings()
+	if m.screen == screenIssues {
+		bindings = m.keys.issueActionBindings()
+	}
+	for _, binding := range bindings {
 		if key.Matches(msg, binding.binding) {
 			return binding.id, true
 		}
@@ -366,15 +446,27 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.focusPaneByNumber(3)
 	case actionMoveDown:
 		m.moveFocusedSelection(1)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionMoveUp:
 		m.moveFocusedSelection(-1)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionJumpTop:
 		m.jumpFocusedSelection(false)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionJumpBottom:
 		m.jumpFocusedSelection(true)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startPreviewLoadIfFocusedItemChanged()
 	case actionRefresh:
 		cmd := m.refreshWorkbenchData()
@@ -386,11 +478,29 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 	case actionOpenPullRequest:
 		return m.openPullRequest()
 	case actionOpenIssue:
-		return m.openIssue()
+		return m.enterIssueView()
+	case actionOpenInBrowser:
+		return m.openInBrowser()
 	case actionCopyURL:
 		return m.copyURL()
+	case actionCopyIssueNumber:
+		return m.copyIssueNumber()
 	case actionCopyWorktreePath:
 		return m.copyWorktreePath()
+	case actionCycleIssueState:
+		m.cycleIssueStateFilter()
+	case actionCycleIssueAssignee:
+		m.cycleIssueAssigneeFilter()
+	case actionCycleIssueLabel:
+		m.cycleIssueLabelFilter()
+	case actionCycleIssueMilestone:
+		m.cycleIssueMilestoneFilter()
+	case actionStartIssueSearch:
+		m.startIssueSearch()
+	case actionClearIssueFilters:
+		m.clearIssueFilters()
+	case actionBackToWorkbench:
+		return m.backToWorkbench()
 	}
 	return nil
 }
@@ -412,24 +522,52 @@ func (m *model) openPullRequest() tea.Cmd {
 	})
 }
 
-func (m *model) openIssue() tea.Cmd {
+func (m *model) openInBrowser() tea.Cmd {
+	if m.screen == screenIssues {
+		return m.openSelectedIssueInBrowser()
+	}
+
 	item, ok := m.selectedWorkItem()
 	if !ok {
 		m.statusMessage = "No work item selected"
 		return nil
 	}
-	if item.Issue == nil || item.Issue.URL == "" {
-		m.statusMessage = "No issue URL for selected work item"
+	if item.Issue != nil && item.Issue.URL != "" {
+		label := item.Issue.Label()
+		m.statusMessage = "Opening " + label + "..."
+		return m.actionCommand("Opened "+label, "Open issue failed", func(ctx context.Context) error {
+			return m.runner().Open(ctx, item.Issue.URL)
+		})
+	}
+	if item.PullRequest == nil || item.PullRequest.URL == "" {
+		m.statusMessage = "No browser URL for selected work item"
 		return nil
 	}
-	label := item.Issue.Label()
+	label := item.PullRequest.NumberLabel()
 	m.statusMessage = "Opening " + label + "..."
-	return m.actionCommand("Opened "+label, "Open issue failed", func(ctx context.Context) error {
-		return m.runner().Open(ctx, item.Issue.URL)
+	return m.actionCommand("Opened "+label, "Open PR failed", func(ctx context.Context) error {
+		return m.runner().Open(ctx, item.PullRequest.URL)
 	})
 }
 
 func (m *model) copyURL() tea.Cmd {
+	if m.screen == screenIssues {
+		issue, ok := m.selectedIssueRef()
+		if !ok {
+			m.statusMessage = "No issue selected"
+			return nil
+		}
+		if issue.URL == "" {
+			m.statusMessage = "No issue URL for selected issue"
+			return nil
+		}
+		label := issue.Label()
+		m.statusMessage = "Copying " + label + " URL..."
+		return m.actionCommand("Copied "+label+" URL", "Copy URL failed", func(ctx context.Context) error {
+			return m.runner().Copy(ctx, issue.URL)
+		})
+	}
+
 	item, ok := m.selectedWorkItem()
 	if !ok {
 		m.statusMessage = "No work item selected"
@@ -443,6 +581,23 @@ func (m *model) copyURL() tea.Cmd {
 	m.statusMessage = "Copying " + label + " URL..."
 	return m.actionCommand("Copied "+label+" URL", "Copy URL failed", func(ctx context.Context) error {
 		return m.runner().Copy(ctx, target)
+	})
+}
+
+func (m *model) copyIssueNumber() tea.Cmd {
+	issue, ok := m.selectedIssueRef()
+	if !ok {
+		m.statusMessage = "No issue selected"
+		return nil
+	}
+	if issue.Number == 0 {
+		m.statusMessage = "No issue number for selected issue"
+		return nil
+	}
+	label := issueNumberLabel(issue.Number)
+	m.statusMessage = "Copying " + label + "..."
+	return m.actionCommand("Copied "+label, "Copy issue number failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, label)
 	})
 }
 
@@ -524,6 +679,10 @@ func (m *model) beginWorkbenchReload(status string) bool {
 	}
 	m.activeReloadRequest = request
 	m.workbenchLoading = true
+	if m.screen == screenIssues {
+		m.issuesLoading = true
+		m.issuesError = ""
+	}
 	m.statusMessage = status
 	return true
 }
@@ -544,6 +703,9 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	repo, ok := m.selectedRepoRef()
 	if !ok || repo != msg.request.repo {
 		m.workbenchLoading = false
+		if m.screen == screenIssues {
+			m.issuesLoading = false
+		}
 		if m.statusMessage == msg.request.status {
 			m.statusMessage = ""
 		}
@@ -558,11 +720,16 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	}
 	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
 	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
+	m.updateIssueDataFromRuntimeResult(msg.result)
 	m.workbenchLoading = false
+	m.issuesLoading = false
 	if hasWorkbenchErrorItems(msg.result.Items) {
 		m.statusMessage = "Workbench loaded with partial errors"
 	} else {
 		m.statusMessage = ""
+	}
+	if m.screen == screenIssues {
+		return nil
 	}
 	return m.startPreviewLoadForCurrentItem()
 }
@@ -586,6 +753,9 @@ func (m *model) focusPaneByNumber(number int) {
 
 // paneOrder is the visible pane traversal order for tab navigation.
 func (m model) paneOrder() []paneFocus {
+	if m.screen == screenIssues {
+		return []paneFocus{paneWorkItems, panePreview}
+	}
 	if m.isCompact() {
 		return []paneFocus{paneWorkItems, panePreview}
 	}
@@ -634,6 +804,12 @@ func previousPane(current paneFocus, order []paneFocus) paneFocus {
 
 // moveFocusedSelection keeps j/k scoped to the active pane.
 func (m *model) moveFocusedSelection(delta int) {
+	if m.screen == screenIssues {
+		if m.activePane() == paneWorkItems {
+			m.moveIssueSelection(delta)
+		}
+		return
+	}
 	switch m.activePane() {
 	case paneRepositories:
 		m.moveRepoSelection(delta)
@@ -644,6 +820,12 @@ func (m *model) moveFocusedSelection(delta int) {
 
 // jumpFocusedSelection keeps g/G behavior aligned with the active pane.
 func (m *model) jumpFocusedSelection(toEnd bool) {
+	if m.screen == screenIssues {
+		if m.activePane() == paneWorkItems {
+			m.jumpIssueSelection(toEnd)
+		}
+		return
+	}
 	switch m.activePane() {
 	case paneRepositories:
 		if toEnd {
@@ -921,6 +1103,12 @@ func matchFilterPattern(pattern string, value string, match func(pattern string,
 func (m model) View() string {
 	width := m.effectiveWidth()
 
+	if m.screen == screenIssues {
+		if width < issueLayoutMinWidth {
+			return m.renderIssueCompact(width)
+		}
+		return m.renderIssueFull(width)
+	}
 	if width < fullLayoutMinWidth {
 		return m.renderCompact(width)
 	}
@@ -1065,9 +1253,9 @@ func (m model) headerLines(title string, width int) []string {
 // keymapLines keeps the active pane affordances visible near the title.
 func (m model) keymapLines(width int) []string {
 	focus := m.activePane()
-	prefix := focus.label() + " keys: "
+	prefix := m.paneLabel(focus) + " keys: "
 	helpWidth := max(width-lipgloss.Width(prefix), 0)
-	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(focus, m.paneOrder()))
+	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(m.screen, focus, m.paneOrder()))
 	lines := strings.Split(helpView, "\n")
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 
@@ -1169,9 +1357,9 @@ func paneTextWidth(width int) int {
 func (m model) paneHeading(pane paneFocus) string {
 	number, ok := m.paneNumber(pane)
 	if !ok {
-		return pane.borderLabel()
+		return m.paneBorderLabel(pane)
 	}
-	return fmt.Sprintf("%s[%d]", pane.borderLabel(), number)
+	return fmt.Sprintf("%s[%d]", m.paneBorderLabel(pane), number)
 }
 
 func (m model) paneNumber(pane paneFocus) (int, bool) {

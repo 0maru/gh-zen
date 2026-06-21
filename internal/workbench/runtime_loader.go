@@ -1,6 +1,9 @@
 package workbench
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // GitHubWorkbenchDiscovery provides GitHub data needed by the runtime workbench loader.
 type GitHubWorkbenchDiscovery interface {
@@ -10,8 +13,13 @@ type GitHubWorkbenchDiscovery interface {
 
 // RuntimeLoadResult contains workbench data loaded for one repository.
 type RuntimeLoadResult struct {
-	Repo  RepoRef
-	Items []WorkItem
+	Repo               RepoRef
+	Items              []WorkItem
+	PullRequests       []PullRequestRef
+	PullRequestsLoaded bool
+	Issues             []IssueRef
+	IssuesLoaded       bool
+	ViewerSubject      ReviewSubjects
 }
 
 // RuntimeLoader composes local Git discovery with GitHub workbench enrichment.
@@ -30,15 +38,68 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 		Discovery: l.Local,
 	}).WorkItems(ctx)
 
-	items = (PullRequestLinkService{
-		GitHub: l.GitHub,
-	}).LinkForRepo(ctx, l.Repo, items)
-	items = (IssueCheckLinkService{
-		GitHub: l.GitHub,
-	}).LinkForRepo(ctx, l.Repo, items)
-
-	return RuntimeLoadResult{
-		Repo:  l.Repo,
-		Items: items,
+	result := RuntimeLoadResult{Repo: l.Repo}
+	if l.GitHub == nil {
+		result.Items = items
+		return result
 	}
+
+	repoName := l.Repo.FullName()
+	prs, err := l.GitHub.PullRequests(ctx, repoName)
+	if err != nil {
+		items = append(cloneWorkItems(items), pullRequestDiscoveryErrorItem(l.Repo, err))
+	} else {
+		var discoveryErrors []error
+		subjects, err := reviewSubjects(ctx, l.GitHub)
+		if err != nil {
+			discoveryErrors = append(discoveryErrors, err)
+		}
+		if !subjects.Empty() {
+			prs = ApplyReviewPerspective(prs, subjects)
+		}
+		result.PullRequests = append([]PullRequestRef(nil), prs...)
+		result.PullRequestsLoaded = true
+		result.ViewerSubject = subjects
+		items = LinkPullRequestsForRepo(l.Repo, items, prs)
+		if len(discoveryErrors) > 0 {
+			items = append(items, pullRequestDiscoveryErrorItem(l.Repo, errors.Join(discoveryErrors...)))
+		}
+	}
+
+	var discoveryErrors []error
+	issues, err := l.GitHub.Issues(ctx, repoName)
+	if err != nil {
+		discoveryErrors = append(discoveryErrors, err)
+	} else {
+		result.Issues = append([]IssueRef(nil), issues...)
+		result.IssuesLoaded = true
+	}
+
+	items = LinkIssues(items, issues)
+	for i := range items {
+		if items[i].PullRequest == nil {
+			continue
+		}
+		ref := pullRequestCheckRef(items[i])
+		if ref == "" {
+			continue
+		}
+		checks, err := l.GitHub.CheckSummary(ctx, repoName, ref)
+		if err != nil {
+			discoveryErrors = append(discoveryErrors, err)
+			if items[i].Checks.State == "" {
+				items[i].Checks = CheckSummary{State: CheckUnknown}
+			}
+			continue
+		}
+		if checks.State != "" {
+			items[i].Checks = checks
+		}
+	}
+	if len(discoveryErrors) > 0 {
+		items = append(items, issueCheckDiscoveryErrorItem(l.Repo, errors.Join(discoveryErrors...)))
+	}
+
+	result.Items = items
+	return result
 }

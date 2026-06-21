@@ -119,7 +119,7 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 }
 
 func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[{"name":"enhancement"}],"assignees":[{"login":"0maru"}],"milestone":{"title":"v1"},"updatedAt":"2026-05-03T12:00:00Z"}]`)}
+	runner := &fakeRunner{output: []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[{"name":"enhancement"}],"assignees":[{"login":"0maru"}],"milestone":{"title":"v1"},"author":{"login":"alice"},"comments":3,"updatedAt":"2026-05-03T12:00:00Z"}]`)}
 	service := CLIService{Runner: runner}
 
 	got, err := service.Issues(context.Background(), "0maru/gh-zen")
@@ -127,16 +127,18 @@ func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
 		t.Fatalf("expected issues to parse, got %v", err)
 	}
 	want := []workbench.IssueRef{{
-		Number:    9,
-		Title:     "Config",
-		State:     "open",
-		URL:       "https://example.test/issues/9",
-		Body:      "Issue details",
-		Labels:    []string{"enhancement"},
-		Assignees: []string{"0maru"},
-		Milestone: "v1",
-		UpdatedAt: "2026-05-03T12:00:00Z",
-		Certain:   true,
+		Number:        9,
+		Title:         "Config",
+		State:         "open",
+		URL:           "https://example.test/issues/9",
+		Body:          "Issue details",
+		Labels:        []string{"enhancement"},
+		Assignees:     []string{"0maru"},
+		Milestone:     "v1",
+		AuthorLogin:   "alice",
+		CommentsCount: 3,
+		UpdatedAt:     "2026-05-03T12:00:00Z",
+		Certain:       true,
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)

@@ -32,17 +32,19 @@ type WorktreeRef struct {
 }
 
 type IssueRef struct {
-	Number    int
-	Title     string
-	State     string
-	URL       string
-	Body      string
-	Labels    []string
-	Assignees []string
-	Milestone string
-	UpdatedAt string
-	Certain   bool
-	Source    IssueLinkSource
+	Number        int
+	Title         string
+	State         string
+	URL           string
+	Body          string
+	Labels        []string
+	Assignees     []string
+	Milestone     string
+	AuthorLogin   string
+	CommentsCount int
+	UpdatedAt     string
+	Certain       bool
+	Source        IssueLinkSource
 }
 
 func (i IssueRef) Label() string {

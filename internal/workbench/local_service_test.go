@@ -152,6 +152,8 @@ func initLocalServiceRepo(t *testing.T) string {
 	runLocalServiceGit(t, dir, "init", "-b", "main")
 	runLocalServiceGit(t, dir, "config", "user.email", "test@example.com")
 	runLocalServiceGit(t, dir, "config", "user.name", "Test User")
+	runLocalServiceGit(t, dir, "config", "commit.gpgsign", "false")
+	runLocalServiceGit(t, dir, "config", "tag.gpgsign", "false")
 	writeLocalServiceFile(t, filepath.Join(dir, "README.md"), "initial\n")
 	runLocalServiceGit(t, dir, "add", "README.md")
 	runLocalServiceGit(t, dir, "commit", "-m", "initial")

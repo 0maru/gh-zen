@@ -103,6 +103,12 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	if len(result.Items) != 1 {
 		t.Fatalf("expected one enriched item, got %+v", result.Items)
 	}
+	if !result.PullRequestsLoaded || len(result.PullRequests) != 1 || result.PullRequests[0].Number != 24 {
+		t.Fatalf("expected raw pull requests in result, got loaded=%v prs=%+v", result.PullRequestsLoaded, result.PullRequests)
+	}
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 123 {
+		t.Fatalf("expected raw issues in result, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
 	item := result.Items[0]
 	if item.PullRequest == nil || item.PullRequest.Number != 24 || item.PullRequest.ReviewState != "approved" {
 		t.Fatalf("expected linked PR, got %+v", item.PullRequest)
@@ -112,6 +118,26 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	}
 	if item.Checks.State != CheckPassing || item.Checks.Passing != 2 {
 		t.Fatalf("expected passing checks, got %+v", item.Checks)
+	}
+}
+
+func TestRuntimeLoader_ReturnsViewerSubjectForIssueFilters(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	result := RuntimeLoader{
+		Repo:     repo,
+		RepoPath: "/repo",
+		Local: fakeLocalDiscovery{
+			branches: []localrepo.Branch{{Name: "main"}},
+		},
+		GitHub: fakeRuntimeGitHub{
+			subjects: ReviewSubjects{Login: "0maru"},
+			prs:      []PullRequestRef{},
+			issues:   []IssueRef{},
+		},
+	}.Load(context.Background())
+
+	if result.ViewerSubject.Login != "0maru" {
+		t.Fatalf("expected viewer subject to be returned, got %+v", result.ViewerSubject)
 	}
 }
 
