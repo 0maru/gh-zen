@@ -95,7 +95,9 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		LinkedIssues: []workbench.IssueRef{
 			{Number: 9, Title: "Issue", State: "open", URL: "https://example.test/issues/9", Certain: true},
 		},
-		ReviewState: "review required",
+		BodyExcerpt:    "No closing keyword",
+		ReviewDecision: "review required",
+		ReviewState:    "review required",
 		ReviewRequests: []workbench.ReviewRequestRef{
 			{Kind: "User", Login: "alice", Name: "Alice"},
 			{Kind: "Team", Name: "Core", Slug: "core"},
@@ -115,6 +117,62 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	}
 	if !hasArgValue(runner.calls[0], prListFields) {
 		t.Fatalf("expected gh pr list to request head repository owner, got %#v", runner.calls)
+	}
+}
+
+func TestCLIService_RepositoryPullRequestsParsesGraphQLOutput(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[
+			{"number":3,"title":"Merged fix","state":"MERGED","isDraft":false,"url":"https://example.test/pull/3","bodyText":"Merged body","headRefName":"fix","baseRefName":"main","reviewDecision":"APPROVED","mergeable":"MERGEABLE","updatedAt":"2026-05-01T10:00:00Z","author":{"login":"0maru"},"headRepositoryOwner":{"login":"0maru"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[{"author":{"login":"bob"},"state":"APPROVED"}]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]}},
+			{"number":5,"title":"Review requested","state":"OPEN","isDraft":false,"url":"https://example.test/pull/5","bodyText":"Closes #12 with enough body text for an excerpt","headRefName":"feature","baseRefName":"main","reviewDecision":"REVIEW_REQUIRED","mergeable":"CONFLICTING","updatedAt":"2026-05-03T10:00:00Z","author":{"login":"alice"},"headRepositoryOwner":{"login":"alice"},"reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"0maru","name":"0maru"}}]},"latestReviews":{"nodes":[]},"closingIssuesReferences":{"nodes":[{"number":12,"title":"Linked issue","state":"OPEN","url":"https://example.test/issues/12"}]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","context":"build","state":"SUCCESS"}]}}}}]}},
+			{"number":4,"title":"Draft work","state":"OPEN","isDraft":true,"url":"https://example.test/pull/4","bodyText":"Draft body","headRefName":"draft","baseRefName":"main","reviewDecision":null,"mergeable":"UNKNOWN","updatedAt":"2026-05-02T10:00:00Z","author":{"login":"0maru"},"headRepositoryOwner":{"login":"0maru"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]}}}}]}}
+		],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected repository pull requests to parse, got %v", err)
+	}
+	gotNumbers := []int{}
+	for _, pr := range got {
+		gotNumbers = append(gotNumbers, pr.Number)
+	}
+	if !reflect.DeepEqual(gotNumbers, []int{5, 4, 3}) {
+		t.Fatalf("expected updated desc order, got %+v", gotNumbers)
+	}
+	pr := got[0]
+	if pr.Number != 5 || pr.State != "open" || pr.Author != "alice" || pr.HeadRef != "alice/feature" || pr.BaseRef != "main" {
+		t.Fatalf("unexpected parsed PR identity: %+v", pr)
+	}
+	if pr.ReviewDecision != "review required" || len(pr.ReviewRequests) != 1 || pr.ReviewRequests[0].Login != "0maru" {
+		t.Fatalf("expected review request data, got %+v", pr)
+	}
+	if len(pr.LinkedIssues) != 1 || pr.LinkedIssues[0].Number != 12 {
+		t.Fatalf("expected linked issue data, got %+v", pr.LinkedIssues)
+	}
+	if pr.Checks.State != "failing" || pr.Checks.Failing != 1 || pr.Checks.Passing != 1 {
+		t.Fatalf("expected failing check summary, got %+v", pr.Checks)
+	}
+	if pr.Mergeability != "conflicting" || pr.BodyExcerpt == "" {
+		t.Fatalf("expected mergeability and body excerpt, got mergeability=%q body=%q", pr.Mergeability, pr.BodyExcerpt)
+	}
+}
+
+func TestCLIService_DetailParsesGraphQLOutput(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-F", "number=7", "-f", "query="+repositoryPullRequestDetailQuery): []byte(`{"data":{"repository":{"pullRequest":{"number":7,"title":"Detail","state":"CLOSED","isDraft":false,"url":"https://example.test/pull/7","bodyText":"Detail body","headRefName":"detail","baseRefName":"main","reviewDecision":"CHANGES_REQUESTED","mergeable":"UNKNOWN","updatedAt":"2026-05-04T10:00:00Z","author":{"login":"alice"},"headRepositoryOwner":{"login":"alice"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[{"author":{"login":"bob"},"state":"CHANGES_REQUESTED"}]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[]}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.Detail(context.Background(), repo, 7)
+	if err != nil {
+		t.Fatalf("expected detail to parse, got %v", err)
+	}
+	if got.Number != 7 || got.State != "closed" || got.ReviewDecision != "changes requested" || len(got.LatestReviews) != 1 {
+		t.Fatalf("unexpected detail result: %+v", got)
 	}
 }
 

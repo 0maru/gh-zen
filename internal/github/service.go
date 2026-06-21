@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/0maru/gh-zen/internal/pullrequests"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -54,6 +55,168 @@ const (
 	issueListFields = "number,title,state,url,body,labels,assignees,milestone,updatedAt"
 	listLimit       = "1000"
 	prListFields    = "number,title,state,url,headRefName,headRepositoryOwner,baseRefName,isDraft,updatedAt,author,reviewRequests,latestReviews,reviewDecision,body"
+
+	repositoryPullRequestsQuery = `
+query($owner:String!, $name:String!, $after:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequests(first:100, after:$after, states:[OPEN, CLOSED, MERGED], orderBy:{field:UPDATED_AT, direction:DESC}) {
+      nodes {
+        number
+        title
+        state
+        isDraft
+        url
+        bodyText
+        headRefName
+        baseRefName
+        reviewDecision
+        mergeable
+        updatedAt
+        author {
+          login
+        }
+        headRepositoryOwner {
+          login
+        }
+        reviewRequests(first:20) {
+          nodes {
+            requestedReviewer {
+              __typename
+              ... on User {
+                login
+                name
+              }
+              ... on Team {
+                slug
+                name
+              }
+            }
+          }
+        }
+        latestReviews(first:20) {
+          nodes {
+            author {
+              login
+            }
+            state
+          }
+        }
+        closingIssuesReferences(first:20) {
+          nodes {
+            number
+            title
+            state
+            url
+          }
+        }
+        commits(last:1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                contexts(first:100) {
+                  nodes {
+                    __typename
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                    }
+                    ... on StatusContext {
+                      context
+                      state
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}`
+
+	repositoryPullRequestDetailQuery = `
+query($owner:String!, $name:String!, $number:Int!) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      number
+      title
+      state
+      isDraft
+      url
+      bodyText
+      headRefName
+      baseRefName
+      reviewDecision
+      mergeable
+      updatedAt
+      author {
+        login
+      }
+      headRepositoryOwner {
+        login
+      }
+      reviewRequests(first:20) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on User {
+              login
+              name
+            }
+            ... on Team {
+              slug
+              name
+            }
+          }
+        }
+      }
+      latestReviews(first:20) {
+        nodes {
+          author {
+            login
+          }
+          state
+        }
+      }
+      closingIssuesReferences(first:20) {
+        nodes {
+          number
+          title
+          state
+          url
+        }
+      }
+      commits(last:1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              contexts(first:100) {
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    name
+                    status
+                    conclusion
+                  }
+                  ... on StatusContext {
+                    context
+                    state
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
 
 	pullRequestClosingIssuesQuery = `
 query($owner:String!, $name:String!, $after:String) {
@@ -178,12 +341,97 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			IsDraft:        pr.IsDraft,
 			UpdatedAt:      pr.UpdatedAt,
 			LinkedIssues:   linkedIssues(closingIssuesByPR[pr.Number], pr.Body),
+			BodyExcerpt:    textExcerpt(pr.Body),
+			ReviewDecision: reviewState(pr.ReviewDecision),
 			ReviewState:    reviewState(pr.ReviewDecision),
 			ReviewRequests: reviewRequests(pr.ReviewRequests),
 			LatestReviews:  latestReviews(pr.LatestReviews),
 		})
 	}
 	return prs, nil
+}
+
+// List loads first-class pull request browser data through gh GraphQL.
+func (s CLIService) List(ctx context.Context, repo string, filter pullrequests.PullRequestFilter) ([]pullrequests.PullRequest, error) {
+	prs, err := s.RepositoryPullRequests(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	return pullrequests.Filter(prs, filter), nil
+}
+
+// Detail loads one pull request for the PR browser.
+func (s CLIService) Detail(ctx context.Context, repo string, number int) (pullrequests.PullRequest, error) {
+	if number <= 0 {
+		return pullrequests.PullRequest{}, fmt.Errorf("pull request number must be positive")
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return pullrequests.PullRequest{}, fmt.Errorf("repo must use owner/repo format")
+	}
+	output, err := s.runner().Run(ctx, "api", "graphql", "-f", "owner="+owner, "-f", "name="+name, "-F", "number="+strconv.Itoa(number), "-f", "query="+repositoryPullRequestDetailQuery)
+	if err != nil {
+		return pullrequests.PullRequest{}, err
+	}
+	var payload struct {
+		Data struct {
+			Repository struct {
+				PullRequest *ghPullRequestBrowserNode `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return pullrequests.PullRequest{}, fmt.Errorf("parse gh pull request detail output: %w", err)
+	}
+	if payload.Data.Repository.PullRequest == nil {
+		return pullrequests.PullRequest{}, fmt.Errorf("pull request #%d not found", number)
+	}
+	return pullRequestFromGraphQL(*payload.Data.Repository.PullRequest), nil
+}
+
+// RepositoryPullRequests loads all selected-repository pull requests for the PR browser.
+func (s CLIService) RepositoryPullRequests(ctx context.Context, repo string) ([]pullrequests.PullRequest, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, fmt.Errorf("repo must use owner/repo format")
+	}
+
+	prs := []pullrequests.PullRequest{}
+	after := ""
+	for {
+		output, err := s.runner().Run(ctx, "api", "graphql", "-f", "owner="+owner, "-f", "name="+name, "-f", "after="+after, "-f", "query="+repositoryPullRequestsQuery)
+		if err != nil {
+			return prs, err
+		}
+		var payload struct {
+			Data struct {
+				Repository struct {
+					PullRequests struct {
+						Nodes    []ghPullRequestBrowserNode `json:"nodes"`
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+					} `json:"pullRequests"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(output, &payload); err != nil {
+			return prs, fmt.Errorf("parse gh repository pull requests output: %w", err)
+		}
+		for _, node := range payload.Data.Repository.PullRequests.Nodes {
+			prs = append(prs, pullRequestFromGraphQL(node))
+		}
+		if !payload.Data.Repository.PullRequests.PageInfo.HasNextPage {
+			pullrequests.SortByUpdatedDesc(prs)
+			return prs, nil
+		}
+		after = payload.Data.Repository.PullRequests.PageInfo.EndCursor
+		if after == "" {
+			pullrequests.SortByUpdatedDesc(prs)
+			return prs, nil
+		}
+	}
 }
 
 // Issues loads issue summaries through gh.
@@ -346,6 +594,224 @@ type ghReviewRequest struct {
 type ghPullReviewItem struct {
 	Author ghUser `json:"author"`
 	State  string `json:"state"`
+}
+
+type ghPullRequestBrowserNode struct {
+	Number              int    `json:"number"`
+	Title               string `json:"title"`
+	State               string `json:"state"`
+	IsDraft             bool   `json:"isDraft"`
+	URL                 string `json:"url"`
+	BodyText            string `json:"bodyText"`
+	HeadRefName         string `json:"headRefName"`
+	BaseRefName         string `json:"baseRefName"`
+	ReviewDecision      string `json:"reviewDecision"`
+	Mergeable           string `json:"mergeable"`
+	UpdatedAt           string `json:"updatedAt"`
+	Author              ghUser `json:"author"`
+	HeadRepositoryOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
+	ReviewRequests struct {
+		Nodes []struct {
+			RequestedReviewer ghReviewRequest `json:"requestedReviewer"`
+		} `json:"nodes"`
+	} `json:"reviewRequests"`
+	LatestReviews struct {
+		Nodes []ghPullReviewItem `json:"nodes"`
+	} `json:"latestReviews"`
+	ClosingIssues struct {
+		Nodes []ghIssue `json:"nodes"`
+	} `json:"closingIssuesReferences"`
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				StatusCheckRollup *struct {
+					Contexts struct {
+						Nodes []ghCheckContext `json:"nodes"`
+					} `json:"contexts"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+}
+
+type ghCheckContext struct {
+	TypeName   string `json:"__typename"`
+	Name       string `json:"name"`
+	Context    string `json:"context"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+}
+
+func pullRequestFromGraphQL(node ghPullRequestBrowserNode) pullrequests.PullRequest {
+	return pullrequests.PullRequest{
+		Number:         node.Number,
+		Title:          node.Title,
+		State:          strings.ToLower(node.State),
+		IsDraft:        node.IsDraft,
+		Author:         node.Author.Login,
+		HeadRef:        pullRequestHeadRef(node.HeadRepositoryOwner.Login, node.HeadRefName),
+		BaseRef:        node.BaseRefName,
+		ReviewDecision: reviewState(node.ReviewDecision),
+		ReviewRequests: pullRequestReviewRequests(node.ReviewRequests.Nodes),
+		LatestReviews:  pullRequestLatestReviews(node.LatestReviews.Nodes),
+		LinkedIssues:   pullRequestLinkedIssues(node.ClosingIssues.Nodes, node.BodyText),
+		Checks:         pullRequestCheckSummary(node.Commits.Nodes),
+		Mergeability:   reviewState(node.Mergeable),
+		UpdatedAt:      node.UpdatedAt,
+		URL:            node.URL,
+		BodyExcerpt:    textExcerpt(node.BodyText),
+	}
+}
+
+func pullRequestHeadRef(owner string, branch string) string {
+	switch {
+	case owner != "" && branch != "":
+		return owner + "/" + branch
+	case branch != "":
+		return branch
+	default:
+		return owner
+	}
+}
+
+func pullRequestReviewRequests(nodes []struct {
+	RequestedReviewer ghReviewRequest `json:"requestedReviewer"`
+}) []pullrequests.ReviewRequest {
+	requests := make([]pullrequests.ReviewRequest, 0, len(nodes))
+	for _, node := range nodes {
+		request := node.RequestedReviewer
+		requests = append(requests, pullrequests.ReviewRequest{
+			Kind:  request.TypeName,
+			Login: request.Login,
+			Name:  reviewRequestName(request),
+			Slug:  request.Slug,
+		})
+	}
+	return requests
+}
+
+func pullRequestLatestReviews(payload []ghPullReviewItem) []pullrequests.Review {
+	reviews := make([]pullrequests.Review, 0, len(payload))
+	for _, review := range payload {
+		reviews = append(reviews, pullrequests.Review{
+			Author: review.Author.Login,
+			State:  reviewState(review.State),
+		})
+	}
+	return reviews
+}
+
+func pullRequestLinkedIssues(closingIssues []ghIssue, body string) []pullrequests.LinkedIssue {
+	issues := make([]pullrequests.LinkedIssue, 0, len(closingIssues))
+	seen := map[int]bool{}
+	for _, issue := range closingIssues {
+		if issue.Number == 0 {
+			continue
+		}
+		issues = append(issues, pullrequests.LinkedIssue{
+			Number: issue.Number,
+			Title:  issue.Title,
+			State:  strings.ToLower(issue.State),
+			URL:    issue.URL,
+		})
+		seen[issue.Number] = true
+	}
+	for _, issue := range linkedIssuesFromBody(body) {
+		if issue.Number == 0 || seen[issue.Number] {
+			continue
+		}
+		issues = append(issues, pullrequests.LinkedIssue{
+			Number: issue.Number,
+			Title:  issue.Title,
+			State:  issue.State,
+			URL:    issue.URL,
+		})
+		seen[issue.Number] = true
+	}
+	return issues
+}
+
+func pullRequestCheckSummary(nodes []struct {
+	Commit struct {
+		StatusCheckRollup *struct {
+			Contexts struct {
+				Nodes []ghCheckContext `json:"nodes"`
+			} `json:"contexts"`
+		} `json:"statusCheckRollup"`
+	} `json:"commit"`
+}) pullrequests.CheckSummary {
+	states := []string{}
+	for _, node := range nodes {
+		if node.Commit.StatusCheckRollup == nil {
+			continue
+		}
+		for _, context := range node.Commit.StatusCheckRollup.Contexts.Nodes {
+			states = append(states, pullRequestCheckContextState(context))
+		}
+	}
+	return summarizePullRequestCheckStates(states)
+}
+
+func pullRequestCheckContextState(context ghCheckContext) string {
+	if context.Conclusion != "" {
+		return context.Conclusion
+	}
+	if context.State != "" {
+		return context.State
+	}
+	return context.Status
+}
+
+func summarizePullRequestCheckStates(states []string) pullrequests.CheckSummary {
+	summary := pullrequests.CheckSummary{State: pullrequests.CheckUnknown}
+	for _, state := range states {
+		switch normalizedPullRequestCheckState(state) {
+		case pullrequests.CheckPassing:
+			summary.Passing++
+		case pullrequests.CheckFailing:
+			summary.Failing++
+		case pullrequests.CheckPending:
+			summary.Pending++
+		}
+	}
+	switch {
+	case summary.Failing > 0:
+		summary.State = pullrequests.CheckFailing
+	case summary.Pending > 0:
+		summary.State = pullrequests.CheckPending
+	case summary.Passing > 0:
+		summary.State = pullrequests.CheckPassing
+	}
+	return summary
+}
+
+func normalizedPullRequestCheckState(value string) pullrequests.CheckState {
+	switch normalizedCheckState(value) {
+	case workbench.CheckPassing:
+		return pullrequests.CheckPassing
+	case workbench.CheckFailing:
+		return pullrequests.CheckFailing
+	case workbench.CheckPending:
+		return pullrequests.CheckPending
+	default:
+		return pullrequests.CheckUnknown
+	}
+}
+
+func textExcerpt(body string) string {
+	fields := strings.Fields(body)
+	if len(fields) == 0 {
+		return ""
+	}
+	const maxWords = 60
+	if len(fields) > maxWords {
+		fields = fields[:maxWords]
+		return strings.Join(fields, " ") + "..."
+	}
+	return strings.Join(fields, " ")
 }
 
 func linkedIssues(closingIssues []workbench.IssueRef, body string) []workbench.IssueRef {

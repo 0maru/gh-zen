@@ -149,6 +149,31 @@ func TestView_FullLayoutSeparatesPanes(t *testing.T) {
 	}
 }
 
+func TestView_PullRequestViewRendersListAndPreview(t *testing.T) {
+	m := testPRModel()
+	m.width = 160
+	m.activeView = appViewPullRequests
+	m.focusedPane = panePullRequests
+	m.pullRequestPreview = pullRequestPreviewState{
+		status:                previewLoaded,
+		focusedPullRequestKey: "pr:24",
+		loaded: pullRequestPreviewData{
+			pullRequestKey: "pr:24",
+			pr:             m.pullRequests[0],
+		},
+	}
+	got := ansi.Strip(m.View())
+	if !strings.Contains(got, "gh-zen  pull requests") || !strings.Contains(got, "PullRequests[2]") {
+		t.Fatalf("expected PR view panes, got:\n%s", got)
+	}
+	if !strings.Contains(got, "#24") || !strings.Contains(got, "Add layered config model") {
+		t.Fatalf("expected PR row, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Branch: 0maru/feat/config-loader -> main") {
+		t.Fatalf("expected PR preview branch refs, got:\n%s", got)
+	}
+}
+
 func TestView_FrameFillsWindowHeight(t *testing.T) {
 	m := newModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})

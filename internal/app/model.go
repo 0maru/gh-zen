@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	cfgpkg "github.com/0maru/gh-zen/internal/config"
+	"github.com/0maru/gh-zen/internal/pullrequests"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -42,12 +43,15 @@ const (
 	paneWorkItems paneFocus = iota
 	paneRepositories
 	panePreview
+	panePullRequests
 )
 
 func (p paneFocus) label() string {
 	switch p {
 	case paneRepositories:
 		return "Repositories"
+	case panePullRequests:
+		return "Pull Requests"
 	case panePreview:
 		return "Review"
 	default:
@@ -59,6 +63,8 @@ func (p paneFocus) borderLabel() string {
 	switch p {
 	case paneRepositories:
 		return "Repositories"
+	case panePullRequests:
+		return "PullRequests"
 	case panePreview:
 		return "Review"
 	default:
@@ -69,6 +75,7 @@ func (p paneFocus) borderLabel() string {
 type model struct {
 	width                int
 	height               int
+	activeView           appView
 	repos                []workbench.RepoRef
 	selectedRepo         int
 	selectedView         int
@@ -82,6 +89,21 @@ type model struct {
 	preview              previewState
 	nextPreviewRequestID int
 	previewLoader        previewLoader
+	pullRequests         []pullrequests.PullRequest
+	pullRequestRepo      workbench.RepoRef
+	selectedPR           int
+	pendingPullRequest   int
+	pullRequestsLoading  bool
+	pullRequestFilter    pullrequests.PullRequestFilter
+	pullRequestSearch    bool
+	pullRequestSearchIn  string
+	pullRequestFilterUI  bool
+	pullRequestPreview   pullRequestPreviewState
+	nextPRPreviewRequest int
+	prPreviewLoader      pullRequestPreviewLoader
+	pullRequestService   pullrequests.Service
+	nextPRLoadRequestID  int
+	activePRLoadRequest  pullRequestLoadRequest
 	workbenchReloader    WorkbenchReloader
 	nextReloadRequestID  int
 	activeReloadRequest  workbenchReloadRequest
@@ -95,11 +117,13 @@ type model struct {
 
 // WorkbenchData contains resolved repository workbench state for app startup.
 type WorkbenchData struct {
-	Repos          []workbench.RepoRef
-	WorkItems      []workbench.WorkItem
-	Reloader       WorkbenchReloader
-	InitialLoading bool
-	Demo           bool
+	Repos           []workbench.RepoRef
+	WorkItems       []workbench.WorkItem
+	PullRequests    []pullrequests.PullRequest
+	PullRequestsAPI pullrequests.Service
+	Reloader        WorkbenchReloader
+	InitialLoading  bool
+	Demo            bool
 }
 
 // WorkbenchReloader reloads runtime workbench data for one selected repository.
@@ -111,6 +135,8 @@ type repoViewFilter int
 
 type workbenchDataSource int
 
+type appView int
+
 const (
 	repoViewActiveWorktrees repoViewFilter = iota
 	repoViewNeedsMyReview
@@ -121,6 +147,11 @@ const (
 const (
 	workbenchDataLive workbenchDataSource = iota
 	workbenchDataDemo
+)
+
+const (
+	appViewWorkbench appView = iota
+	appViewPullRequests
 )
 
 type repoView struct {
@@ -164,29 +195,46 @@ func newModelWithPreviewLoader(loader previewLoader) model {
 }
 
 func newModelWithRuntimeConfig(cfg cfgpkg.Config, startupRepo string, loader previewLoader) model {
-	return newModelWithRuntimeData(cfg, startupRepo, WorkbenchData{
+	return newModelWithRuntimeConfigLoaders(cfg, startupRepo, loader, fakeDelayedPullRequestPreviewLoader(defaultPreviewDelay))
+}
+
+func newModelWithRuntimeConfigLoaders(cfg cfgpkg.Config, startupRepo string, loader previewLoader, prLoader pullRequestPreviewLoader) model {
+	return newModelWithRuntimeDataLoaders(cfg, startupRepo, WorkbenchData{
 		Repos:     workbench.FakeRepos(),
 		WorkItems: workbench.FakeWorkItems(),
 		Demo:      true,
-	}, loader)
+	}, loader, prLoader)
 }
 
 func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data WorkbenchData, loader previewLoader) model {
+	return newModelWithRuntimeDataLoaders(cfg, startupRepo, data, loader, fakeDelayedPullRequestPreviewLoader(defaultPreviewDelay))
+}
+
+func newModelWithRuntimeDataLoaders(cfg cfgpkg.Config, startupRepo string, data WorkbenchData, loader previewLoader, prLoader pullRequestPreviewLoader) model {
 	source := workbenchDataLive
 	if data.Demo {
 		source = workbenchDataDemo
 	}
+	prs := append([]pullrequests.PullRequest(nil), data.PullRequests...)
+	if len(prs) == 0 && data.Demo {
+		prs = pullrequests.FakePullRequests()
+	}
+	pullrequests.SortByUpdatedDesc(prs)
 	m := model{
-		repos:             cloneRepoRefs(data.Repos),
-		workItems:         cloneWorkItems(data.WorkItems),
-		workbenchSource:   source,
-		previewLoader:     loader,
-		workbenchReloader: data.Reloader,
-		workbenchFilter:   cfg.Workbench.Filter,
-		actionRunner:      systemActionRunner{},
-		styles:            DefaultStyles(),
-		keys:              DefaultKeyMap(),
-		help:              newHelpModel(),
+		repos:              cloneRepoRefs(data.Repos),
+		workItems:          cloneWorkItems(data.WorkItems),
+		workbenchSource:    source,
+		previewLoader:      loader,
+		prPreviewLoader:    prLoader,
+		pullRequests:       prs,
+		pullRequestFilter:  pullRequestFilterFromConfig(cfg.PullRequests.Filter),
+		pullRequestService: data.PullRequestsAPI,
+		workbenchReloader:  data.Reloader,
+		workbenchFilter:    cfg.Workbench.Filter,
+		actionRunner:       systemActionRunner{},
+		styles:             DefaultStyles(),
+		keys:               DefaultKeyMap(),
+		help:               newHelpModel(),
 	}
 	m.applyStartupView(cfg.Startup.View)
 	if startupRepo == "" {
@@ -195,6 +243,9 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 	m.applyStartupRepo(startupRepo)
 	if data.InitialLoading {
 		m.beginWorkbenchReload("Loading workbench data...")
+	}
+	if repo, ok := m.selectedRepoRef(); ok {
+		m.pullRequestRepo = repo
 	}
 	_ = m.startPreviewLoadForCurrentItem()
 	return m
@@ -211,12 +262,36 @@ type workbenchReloadMsg struct {
 	result  workbench.RuntimeLoadResult
 }
 
+type pullRequestLoadRequest struct {
+	requestID int
+	repo      workbench.RepoRef
+	status    string
+}
+
+type pullRequestLoadMsg struct {
+	request pullRequestLoadRequest
+	prs     []pullrequests.PullRequest
+	err     error
+}
+
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.workbenchLoading && m.activeReloadRequest.requestID != 0 {
 		cmds = append(cmds, m.workbenchReloadCommand(m.activeReloadRequest))
 	}
+	if m.pullRequestsLoading && m.activePRLoadRequest.requestID != 0 {
+		cmds = append(cmds, m.pullRequestLoadCommand(m.activePRLoadRequest))
+	}
 	if m.preview.status != previewLoading || m.previewLoader == nil {
+		if m.pullRequestPreview.status == previewLoading && m.prPreviewLoader != nil {
+			if pr, ok := m.selectedPullRequest(); ok && pr.Key() == m.pullRequestPreview.focusedPullRequestKey {
+				cmds = append(cmds, m.prPreviewLoader(pullRequestPreviewRequest{
+					requestID:      m.pullRequestPreview.requestID,
+					pullRequestKey: pr.Key(),
+					pr:             pr,
+				}))
+			}
+		}
 		return batchCommands(cmds...)
 	}
 	item, ok := m.selectedWorkItem()
@@ -257,12 +332,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewResultMsg:
 		m.handlePreviewResult(msg)
 		return m, nil
+	case pullRequestPreviewResultMsg:
+		m.handlePullRequestPreviewResult(msg)
+		return m, nil
 	case actionResultMsg:
 		m.handleActionResult(msg)
 		return m, nil
 	case workbenchReloadMsg:
 		return m, m.handleWorkbenchReload(msg)
+	case pullRequestLoadMsg:
+		return m, m.handlePullRequestLoad(msg)
 	case tea.KeyMsg:
+		if m.pullRequestSearch {
+			return m, m.handlePullRequestSearchKey(msg)
+		}
+		if m.pullRequestFilterUI {
+			return m, m.handlePullRequestFilterKey(msg)
+		}
 		if action, ok := m.matchedAction(msg); ok {
 			return m, m.handleAction(action)
 		}
@@ -339,8 +425,70 @@ func (m *model) handlePreviewResult(msg previewResultMsg) {
 	m.preview = next
 }
 
+func (m *model) startPullRequestPreviewLoadIfFocusedChanged() tea.Cmd {
+	pr, ok := m.selectedPullRequest()
+	if !ok {
+		m.pullRequestPreview = pullRequestPreviewState{status: previewEmpty}
+		return nil
+	}
+	if pr.Key() == m.pullRequestPreview.focusedPullRequestKey {
+		return nil
+	}
+	return m.startPullRequestPreviewLoadForCurrent()
+}
+
+func (m *model) startPullRequestPreviewLoadForCurrent() tea.Cmd {
+	pr, ok := m.selectedPullRequest()
+	if !ok {
+		m.pullRequestPreview = pullRequestPreviewState{status: previewEmpty}
+		return nil
+	}
+
+	m.nextPRPreviewRequest++
+	requestID := m.nextPRPreviewRequest
+	key := pr.Key()
+	m.pullRequestPreview = pullRequestPreviewState{
+		status:                previewLoading,
+		requestID:             requestID,
+		focusedPullRequestKey: key,
+	}
+	if m.prPreviewLoader == nil {
+		return nil
+	}
+	return m.prPreviewLoader(pullRequestPreviewRequest{
+		requestID:      requestID,
+		pullRequestKey: key,
+		pr:             pr,
+	})
+}
+
+func (m *model) handlePullRequestPreviewResult(msg pullRequestPreviewResultMsg) {
+	if msg.requestID != m.pullRequestPreview.requestID || msg.pullRequestKey != m.pullRequestPreview.focusedPullRequestKey {
+		return
+	}
+
+	next := pullRequestPreviewState{
+		requestID:             msg.requestID,
+		focusedPullRequestKey: msg.pullRequestKey,
+	}
+	switch {
+	case msg.err != nil:
+		next.status = previewError
+		next.errorMessage = msg.err.Error()
+	case msg.empty:
+		next.status = previewEmpty
+	default:
+		next.status = previewLoaded
+		next.loaded = msg.data
+		if next.loaded.pullRequestKey == "" {
+			next.loaded.pullRequestKey = msg.pullRequestKey
+		}
+	}
+	m.pullRequestPreview = next
+}
+
 func (m model) matchedAction(msg tea.KeyMsg) (actionID, bool) {
-	for _, binding := range m.keys.actionBindings() {
+	for _, binding := range m.keys.actionBindings(m.activeView) {
 		if key.Matches(msg, binding.binding) {
 			return binding.id, true
 		}
@@ -366,18 +514,18 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.focusPaneByNumber(3)
 	case actionMoveDown:
 		m.moveFocusedSelection(1)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startPreviewLoadAfterSelectionChange()
 	case actionMoveUp:
 		m.moveFocusedSelection(-1)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startPreviewLoadAfterSelectionChange()
 	case actionJumpTop:
 		m.jumpFocusedSelection(false)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startPreviewLoadAfterSelectionChange()
 	case actionJumpBottom:
 		m.jumpFocusedSelection(true)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startPreviewLoadAfterSelectionChange()
 	case actionRefresh:
-		cmd := m.refreshWorkbenchData()
+		cmd := m.refreshActiveData()
 		if cmd == nil {
 			m.statusMessage = "Refresh unavailable"
 			return nil
@@ -385,17 +533,44 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		return cmd
 	case actionOpenPullRequest:
 		return m.openPullRequest()
+	case actionOpenSelected:
+		return m.openSelected()
 	case actionOpenIssue:
 		return m.openIssue()
 	case actionCopyURL:
 		return m.copyURL()
 	case actionCopyWorktreePath:
 		return m.copyWorktreePath()
+	case actionCopyPullRequestNumber:
+		return m.copyPullRequestNumber()
+	case actionCopyPullRequestHead:
+		return m.copyPullRequestHead()
+	case actionShowPullRequests:
+		return m.showPullRequests()
+	case actionShowWorkbench:
+		return m.showWorkbench()
+	case actionSearchPullRequests:
+		m.startPullRequestSearch()
+	case actionFilterPullRequests:
+		m.togglePullRequestFilterUI()
 	}
 	return nil
 }
 
+func (m *model) startPreviewLoadAfterSelectionChange() tea.Cmd {
+	if m.activeView == appViewPullRequests {
+		if m.activePane() == paneRepositories {
+			return m.startPullRequestLoad("Loading pull requests...")
+		}
+		return m.startPullRequestPreviewLoadIfFocusedChanged()
+	}
+	return m.startPreviewLoadIfFocusedItemChanged()
+}
+
 func (m *model) openPullRequest() tea.Cmd {
+	if m.activeView == appViewPullRequests {
+		return m.openSelectedPullRequest()
+	}
 	item, ok := m.selectedWorkItem()
 	if !ok {
 		m.statusMessage = "No work item selected"
@@ -409,6 +584,30 @@ func (m *model) openPullRequest() tea.Cmd {
 	m.statusMessage = "Opening " + label + "..."
 	return m.actionCommand("Opened "+label, "Open PR failed", func(ctx context.Context) error {
 		return m.runner().Open(ctx, item.PullRequest.URL)
+	})
+}
+
+func (m *model) openSelected() tea.Cmd {
+	if m.activeView == appViewPullRequests {
+		return m.openSelectedPullRequest()
+	}
+	return m.openPullRequest()
+}
+
+func (m *model) openSelectedPullRequest() tea.Cmd {
+	pr, ok := m.selectedPullRequest()
+	if !ok {
+		m.statusMessage = "No pull request selected"
+		return nil
+	}
+	if pr.URL == "" {
+		m.statusMessage = "No PR URL for selected pull request"
+		return nil
+	}
+	label := pr.NumberLabel()
+	m.statusMessage = "Opening " + label + "..."
+	return m.actionCommand("Opened "+label, "Open PR failed", func(ctx context.Context) error {
+		return m.runner().Open(ctx, pr.URL)
 	})
 }
 
@@ -430,6 +629,9 @@ func (m *model) openIssue() tea.Cmd {
 }
 
 func (m *model) copyURL() tea.Cmd {
+	if m.activeView == appViewPullRequests {
+		return m.copyPullRequestURL()
+	}
 	item, ok := m.selectedWorkItem()
 	if !ok {
 		m.statusMessage = "No work item selected"
@@ -446,6 +648,22 @@ func (m *model) copyURL() tea.Cmd {
 	})
 }
 
+func (m *model) copyPullRequestURL() tea.Cmd {
+	pr, ok := m.selectedPullRequest()
+	if !ok {
+		m.statusMessage = "No pull request selected"
+		return nil
+	}
+	if pr.URL == "" {
+		m.statusMessage = "No PR URL for selected pull request"
+		return nil
+	}
+	m.statusMessage = "Copying " + pr.NumberLabel() + " URL..."
+	return m.actionCommand("Copied "+pr.NumberLabel()+" URL", "Copy URL failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, pr.URL)
+	})
+}
+
 func (m *model) copyWorktreePath() tea.Cmd {
 	item, ok := m.selectedWorkItem()
 	if !ok {
@@ -459,6 +677,36 @@ func (m *model) copyWorktreePath() tea.Cmd {
 	m.statusMessage = "Copying worktree path..."
 	return m.actionCommand("Copied worktree path", "Copy worktree path failed", func(ctx context.Context) error {
 		return m.runner().Copy(ctx, item.Worktree.Path)
+	})
+}
+
+func (m *model) copyPullRequestNumber() tea.Cmd {
+	pr, ok := m.selectedPullRequest()
+	if !ok {
+		m.statusMessage = "No pull request selected"
+		return nil
+	}
+	number := pr.ShortNumberLabel()
+	m.statusMessage = "Copying " + number + "..."
+	return m.actionCommand("Copied "+number, "Copy PR number failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, number)
+	})
+}
+
+func (m *model) copyPullRequestHead() tea.Cmd {
+	pr, ok := m.selectedPullRequest()
+	if !ok {
+		m.statusMessage = "No pull request selected"
+		return nil
+	}
+	head := pr.HeadLabel()
+	if head == "" {
+		m.statusMessage = "No head ref for selected pull request"
+		return nil
+	}
+	m.statusMessage = "Copying head ref..."
+	return m.actionCommand("Copied head ref", "Copy head ref failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, head)
 	})
 }
 
@@ -499,6 +747,214 @@ func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
 
 func (m *model) refreshWorkbenchData() tea.Cmd {
 	return m.startWorkbenchReload("Reloading workbench data...")
+}
+
+func (m *model) refreshActiveData() tea.Cmd {
+	if m.activeView == appViewPullRequests {
+		return m.startPullRequestLoad("Reloading pull requests...")
+	}
+	return m.refreshWorkbenchData()
+}
+
+func (m *model) showPullRequests() tea.Cmd {
+	if item, ok := m.selectedWorkItem(); ok && item.PullRequest != nil {
+		m.pendingPullRequest = item.PullRequest.Number
+		m.ensurePullRequestFromWorkItem(item)
+	}
+	m.activeView = appViewPullRequests
+	m.focusedPane = panePullRequests
+	m.viewSelected = false
+	if m.pendingPullRequest > 0 {
+		m.restoreSelectedPullRequest(m.pendingPullRequest)
+	}
+	cmd := m.startPullRequestLoad("Loading pull requests...")
+	if cmd != nil {
+		return cmd
+	}
+	return m.startPullRequestPreviewLoadForCurrent()
+}
+
+func (m *model) showWorkbench() tea.Cmd {
+	m.activeView = appViewWorkbench
+	m.focusedPane = paneWorkItems
+	m.pullRequestSearch = false
+	m.pullRequestFilterUI = false
+	return m.startPreviewLoadIfFocusedItemChanged()
+}
+
+func (m *model) ensurePullRequestFromWorkItem(item workbench.WorkItem) {
+	if item.PullRequest == nil {
+		return
+	}
+	pr := pullRequestFromWorkItem(item)
+	for i, existing := range m.pullRequests {
+		if existing.Number == pr.Number {
+			m.pullRequests[i] = pr
+			return
+		}
+	}
+	m.pullRequests = append(m.pullRequests, pr)
+	pullrequests.SortByUpdatedDesc(m.pullRequests)
+	if repo, ok := m.selectedRepoRef(); ok {
+		m.pullRequestRepo = repo
+	}
+}
+
+func pullRequestFromWorkItem(item workbench.WorkItem) pullrequests.PullRequest {
+	pr := item.PullRequest
+	return pullrequests.PullRequest{
+		Number:                pr.Number,
+		Title:                 pr.Title,
+		State:                 pr.State,
+		IsDraft:               pr.IsDraft,
+		Author:                pr.AuthorLogin,
+		HeadRef:               pr.HeadLabel(),
+		BaseRef:               pr.BaseBranch,
+		ReviewDecision:        pr.ReviewState,
+		ReviewRequests:        pullRequestReviewRequestsFromWorkbench(pr.ReviewRequests),
+		LatestReviews:         pullRequestLatestReviewsFromWorkbench(pr.LatestReviews),
+		LinkedIssues:          pullRequestLinkedIssuesFromWorkbench(pr.LinkedIssues),
+		Checks:                pullRequestChecksFromWorkbench(item.Checks),
+		Mergeability:          pr.Mergeability,
+		UpdatedAt:             pr.UpdatedAt,
+		URL:                   pr.URL,
+		BodyExcerpt:           pr.BodyExcerpt,
+		ViewerReviewRequested: pr.ViewerReviewRequested,
+		WaitingOnReview:       pr.WaitingOnReview,
+	}
+}
+
+func pullRequestReviewRequestsFromWorkbench(requests []workbench.ReviewRequestRef) []pullrequests.ReviewRequest {
+	out := make([]pullrequests.ReviewRequest, 0, len(requests))
+	for _, request := range requests {
+		out = append(out, pullrequests.ReviewRequest{
+			Kind:  request.Kind,
+			Login: request.Login,
+			Name:  request.Name,
+			Slug:  request.Slug,
+		})
+	}
+	return out
+}
+
+func pullRequestLatestReviewsFromWorkbench(reviews []workbench.PullRequestReviewRef) []pullrequests.Review {
+	out := make([]pullrequests.Review, 0, len(reviews))
+	for _, review := range reviews {
+		out = append(out, pullrequests.Review{
+			Author: review.AuthorLogin,
+			State:  review.State,
+		})
+	}
+	return out
+}
+
+func pullRequestLinkedIssuesFromWorkbench(issues []workbench.IssueRef) []pullrequests.LinkedIssue {
+	out := make([]pullrequests.LinkedIssue, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, pullrequests.LinkedIssue{
+			Number: issue.Number,
+			Title:  issue.Title,
+			State:  issue.State,
+			URL:    issue.URL,
+		})
+	}
+	return out
+}
+
+func pullRequestChecksFromWorkbench(checks workbench.CheckSummary) pullrequests.CheckSummary {
+	return pullrequests.CheckSummary{
+		State:   pullrequests.CheckState(checks.State),
+		Passing: checks.Passing,
+		Failing: checks.Failing,
+		Pending: checks.Pending,
+	}
+}
+
+func (m *model) startPullRequestSearch() {
+	if m.activeView != appViewPullRequests {
+		return
+	}
+	m.pullRequestSearch = true
+	m.pullRequestFilterUI = false
+	m.pullRequestSearchIn = m.pullRequestFilter.TextQuery
+}
+
+func (m *model) togglePullRequestFilterUI() {
+	if m.activeView != appViewPullRequests {
+		return
+	}
+	m.pullRequestFilterUI = !m.pullRequestFilterUI
+	m.pullRequestSearch = false
+}
+
+func (m *model) handlePullRequestSearchKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEnter:
+		m.pullRequestSearch = false
+		m.pullRequestFilter.TextQuery = strings.TrimSpace(m.pullRequestSearchIn)
+		m.selectedPR = 0
+		return m.startPullRequestPreviewLoadForCurrent()
+	case tea.KeyEsc:
+		m.pullRequestSearch = false
+		return nil
+	case tea.KeyBackspace:
+		runes := []rune(m.pullRequestSearchIn)
+		if len(runes) > 0 {
+			m.pullRequestSearchIn = string(runes[:len(runes)-1])
+		}
+	case tea.KeyRunes:
+		m.pullRequestSearchIn += string(msg.Runes)
+	}
+	return nil
+}
+
+func (m *model) handlePullRequestFilterKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEnter, tea.KeyEsc:
+		m.pullRequestFilterUI = false
+		return nil
+	case tea.KeyRunes:
+		if len(msg.Runes) == 0 {
+			return nil
+		}
+		switch msg.Runes[0] {
+		case 'f':
+			m.pullRequestFilterUI = false
+			return nil
+		case 's':
+			m.pullRequestFilter = m.pullRequestFilter.NextState()
+		case 'a':
+			m.togglePullRequestAuthorFilter()
+		case 'r':
+			m.pullRequestFilter.ReviewRequested = !m.pullRequestFilter.ReviewRequested
+		case 'w':
+			m.pullRequestFilter.WaitingOnReview = !m.pullRequestFilter.WaitingOnReview
+		case 'c':
+			m.pullRequestFilter.FailedChecks = !m.pullRequestFilter.FailedChecks
+		case 'd':
+			m.pullRequestFilter = m.pullRequestFilter.NextDraft()
+		case 'x':
+			m.pullRequestFilter = pullrequests.PullRequestFilter{}
+		default:
+			return nil
+		}
+		m.selectedPR = 0
+		return m.startPullRequestPreviewLoadForCurrent()
+	}
+	return nil
+}
+
+func (m *model) togglePullRequestAuthorFilter() {
+	pr, ok := m.selectedPullRequest()
+	if !ok || pr.Author == "" {
+		m.pullRequestFilter.Author = ""
+		return
+	}
+	if strings.EqualFold(m.pullRequestFilter.Author, pr.Author) {
+		m.pullRequestFilter.Author = ""
+		return
+	}
+	m.pullRequestFilter.Author = pr.Author
 }
 
 func (m *model) startWorkbenchReload(status string) tea.Cmd {
@@ -567,6 +1023,88 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	return m.startPreviewLoadForCurrentItem()
 }
 
+func (m *model) startPullRequestLoad(status string) tea.Cmd {
+	if !m.beginPullRequestLoad(status) {
+		return m.startPullRequestPreviewLoadForCurrent()
+	}
+	return m.pullRequestLoadCommand(m.activePRLoadRequest)
+}
+
+func (m *model) beginPullRequestLoad(status string) bool {
+	if m.pullRequestService == nil {
+		if repo, ok := m.selectedRepoRef(); ok {
+			if m.pullRequestRepo != (workbench.RepoRef{}) && m.pullRequestRepo != repo {
+				m.pullRequests = nil
+				m.selectedPR = 0
+			}
+			m.pullRequestRepo = repo
+		}
+		m.pullRequestsLoading = false
+		return false
+	}
+	repo, ok := m.selectedRepoRef()
+	if !ok {
+		return false
+	}
+	m.nextPRLoadRequestID++
+	request := pullRequestLoadRequest{
+		requestID: m.nextPRLoadRequestID,
+		repo:      repo,
+		status:    status,
+	}
+	m.activePRLoadRequest = request
+	m.pullRequestsLoading = true
+	m.statusMessage = status
+	return true
+}
+
+func (m model) pullRequestLoadCommand(request pullRequestLoadRequest) tea.Cmd {
+	return func() tea.Msg {
+		prs, err := m.pullRequestService.List(context.Background(), request.repo.FullName(), pullrequests.PullRequestFilter{})
+		return pullRequestLoadMsg{
+			request: request,
+			prs:     prs,
+			err:     err,
+		}
+	}
+}
+
+func (m *model) handlePullRequestLoad(msg pullRequestLoadMsg) tea.Cmd {
+	if msg.request != m.activePRLoadRequest {
+		return nil
+	}
+	repo, ok := m.selectedRepoRef()
+	if !ok || repo != msg.request.repo || m.activeView != appViewPullRequests {
+		m.pullRequestsLoading = false
+		if m.statusMessage == msg.request.status {
+			m.statusMessage = ""
+		}
+		return nil
+	}
+
+	selectedNumber := m.pendingPullRequest
+	if selectedNumber == 0 {
+		if pr, ok := m.selectedPullRequest(); ok {
+			selectedNumber = pr.Number
+		}
+	}
+	if msg.err != nil {
+		m.pullRequestsLoading = false
+		m.statusMessage = "Pull requests failed: " + msg.err.Error()
+		return nil
+	}
+	m.pullRequests = append([]pullrequests.PullRequest(nil), msg.prs...)
+	pullrequests.SortByUpdatedDesc(m.pullRequests)
+	m.pullRequestRepo = msg.request.repo
+	m.restoreSelectedPullRequest(selectedNumber)
+	m.pendingPullRequest = 0
+	m.pullRequestsLoading = false
+	if m.statusMessage == msg.request.status {
+		m.statusMessage = ""
+	}
+	return m.startPullRequestPreviewLoadForCurrent()
+}
+
 func (m *model) focusNextPane() {
 	m.focusedPane = nextPane(m.activePane(), m.paneOrder())
 }
@@ -586,10 +1124,14 @@ func (m *model) focusPaneByNumber(number int) {
 
 // paneOrder is the visible pane traversal order for tab navigation.
 func (m model) paneOrder() []paneFocus {
-	if m.isCompact() {
-		return []paneFocus{paneWorkItems, panePreview}
+	listPane := paneWorkItems
+	if m.activeView == appViewPullRequests {
+		listPane = panePullRequests
 	}
-	return []paneFocus{paneRepositories, paneWorkItems, panePreview}
+	if m.isCompact() {
+		return []paneFocus{listPane, panePreview}
+	}
+	return []paneFocus{paneRepositories, listPane, panePreview}
 }
 
 // activePane normalizes focus when the current layout hides a pane.
@@ -599,6 +1141,9 @@ func (m model) activePane() paneFocus {
 		if focus == pane {
 			return focus
 		}
+	}
+	if m.activeView == appViewPullRequests {
+		return panePullRequests
 	}
 	return paneWorkItems
 }
@@ -639,6 +1184,8 @@ func (m *model) moveFocusedSelection(delta int) {
 		m.moveRepoSelection(delta)
 	case paneWorkItems:
 		m.moveWorkItemSelection(delta)
+	case panePullRequests:
+		m.movePullRequestSelection(delta)
 	}
 }
 
@@ -660,6 +1207,15 @@ func (m *model) jumpFocusedSelection(toEnd bool) {
 			return
 		}
 		m.selectedItem = 0
+	case panePullRequests:
+		prs := m.visiblePullRequests()
+		if toEnd {
+			if len(prs) > 0 {
+				m.selectedPR = len(prs) - 1
+			}
+			return
+		}
+		m.selectedPR = 0
 	}
 }
 
@@ -691,7 +1247,26 @@ func (m *model) moveWorkItemSelection(delta int) {
 	}
 }
 
+func (m *model) movePullRequestSelection(delta int) {
+	prs := m.visiblePullRequests()
+	if len(prs) == 0 {
+		m.selectedPR = 0
+		return
+	}
+
+	m.selectedPR += delta
+	if m.selectedPR < 0 {
+		m.selectedPR = 0
+	}
+	if m.selectedPR >= len(prs) {
+		m.selectedPR = len(prs) - 1
+	}
+}
+
 func (m model) repoPaneEntryCount() int {
+	if m.activeView == appViewPullRequests {
+		return len(m.repos)
+	}
 	return len(m.repos) + len(repoViews)
 }
 
@@ -713,7 +1288,7 @@ func (m *model) setRepoPaneIndex(index int) {
 	}
 
 	index = clamp(index, 0, count-1)
-	if index < len(m.repos) {
+	if m.activeView == appViewPullRequests || index < len(m.repos) {
 		m.selectedRepo = index
 		m.viewSelected = false
 	} else {
@@ -902,6 +1477,18 @@ func workbenchFilterActive(filter cfgpkg.WorkbenchFilter) bool {
 		(filter.LocalStatus != "" && filter.LocalStatus != cfgpkg.LocalStatusAny)
 }
 
+func pullRequestFilterFromConfig(filter cfgpkg.PullRequestsFilter) pullrequests.PullRequestFilter {
+	return pullrequests.PullRequestFilter{
+		State:           pullrequests.StateFilter(filter.State),
+		Author:          filter.Author,
+		ReviewRequested: filter.ReviewRequested,
+		WaitingOnReview: filter.WaitingOnReview,
+		FailedChecks:    filter.FailedChecks,
+		Draft:           pullrequests.DraftFilter(filter.Draft),
+		TextQuery:       filter.TextQuery,
+	}.Normalize()
+}
+
 func matchBranchFilter(pattern string, branch string) bool {
 	return matchFilterPattern(pattern, branch, path.Match)
 }
@@ -930,18 +1517,19 @@ func (m model) View() string {
 func (m model) renderFull(width int) string {
 	rightWidth := width - repoPaneWidth - workItemPaneWidth - paneBorderWidth*3 - paneGapWidth*2
 	focus := m.activePane()
+	listPane := m.listPane()
 
 	left := m.repoLines(paneTextWidth(repoPaneWidth), focus == paneRepositories)
-	middle := m.workItemLines(paneTextWidth(workItemPaneWidth), focus == paneWorkItems)
+	middle := m.listLines(paneTextWidth(workItemPaneWidth), focus == listPane)
 	right := m.previewLines(paneTextWidth(rightWidth))
-	out := m.headerLines("gh-zen  repository workbench", width)
+	out := m.headerLines(m.viewTitle(), width)
 	bodyHeight := m.frameBodyHeight(max(len(left), max(len(middle), len(right))), len(out))
 
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		m.renderPane(m.paneHeading(paneRepositories), left, repoPaneWidth, bodyHeight, focus == paneRepositories),
 		paneGap(bodyHeight+frameBorderLines),
-		m.renderPane(m.paneHeading(paneWorkItems), middle, workItemPaneWidth, bodyHeight, focus == paneWorkItems),
+		m.renderPane(m.paneHeading(listPane), middle, workItemPaneWidth, bodyHeight, focus == listPane),
 		paneGap(bodyHeight+frameBorderLines),
 		m.renderPane(m.paneHeading(panePreview), right, rightWidth, bodyHeight, focus == panePreview),
 	)
@@ -952,9 +1540,10 @@ func (m model) renderFull(width int) string {
 func (m model) renderCompact(width int) string {
 	contentWidth := max(width-paneBorderWidth, 0)
 	focus := m.activePane()
-	out := m.headerLines("gh-zen workbench", width)
+	listPane := m.listPane()
+	out := m.headerLines(m.viewTitle(), width)
 
-	workLines := m.workItemLines(paneTextWidth(contentWidth), focus == paneWorkItems)
+	workLines := m.listLines(paneTextWidth(contentWidth), focus == listPane)
 	previewLines := m.previewLines(paneTextWidth(contentWidth))
 	workHeight := len(workLines)
 	previewHeight := len(previewLines)
@@ -966,10 +1555,34 @@ func (m model) renderCompact(width int) string {
 	}
 
 	out = append(out,
-		m.renderPane(m.paneHeading(paneWorkItems), workLines, contentWidth, workHeight, focus == paneWorkItems),
+		m.renderPane(m.paneHeading(listPane), workLines, contentWidth, workHeight, focus == listPane),
 		m.renderPane(m.paneHeading(panePreview), previewLines, contentWidth, previewHeight, focus == panePreview),
 	)
 	return strings.Join(out, "\n") + "\n"
+}
+
+func (m model) listPane() paneFocus {
+	if m.activeView == appViewPullRequests {
+		return panePullRequests
+	}
+	return paneWorkItems
+}
+
+func (m model) viewTitle() string {
+	if m.activeView == appViewPullRequests {
+		return "gh-zen  pull requests"
+	}
+	if m.isCompact() {
+		return "gh-zen workbench"
+	}
+	return "gh-zen  repository workbench"
+}
+
+func (m model) listLines(width int, focused bool) []string {
+	if m.activeView == appViewPullRequests {
+		return m.pullRequestLines(width, focused)
+	}
+	return m.workItemLines(width, focused)
 }
 
 func (m model) repoLines(width int, focused bool) []string {
@@ -981,6 +1594,9 @@ func (m model) repoLines(width int, focused bool) []string {
 			marker := selectionMarker(!m.viewSelected && i == m.selectedRepo, focused)
 			lines = append(lines, truncate(fmt.Sprintf("%s %s", marker, repo.FullName()), width))
 		}
+	}
+	if m.activeView == appViewPullRequests {
+		return lines
 	}
 	lines = append(lines, "", "Views")
 	for i, view := range repoViews {
@@ -1004,6 +1620,29 @@ func (m model) workItemLines(width int, focused bool) []string {
 	return lines
 }
 
+func (m model) pullRequestLines(width int, focused bool) []string {
+	prs := m.visiblePullRequests()
+	if len(prs) == 0 {
+		return []string{m.emptyPullRequestLine()}
+	}
+	lines := []string{}
+	for i, pr := range prs {
+		marker := selectionMarker(i == m.selectedPR, focused)
+		row := fmt.Sprintf("%s %-5s %-12s %-26s %-12s %-16s %-16s %s",
+			marker,
+			pr.ShortNumberLabel(),
+			pr.StateLabel(),
+			pr.Title,
+			authorLabel(pr.Author),
+			shortReviewLabel(pr),
+			pr.Checks.Label(),
+			shortUpdatedAt(pr.UpdatedAt),
+		)
+		lines = append(lines, truncate(row, width))
+	}
+	return lines
+}
+
 func (m model) emptyWorkItemLine() string {
 	if m.workbenchLoading {
 		return "  loading workbench data..."
@@ -1017,7 +1656,51 @@ func (m model) emptyWorkItemLine() string {
 	return "  no work items"
 }
 
+func (m model) emptyPullRequestLine() string {
+	if m.pullRequestsLoading {
+		return "  loading pull requests..."
+	}
+	if m.pullRequestFilter.Active() {
+		return "  no pull requests match filters"
+	}
+	if m.pullRequestRepo != (workbench.RepoRef{}) {
+		return "  no pull requests"
+	}
+	return "  no pull request data"
+}
+
+func authorLabel(author string) string {
+	if author == "" {
+		return "@unknown"
+	}
+	return "@" + author
+}
+
+func shortReviewLabel(pr pullrequests.PullRequest) string {
+	switch {
+	case pr.ReviewDecision != "":
+		return pr.ReviewDecision
+	case len(pr.ReviewRequests) > 0:
+		return "review requested"
+	default:
+		return "no review"
+	}
+}
+
+func shortUpdatedAt(value string) string {
+	if len(value) >= len("2006-01-02") {
+		return value[:len("2006-01-02")]
+	}
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
 func (m model) previewLines(width int) []string {
+	if m.activeView == appViewPullRequests {
+		return m.pullRequestPreviewLines(width)
+	}
 	switch m.preview.status {
 	case previewLoading:
 		return m.previewStatusLines(width, "Loading preview...")
@@ -1053,13 +1736,66 @@ func (m model) previewStatusLines(width int, status string) []string {
 	return lines
 }
 
+func (m model) pullRequestPreviewLines(width int) []string {
+	switch m.pullRequestPreview.status {
+	case previewLoading:
+		return m.pullRequestPreviewStatusLines(width, "Loading preview...")
+	case previewLoaded:
+		if m.pullRequestPreview.loaded.pullRequestKey != m.pullRequestPreview.focusedPullRequestKey {
+			return m.pullRequestPreviewStatusLines(width, "Loading preview...")
+		}
+		return pullRequestPreviewLines(m.pullRequestPreview.loaded.pr, width)
+	case previewEmpty:
+		if _, ok := m.selectedPullRequest(); !ok {
+			return []string{"  no pull request selected"}
+		}
+		return m.pullRequestPreviewStatusLines(width, "No preview data")
+	case previewError:
+		lines := m.pullRequestPreviewStatusLines(width, "Preview failed")
+		if m.pullRequestPreview.errorMessage != "" {
+			lines = append(lines, truncate("Error: "+m.pullRequestPreview.errorMessage, width))
+		}
+		return lines
+	default:
+		if _, ok := m.selectedPullRequest(); !ok {
+			return []string{"  no pull request selected"}
+		}
+		return m.pullRequestPreviewStatusLines(width, "Preview idle")
+	}
+}
+
+func (m model) pullRequestPreviewStatusLines(width int, status string) []string {
+	lines := []string{truncate(status, width)}
+	if pr, ok := m.selectedPullRequest(); ok {
+		lines = append(lines, truncate("PR: "+pr.NumberLabel()+" "+pr.Title, width))
+	}
+	return lines
+}
+
 func (m model) headerLines(title string, width int) []string {
 	out := []string{title}
 	out = append(out, m.keymapLines(width)...)
+	if m.activeView == appViewPullRequests {
+		out = append(out, m.pullRequestHeaderLines(width)...)
+	}
 	if m.statusMessage != "" {
 		out = append(out, truncate("Status: "+m.statusMessage, width))
 	}
 	return out
+}
+
+func (m model) pullRequestHeaderLines(width int) []string {
+	if m.pullRequestSearch {
+		return []string{truncate("Search PRs: "+m.pullRequestSearchIn, width)}
+	}
+	if m.pullRequestFilterUI {
+		return []string{truncate("PR filters: s state  a author  r requested  w waiting  c checks  d draft  x clear", width)}
+	}
+	labels := m.pullRequestFilter.ActiveLabels()
+	if len(labels) == 0 {
+		return []string{truncate("PR filters: none", width)}
+	}
+	return []string{truncate("PR filters: "+strings.Join(labels, ", "), width)}
 }
 
 // keymapLines keeps the active pane affordances visible near the title.
@@ -1067,7 +1803,7 @@ func (m model) keymapLines(width int) []string {
 	focus := m.activePane()
 	prefix := focus.label() + " keys: "
 	helpWidth := max(width-lipgloss.Width(prefix), 0)
-	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(focus, m.paneOrder()))
+	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(m.activeView, focus, m.paneOrder()))
 	lines := strings.Split(helpView, "\n")
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 
@@ -1198,6 +1934,42 @@ func (m model) selectedWorkItem() (workbench.WorkItem, bool) {
 		return workbench.WorkItem{}, false
 	}
 	return items[m.selectedItem], true
+}
+
+func (m model) visiblePullRequests() []pullrequests.PullRequest {
+	repo, ok := m.selectedRepoRef()
+	if !ok {
+		return nil
+	}
+	if m.pullRequestRepo != (workbench.RepoRef{}) && m.pullRequestRepo != repo {
+		return nil
+	}
+	return pullrequests.Filter(m.pullRequests, m.pullRequestFilter)
+}
+
+func (m model) selectedPullRequest() (pullrequests.PullRequest, bool) {
+	prs := m.visiblePullRequests()
+	if len(prs) == 0 || m.selectedPR < 0 || m.selectedPR >= len(prs) {
+		return pullrequests.PullRequest{}, false
+	}
+	return prs[m.selectedPR], true
+}
+
+func (m *model) restoreSelectedPullRequest(number int) {
+	prs := m.visiblePullRequests()
+	if len(prs) == 0 {
+		m.selectedPR = 0
+		return
+	}
+	if number > 0 {
+		for i, pr := range prs {
+			if pr.Number == number {
+				m.selectedPR = i
+				return
+			}
+		}
+	}
+	m.selectedPR = clamp(m.selectedPR, 0, len(prs)-1)
 }
 
 func shortRemoteLabel(item workbench.WorkItem) string {

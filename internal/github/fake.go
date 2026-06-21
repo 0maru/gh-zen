@@ -2,18 +2,21 @@ package github
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/0maru/gh-zen/internal/pullrequests"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
 // FakeService is an in-memory GitHub service for small tests.
 type FakeService struct {
-	Summaries          map[string]RepositorySummary
-	PullRequestsByRepo map[string][]workbench.PullRequestRef
-	IssuesByRepo       map[string][]workbench.IssueRef
-	Checks             map[string]workbench.CheckSummary
-	ReviewSubjects     workbench.ReviewSubjects
-	Err                error
+	Summaries                    map[string]RepositorySummary
+	PullRequestsByRepo           map[string][]workbench.PullRequestRef
+	RepositoryPullRequestsByRepo map[string][]pullrequests.PullRequest
+	IssuesByRepo                 map[string][]workbench.IssueRef
+	Checks                       map[string]workbench.CheckSummary
+	ReviewSubjects               workbench.ReviewSubjects
+	Err                          error
 }
 
 func (f FakeService) RepositorySummary(_ context.Context, repo string) (RepositorySummary, error) {
@@ -41,6 +44,25 @@ func (f FakeService) RepositorySummary(_ context.Context, repo string) (Reposito
 
 func (f FakeService) PullRequests(_ context.Context, repo string) ([]workbench.PullRequestRef, error) {
 	return f.PullRequestsForRepo(repo)
+}
+
+func (f FakeService) List(_ context.Context, repo string, filter pullrequests.PullRequestFilter) ([]pullrequests.PullRequest, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	return pullrequests.Filter(f.RepositoryPullRequestsByRepo[repo], filter), nil
+}
+
+func (f FakeService) Detail(_ context.Context, repo string, number int) (pullrequests.PullRequest, error) {
+	if f.Err != nil {
+		return pullrequests.PullRequest{}, f.Err
+	}
+	for _, pr := range f.RepositoryPullRequestsByRepo[repo] {
+		if pr.Number == number {
+			return pr, nil
+		}
+	}
+	return pullrequests.PullRequest{}, fmt.Errorf("pull request #%d not found", number)
 }
 
 func (f FakeService) Issues(_ context.Context, repo string) ([]workbench.IssueRef, error) {

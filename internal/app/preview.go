@@ -5,7 +5,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"github.com/0maru/gh-zen/internal/pullrequests"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -50,6 +52,35 @@ type previewResultMsg struct {
 
 type previewLoader func(previewRequest) tea.Cmd
 
+type pullRequestPreviewState struct {
+	status                previewStatus
+	requestID             int
+	focusedPullRequestKey string
+	loaded                pullRequestPreviewData
+	errorMessage          string
+}
+
+type pullRequestPreviewRequest struct {
+	requestID      int
+	pullRequestKey string
+	pr             pullrequests.PullRequest
+}
+
+type pullRequestPreviewData struct {
+	pullRequestKey string
+	pr             pullrequests.PullRequest
+}
+
+type pullRequestPreviewResultMsg struct {
+	requestID      int
+	pullRequestKey string
+	data           pullRequestPreviewData
+	empty          bool
+	err            error
+}
+
+type pullRequestPreviewLoader func(pullRequestPreviewRequest) tea.Cmd
+
 func fakeDelayedPreviewLoader(delay time.Duration) previewLoader {
 	return func(req previewRequest) tea.Cmd {
 		return func() tea.Msg {
@@ -62,6 +93,24 @@ func fakeDelayedPreviewLoader(delay time.Duration) previewLoader {
 				data: previewData{
 					workItemID: req.workItemID,
 					item:       req.item,
+				},
+			}
+		}
+	}
+}
+
+func fakeDelayedPullRequestPreviewLoader(delay time.Duration) pullRequestPreviewLoader {
+	return func(req pullRequestPreviewRequest) tea.Cmd {
+		return func() tea.Msg {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			return pullRequestPreviewResultMsg{
+				requestID:      req.requestID,
+				pullRequestKey: req.pullRequestKey,
+				data: pullRequestPreviewData{
+					pullRequestKey: req.pullRequestKey,
+					pr:             req.pr,
 				},
 			}
 		}
@@ -210,4 +259,133 @@ func latestReviewSummary(reviews []workbench.PullRequestReviewRef) string {
 		labels = append(labels, review.AuthorLogin+" "+review.State)
 	}
 	return strings.Join(labels, ", ")
+}
+
+func pullRequestPreviewLines(pr pullrequests.PullRequest, width int) []string {
+	lines := []string{
+		truncate("PR: "+pr.NumberLabel()+" "+pr.Title, width),
+		truncate("State: "+pr.StateLabel(), width),
+		truncate("Branch: "+pullRequestBranchLabel(pr), width),
+	}
+	if pr.Author != "" {
+		lines = append(lines, truncate("Author: "+pr.Author, width))
+	}
+	if pr.UpdatedAt != "" {
+		lines = append(lines, truncate("Updated: "+pr.UpdatedAt, width))
+	}
+	if pr.ReviewDecision != "" {
+		lines = append(lines, truncate("Review: "+pr.ReviewDecision, width))
+	}
+	if requested := pullRequestReviewRequestSummary(pr.ReviewRequests); requested != "" {
+		lines = append(lines, truncate("Requested: "+requested, width))
+	}
+	if reviews := pullRequestLatestReviewSummary(pr.LatestReviews); reviews != "" {
+		lines = append(lines, truncate("Reviews: "+reviews, width))
+	}
+	lines = append(lines, truncate("Checks: "+pr.Checks.Label(), width))
+	if pr.Mergeability != "" {
+		lines = append(lines, truncate("Mergeability: "+pr.Mergeability, width))
+	}
+	if linked := pullRequestLinkedIssueSummary(pr.LinkedIssues); linked != "" {
+		lines = append(lines, truncate("Linked issues: "+linked, width))
+	}
+	if pr.BodyExcerpt != "" {
+		lines = append(lines, "Body:")
+		for _, line := range wrapPreviewText(pr.BodyExcerpt, width) {
+			lines = append(lines, truncate("  "+line, width))
+		}
+	}
+	return lines
+}
+
+func pullRequestBranchLabel(pr pullrequests.PullRequest) string {
+	head := pr.HeadRef
+	if head == "" {
+		head = "unknown head"
+	}
+	base := pr.BaseRef
+	if base == "" {
+		base = "unknown base"
+	}
+	return head + " -> " + base
+}
+
+func pullRequestReviewRequestSummary(requests []pullrequests.ReviewRequest) string {
+	if len(requests) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(requests))
+	for _, request := range requests {
+		switch {
+		case request.Login != "":
+			labels = append(labels, request.Login)
+		case request.Slug != "":
+			labels = append(labels, "team/"+request.Slug)
+		case request.Name != "":
+			labels = append(labels, request.Name)
+		}
+	}
+	return strings.Join(labels, ", ")
+}
+
+func pullRequestLatestReviewSummary(reviews []pullrequests.Review) string {
+	if len(reviews) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(reviews))
+	for _, review := range reviews {
+		if review.Author == "" && review.State == "" {
+			continue
+		}
+		if review.Author == "" {
+			labels = append(labels, review.State)
+			continue
+		}
+		if review.State == "" {
+			labels = append(labels, review.Author)
+			continue
+		}
+		labels = append(labels, review.Author+" "+review.State)
+	}
+	return strings.Join(labels, ", ")
+}
+
+func pullRequestLinkedIssueSummary(issues []pullrequests.LinkedIssue) string {
+	if len(issues) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		labels = append(labels, issue.Label())
+	}
+	return strings.Join(labels, ", ")
+}
+
+func wrapPreviewText(text string, width int) []string {
+	if width <= 2 {
+		return []string{truncate(text, width)}
+	}
+	available := max(width-2, 1)
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	lines := []string{}
+	current := ""
+	for _, word := range words {
+		if current == "" {
+			current = word
+			continue
+		}
+		if lipgloss.Width(current+" "+word) > available {
+			lines = append(lines, current)
+			current = word
+			continue
+		}
+		current += " " + word
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
 }

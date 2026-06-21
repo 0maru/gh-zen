@@ -26,6 +26,9 @@ func TestDefaults_AreUsable(t *testing.T) {
 	if got.Workbench.Filter.PullRequest != PullRequestAny || got.Workbench.Filter.LocalStatus != LocalStatusAny {
 		t.Fatalf("expected unfiltered workbench default, got %+v", got.Workbench.Filter)
 	}
+	if got.PullRequests.PreviewWidth != 0.45 || got.PullRequests.Filter.State != PullRequestsStateAny || got.PullRequests.Filter.Draft != PullRequestsDraftAny {
+		t.Fatalf("expected unfiltered pull request default, got %+v", got.PullRequests)
+	}
 }
 
 func TestMergeLayers_ScalarsUseLastWriterWins(t *testing.T) {
@@ -113,6 +116,9 @@ func TestMerge_MapsDeepMerge(t *testing.T) {
 	present := PullRequestPresent
 	dirty := LocalStatusDirty
 	branchPattern := "feat/*"
+	open := PullRequestsStateOpen
+	merged := PullRequestsStateMerged
+	draft := PullRequestsDraftOnly
 
 	got := MergeLayers(
 		PartialConfig{
@@ -132,6 +138,17 @@ func TestMerge_MapsDeepMerge(t *testing.T) {
 					},
 				},
 			},
+			PullRequests: PullRequestsConfigLayer{
+				Filter: PullRequestsFilterLayer{
+					State: ptr(open),
+				},
+				SavedFilters: map[string]PullRequestsFilterLayer{
+					"review": {
+						State: ptr(open),
+						Draft: ptr(draft),
+					},
+				},
+			},
 		},
 		PartialConfig{
 			Repos: ReposConfigLayer{
@@ -148,6 +165,16 @@ func TestMerge_MapsDeepMerge(t *testing.T) {
 					},
 				},
 			},
+			PullRequests: PullRequestsConfigLayer{
+				Filter: PullRequestsFilterLayer{
+					State: ptr(merged),
+				},
+				SavedFilters: map[string]PullRequestsFilterLayer{
+					"review": {
+						Author: str("0maru"),
+					},
+				},
+			},
 		},
 	)
 
@@ -159,6 +186,13 @@ func TestMerge_MapsDeepMerge(t *testing.T) {
 	filter := got.Workbench.SavedFilters["review"]
 	if filter.PullRequest != PullRequestPresent || filter.LocalStatus != LocalStatusDirty || filter.BranchPattern != branchPattern {
 		t.Fatalf("expected saved filter map to deep merge, got %+v", filter)
+	}
+	if got.PullRequests.Filter.State != PullRequestsStateMerged {
+		t.Fatalf("expected pull request filter scalar override, got %+v", got.PullRequests.Filter)
+	}
+	prFilter := got.PullRequests.SavedFilters["review"]
+	if prFilter.State != PullRequestsStateOpen || prFilter.Draft != PullRequestsDraftOnly || prFilter.Author != "0maru" {
+		t.Fatalf("expected pull request saved filter map to deep merge, got %+v", prFilter)
 	}
 }
 
@@ -189,10 +223,13 @@ func TestValidate_RejectsInvalidKnownValues(t *testing.T) {
 	cfg.Startup.Repo = "not-a-repo"
 	cfg.Startup.View = StartupView("issues")
 	cfg.UI.PreviewWidth = 1
+	cfg.PullRequests.PreviewWidth = 1
 	cfg.Keys["open"] = nil
 	cfg.Repos.Roots = []string{" "}
 	cfg.Workbench.Filter.PullRequest = PullRequestFilter("maybe")
 	cfg.Workbench.Filter.LocalStatus = LocalStatusFilter("stale")
+	cfg.PullRequests.Filter.State = PullRequestsStateFilter("reviewing")
+	cfg.PullRequests.Filter.Draft = PullRequestsDraftFilter("maybe")
 
 	err := Validate(cfg)
 	if err == nil {
@@ -207,10 +244,13 @@ func TestValidate_RejectsInvalidKnownValues(t *testing.T) {
 		"startup.repo",
 		"startup.view",
 		"ui.preview_width",
+		"pullrequests.preview_width",
 		"keys.open",
 		"repos.roots[0]",
 		"workbench.filter.pull_request",
 		"workbench.filter.local_status",
+		"pullrequests.filter.state",
+		"pullrequests.filter.draft",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected validation error to mention %q, got %q", want, err.Error())
