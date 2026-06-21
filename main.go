@@ -127,7 +127,7 @@ type repositoryCheckout struct {
 func (r runtimeWorkbenchReloader) repositoryCheckouts(ctx context.Context, selected workbench.RepoRef, discovered []localrepo.Repository) ([]repositoryCheckout, []workbench.RepositoryDiagnostic) {
 	checkouts := make([]repositoryCheckout, 0, len(discovered)+1)
 	diagnostics := []workbench.RepositoryDiagnostic{}
-	seen := map[workbench.RepoRef]struct{}{}
+	seen := map[string]struct{}{}
 	for _, repository := range discovered {
 		repoName, err := config.ParseGitHubRemoteURL(repository.OriginURL)
 		if err != nil {
@@ -141,10 +141,11 @@ func (r runtimeWorkbenchReloader) repositoryCheckouts(ctx context.Context, selec
 		if !ok {
 			continue
 		}
-		if _, ok := seen[repo]; ok {
+		key := repoFullNameKey(repo)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[repo] = struct{}{}
+		seen[key] = struct{}{}
 		checkouts = append(checkouts, repositoryCheckout{
 			repo:          repo,
 			path:          repository.Path,
@@ -156,7 +157,7 @@ func (r runtimeWorkbenchReloader) repositoryCheckouts(ctx context.Context, selec
 	if !ok {
 		return checkouts, diagnostics
 	}
-	if _, ok := seen[requested]; ok {
+	if _, ok := seen[repoFullNameKey(requested)]; ok {
 		return checkouts, diagnostics
 	}
 	checkout := r.checkoutForRepository(ctx, requested)
@@ -261,4 +262,8 @@ func repoRefFromFullName(repoName string) (workbench.RepoRef, bool) {
 
 func sameRepoFullName(left string, right string) bool {
 	return strings.EqualFold(left, right)
+}
+
+func repoFullNameKey(repo workbench.RepoRef) string {
+	return strings.ToLower(repo.FullName())
 }

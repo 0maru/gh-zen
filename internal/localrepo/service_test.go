@@ -274,11 +274,14 @@ func TestService_DiscoverRepositories(t *testing.T) {
 	root := t.TempDir()
 	ghZen := filepath.Join(root, "0maru", "gh-zen")
 	dotfiles := filepath.Join(root, "0maru", "dotfiles")
+	nested := filepath.Join(ghZen, "node_modules", "nested")
 	initTempGitRepoAt(t, ghZen)
 	initTempGitRepoAt(t, dotfiles)
+	initTempGitRepoAt(t, nested)
 	runGit(t, ghZen, "remote", "add", "origin", "https://github.com/0maru/gh-zen.git")
 	runGit(t, ghZen, "remote", "add", "upstream", "https://github.com/example/gh-zen.git")
 	runGit(t, dotfiles, "remote", "add", "origin", "https://github.com/0maru/dotfiles.git")
+	runGit(t, nested, "remote", "add", "origin", "https://github.com/example/nested.git")
 
 	repositories, diagnostics := (Service{}).DiscoverRepositories(context.Background(), []string{root})
 
@@ -298,6 +301,12 @@ func TestService_DiscoverRepositories(t *testing.T) {
 	dotfilesRepo := requireRepository(t, repositories, dotfiles)
 	if dotfilesRepo.OriginURL != "https://github.com/0maru/dotfiles.git" {
 		t.Fatalf("expected dotfiles origin URL, got %+v", dotfilesRepo)
+	}
+	nestedPath := canonicalPath(t, nested)
+	for _, repository := range repositories {
+		if canonicalPath(t, repository.Path) == nestedPath {
+			t.Fatalf("expected nested repository to be skipped, got %+v", repositories)
+		}
 	}
 }
 

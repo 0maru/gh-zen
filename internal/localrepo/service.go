@@ -132,17 +132,17 @@ func (s Service) discoverRepositoriesInRoot(ctx context.Context, displayRoot str
 		repository, err := s.RepositoryMetadata(ctx, path)
 		if err != nil {
 			*diagnostics = append(*diagnostics, RepositoryDiagnostic{Path: diagnosticPath, Message: fmt.Sprintf("read repository metadata: %v", err)})
-			return nil
+			return filepath.SkipDir
 		}
 		if repository.Path == "" {
 			repository.Path = path
 		}
 		if _, ok := seen[repository.Path]; ok {
-			return nil
+			return filepath.SkipDir
 		}
 		seen[repository.Path] = struct{}{}
 		*repositories = append(*repositories, repository)
-		return nil
+		return filepath.SkipDir
 	})
 	if err != nil {
 		*diagnostics = append(*diagnostics, RepositoryDiagnostic{Path: displayRoot, Message: fmt.Sprintf("scan: %v", err)})

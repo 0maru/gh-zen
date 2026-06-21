@@ -79,6 +79,7 @@ type model struct {
 	workbenchSource      workbenchDataSource
 	workbenchLoading     bool
 	focusedPane          paneFocus
+	focusedWorkItemRepo  workbench.RepoRef
 	focusedWorkItemID    string
 	preview              previewState
 	nextPreviewRequestID int
@@ -225,13 +226,14 @@ func (m model) Init() tea.Cmd {
 		return batchCommands(cmds...)
 	}
 	item, ok := m.selectedWorkItem()
-	if !ok || item.ID != m.focusedWorkItemID {
+	if !ok || !m.focusedWorkItemMatches(item) {
 		return batchCommands(cmds...)
 	}
 	cmds = append(cmds, m.previewLoader(previewRequest{
-		requestID:  m.preview.requestID,
-		workItemID: item.ID,
-		item:       item,
+		requestID:    m.preview.requestID,
+		workItemRepo: item.Repo,
+		workItemID:   item.ID,
+		item:         item,
 	}))
 	return batchCommands(cmds...)
 }
@@ -278,16 +280,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) startPreviewLoadIfFocusedItemChanged() tea.Cmd {
 	item, ok := m.selectedWorkItem()
 	if !ok {
-		m.focusedWorkItemID = ""
+		m.clearFocusedWorkItem()
 		m.preview = previewState{status: previewEmpty}
 		return nil
 	}
 	if item.ID == "" {
-		m.focusedWorkItemID = ""
+		m.clearFocusedWorkItem()
 		m.preview = previewState{status: previewEmpty}
 		return nil
 	}
-	if item.ID == m.focusedWorkItemID {
+	if m.focusedWorkItemMatches(item) {
 		return nil
 	}
 	return m.startPreviewLoadForCurrentItem()
@@ -296,37 +298,41 @@ func (m *model) startPreviewLoadIfFocusedItemChanged() tea.Cmd {
 func (m *model) startPreviewLoadForCurrentItem() tea.Cmd {
 	item, ok := m.selectedWorkItem()
 	if !ok || item.ID == "" {
-		m.focusedWorkItemID = ""
+		m.clearFocusedWorkItem()
 		m.preview = previewState{status: previewEmpty}
 		return nil
 	}
 
 	m.nextPreviewRequestID++
 	requestID := m.nextPreviewRequestID
+	m.focusedWorkItemRepo = item.Repo
 	m.focusedWorkItemID = item.ID
 	m.preview = previewState{
-		status:            previewLoading,
-		requestID:         requestID,
-		focusedWorkItemID: item.ID,
+		status:              previewLoading,
+		requestID:           requestID,
+		focusedWorkItemRepo: item.Repo,
+		focusedWorkItemID:   item.ID,
 	}
 	if m.previewLoader == nil {
 		return nil
 	}
 	return m.previewLoader(previewRequest{
-		requestID:  requestID,
-		workItemID: item.ID,
-		item:       item,
+		requestID:    requestID,
+		workItemRepo: item.Repo,
+		workItemID:   item.ID,
+		item:         item,
 	})
 }
 
 func (m *model) handlePreviewResult(msg previewResultMsg) {
-	if msg.requestID != m.preview.requestID || msg.workItemID != m.focusedWorkItemID {
+	if msg.requestID != m.preview.requestID || msg.workItemID != m.focusedWorkItemID || msg.workItemRepo != m.focusedWorkItemRepo {
 		return
 	}
 
 	next := previewState{
-		requestID:         msg.requestID,
-		focusedWorkItemID: msg.workItemID,
+		requestID:           msg.requestID,
+		focusedWorkItemRepo: msg.workItemRepo,
+		focusedWorkItemID:   msg.workItemID,
 	}
 	switch {
 	case msg.err != nil:
@@ -339,6 +345,9 @@ func (m *model) handlePreviewResult(msg previewResultMsg) {
 		next.loaded = msg.data
 		if next.loaded.workItemID == "" {
 			next.loaded.workItemID = msg.workItemID
+		}
+		if next.loaded.workItemRepo == (workbench.RepoRef{}) {
+			next.loaded.workItemRepo = msg.workItemRepo
 		}
 	}
 	m.preview = next
@@ -1119,7 +1128,7 @@ func (m model) previewLines(width int) []string {
 	case previewLoading:
 		return m.previewStatusLines(width, "Loading preview...")
 	case previewLoaded:
-		if m.preview.loaded.workItemID != m.focusedWorkItemID {
+		if m.preview.loaded.workItemID != m.focusedWorkItemID || m.preview.loaded.workItemRepo != m.focusedWorkItemRepo {
 			return m.previewStatusLines(width, "Loading preview...")
 		}
 		return workItemPreviewLines(m.preview.loaded.item, width)
@@ -1338,6 +1347,15 @@ func (m model) selectedWorkItem() (workbench.WorkItem, bool) {
 		return workbench.WorkItem{}, false
 	}
 	return items[m.selectedItem], true
+}
+
+func (m model) focusedWorkItemMatches(item workbench.WorkItem) bool {
+	return item.Repo == m.focusedWorkItemRepo && item.ID == m.focusedWorkItemID
+}
+
+func (m *model) clearFocusedWorkItem() {
+	m.focusedWorkItemRepo = workbench.RepoRef{}
+	m.focusedWorkItemID = ""
 }
 
 func shortRemoteLabel(item workbench.WorkItem) string {

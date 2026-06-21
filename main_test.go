@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/0maru/gh-zen/internal/config"
+	"github.com/0maru/gh-zen/internal/localrepo"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -53,6 +54,30 @@ func TestSameRepoFullName(t *testing.T) {
 	}
 	if sameRepoFullName("owner/other", "owner/repo") {
 		t.Fatalf("expected different repo names not to match")
+	}
+}
+
+func TestRepositoryCheckoutsDedupesRequestedRepoCaseInsensitively(t *testing.T) {
+	selected := workbench.RepoRef{Owner: "owner", Name: "repo"}
+	checkouts, diagnostics := (runtimeWorkbenchReloader{config: config.Defaults()}).repositoryCheckouts(
+		context.Background(),
+		selected,
+		[]localrepo.Repository{{
+			Path:          "/repos/repo",
+			OriginURL:     "https://github.com/Owner/Repo.git",
+			DefaultBranch: "main",
+			Remotes:       []string{"origin"},
+		}},
+	)
+
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics, got %+v", diagnostics)
+	}
+	if len(checkouts) != 1 {
+		t.Fatalf("expected one checkout, got %+v", checkouts)
+	}
+	if checkouts[0].path != "/repos/repo" || checkouts[0].repo.FullName() != "Owner/Repo" {
+		t.Fatalf("expected discovered checkout only, got %+v", checkouts[0])
 	}
 }
 
