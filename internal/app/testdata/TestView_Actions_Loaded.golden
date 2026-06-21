@@ -1,0 +1,18 @@
+gh-zen  GitHub Actions
+Runs keys: j/k move  g/G jump  [1]/[2]/[3] pane  h/l pane  ? help  q quit
+┌─Repositories[1]───────┐ ┌─Runs[2]─────────────────────────────────┐ ┌─Preview[3]─────────────────┐
+│ * 0maru/gh-zen        │ │ > success     CI           main        ~│ │ Workflow: CI               │
+│   0maru/dotfiles      │ │   failure     CI           feat/config-~│ │ Title: Set up GitHub CLI e~│
+│                       │ │   in_progress Release      main        ~│ │ Run: run #77 (1001)        │
+│                       │ │                                         │ │ Status: success            │
+│                       │ │                                         │ │ Branch: main               │
+│                       │ │                                         │ │ Event: push                │
+│                       │ │                                         │ │ Actor: 0maru               │
+│                       │ │                                         │ │ Commit: 3da43e7            │
+│                       │ │                                         │ │ Created: 2026-06-20 12:00 ~│
+│                       │ │                                         │ │ Updated: 2026-06-20 12:04 ~│
+│                       │ │                                         │ │ URL: https://github.com/0m~│
+│                       │ │                                         │ │ Failure summary: none      │
+│                       │ │                                         │ │ Jobs:                      │
+│                       │ │                                         │ │   success test (4m0s)      │
+└───────────────────────┘ └─────────────────────────────────────────┘ └────────────────────────────┘

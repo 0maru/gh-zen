@@ -179,6 +179,130 @@ func TestCLIService_ViewerReviewSubjectsParsesGHOutput(t *testing.T) {
 	}
 }
 
+func TestCLIService_WorkflowRunsParsesGHOutputAndActorFallback(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("run", "list", "--repo", repo, "--limit", "2", "--json", runListFields):      []byte(`[{"databaseId":101,"number":77,"workflowName":"CI","headBranch":"main","event":"push","status":"completed","conclusion":"success","headSha":"abcdef1234567890","displayTitle":"Build main","url":"https://example.test/runs/101","createdAt":"2026-06-20T12:00:00Z","updatedAt":"2026-06-20T12:04:00Z"},{"databaseId":102,"number":78,"name":"Fallback name","headBranch":"feature","event":"pull_request","status":"completed","conclusion":"failure","headSha":"1234567890abcdef","displayTitle":"Build feature","url":"https://example.test/runs/102","createdAt":"2026-06-20T13:00:00Z","updatedAt":"2026-06-20T13:08:00Z"}]`),
+		commandKey("api", "repos/"+repo+"/actions/runs", "--method", "GET", "-f", "per_page=2"): []byte(`{"workflow_runs":[{"id":101,"triggering_actor":{"login":"0maru"}},{"id":102,"actor":{"login":"teammate"}}]}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.WorkflowRuns(context.Background(), repo, WorkflowRunListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("expected workflow runs to parse, got %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected two runs, got %+v", got)
+	}
+	if got[0].ID != 101 || got[0].RunNumber != 77 || got[0].WorkflowName != "CI" || got[0].Actor != "0maru" || got[0].ShortSHA() != "abcdef1" {
+		t.Fatalf("unexpected first run: %+v", got[0])
+	}
+	if got[1].WorkflowName != "Fallback name" || got[1].Conclusion != "failure" || got[1].Actor != "teammate" {
+		t.Fatalf("unexpected second run: %+v", got[1])
+	}
+}
+
+func TestCLIService_WorkflowRunParsesSingleRunWithActorFallback(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("run", "view", "101", "--repo", repo, "--json", runViewFields): []byte(`{"databaseId":101,"number":77,"workflowName":"CI","headBranch":"main","event":"push","status":"completed","conclusion":"success","headSha":"abcdef1234567890","displayTitle":"Build main","url":"https://example.test/runs/101","createdAt":"2026-06-20T12:00:00Z","updatedAt":"2026-06-20T12:04:00Z"}`),
+		commandKey("api", "repos/"+repo+"/actions/runs/101"):                      []byte(`{"id":101,"triggering_actor":{"login":"0maru"}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.WorkflowRun(context.Background(), repo, 101)
+	if err != nil {
+		t.Fatalf("expected workflow run to parse, got %v", err)
+	}
+	if got.ID != 101 || got.Actor != "0maru" || got.StatusLabel() != "success" {
+		t.Fatalf("unexpected workflow run: %+v", got)
+	}
+}
+
+func TestCLIService_WorkflowRunJobsParsesGHOutput(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("run", "view", "101", "--repo", repo, "--json", runJobsFields): []byte(`{"jobs":[{"databaseId":201,"name":"test","status":"completed","conclusion":"failure","startedAt":"2026-06-20T12:00:00Z","completedAt":"2026-06-20T12:04:00Z","url":"https://example.test/jobs/201","steps":[{"number":1,"name":"Checkout","status":"completed","conclusion":"success"},{"number":2,"name":"Go test","status":"completed","conclusion":"failure"}]}]}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.WorkflowRunJobs(context.Background(), repo, 101)
+	if err != nil {
+		t.Fatalf("expected jobs to parse, got %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 201 || got[0].Conclusion != "failure" || len(got[0].Steps) != 2 || got[0].Steps[1].Conclusion != "failure" {
+		t.Fatalf("unexpected jobs: %+v", got)
+	}
+}
+
+func TestCLIService_JobAnnotationsParsesGHOutput(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "repos/"+repo+"/check-runs/201/annotations"): []byte(`[{"path":"internal/app/model.go","start_line":42,"end_line":42,"annotation_level":"failure","title":"Test failure","message":"expected preview"}]`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.JobAnnotations(context.Background(), repo, 201)
+	if err != nil {
+		t.Fatalf("expected annotations to parse, got %v", err)
+	}
+	want := []workbench.AnnotationRef{{Path: "internal/app/model.go", StartLine: 42, EndLine: 42, Level: "failure", Title: "Test failure", Message: "expected preview"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected %+v, got %+v", want, got)
+	}
+}
+
+func TestCLIService_WorkflowRunLogsFetchesRunAndJobScopedLogs(t *testing.T) {
+	repo := "0maru/gh-zen"
+	jobID := int64(201)
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("run", "view", "101", "--repo", repo, "--log-failed"):                 []byte("line 1\nline 2\n"),
+		commandKey("run", "view", "101", "--repo", repo, "--job", "201", "--log"):        []byte("job line\n"),
+		commandKey("run", "view", "101", "--repo", repo, "--job", "201", "--log-failed"): []byte("failed job line\n"),
+	}}
+	service := CLIService{Runner: runner}
+
+	runLog, err := service.WorkflowRunLogs(context.Background(), repo, 101, LogFetchOptions{FailedOnly: true})
+	if err != nil {
+		t.Fatalf("expected run log, got %v", err)
+	}
+	if !reflect.DeepEqual(runLog.Lines, []string{"line 1", "line 2"}) || !runLog.Failed || runLog.JobID != 0 {
+		t.Fatalf("unexpected run log: %+v", runLog)
+	}
+
+	jobLog, err := service.WorkflowRunLogs(context.Background(), repo, 101, LogFetchOptions{JobID: &jobID})
+	if err != nil {
+		t.Fatalf("expected job log, got %v", err)
+	}
+	if !reflect.DeepEqual(jobLog.Lines, []string{"job line"}) || jobLog.JobID != jobID || jobLog.Failed {
+		t.Fatalf("unexpected job log: %+v", jobLog)
+	}
+
+	failedJobLog, err := service.WorkflowRunLogs(context.Background(), repo, 101, LogFetchOptions{JobID: &jobID, FailedOnly: true})
+	if err != nil {
+		t.Fatalf("expected failed job log, got %v", err)
+	}
+	if !reflect.DeepEqual(failedJobLog.Lines, []string{"failed job line"}) || failedJobLog.JobID != jobID || !failedJobLog.Failed {
+		t.Fatalf("unexpected failed job log: %+v", failedJobLog)
+	}
+}
+
+func TestCLIService_WorkflowRunLogsTailsLargeOutput(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("run", "view", "101", "--repo", repo, "--log"): []byte("one\ntwo\nthree\n"),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.WorkflowRunLogs(context.Background(), repo, 101, LogFetchOptions{TailLines: 2})
+	if err != nil {
+		t.Fatalf("expected log tail, got %v", err)
+	}
+	if !reflect.DeepEqual(got.Lines, []string{"two", "three"}) {
+		t.Fatalf("expected last two lines, got %+v", got.Lines)
+	}
+}
+
 func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{

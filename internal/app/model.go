@@ -69,6 +69,7 @@ func (p paneFocus) borderLabel() string {
 type model struct {
 	width                int
 	height               int
+	mode                 appMode
 	repos                []workbench.RepoRef
 	selectedRepo         int
 	selectedView         int
@@ -86,6 +87,8 @@ type model struct {
 	nextReloadRequestID  int
 	activeReloadRequest  workbenchReloadRequest
 	workbenchFilter      cfgpkg.WorkbenchFilter
+	actions              actionsState
+	actionsLoader        ActionsLoader
 	actionRunner         actionRunner
 	statusMessage        string
 	styles               Styles
@@ -98,6 +101,7 @@ type WorkbenchData struct {
 	Repos          []workbench.RepoRef
 	WorkItems      []workbench.WorkItem
 	Reloader       WorkbenchReloader
+	ActionsLoader  ActionsLoader
 	InitialLoading bool
 	Demo           bool
 }
@@ -176,6 +180,10 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 	if data.Demo {
 		source = workbenchDataDemo
 	}
+	actionsLoader := data.ActionsLoader
+	if actionsLoader == nil && data.Demo {
+		actionsLoader = newFakeActionsLoader()
+	}
 	m := model{
 		repos:             cloneRepoRefs(data.Repos),
 		workItems:         cloneWorkItems(data.WorkItems),
@@ -183,6 +191,7 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 		previewLoader:     loader,
 		workbenchReloader: data.Reloader,
 		workbenchFilter:   cfg.Workbench.Filter,
+		actionsLoader:     actionsLoader,
 		actionRunner:      systemActionRunner{},
 		styles:            DefaultStyles(),
 		keys:              DefaultKeyMap(),
@@ -215,6 +224,21 @@ func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.workbenchLoading && m.activeReloadRequest.requestID != 0 {
 		cmds = append(cmds, m.workbenchReloadCommand(m.activeReloadRequest))
+	}
+	if m.mode == modeActions && m.actions.loading && m.actions.activeLoadRequest.requestID != 0 {
+		cmds = append(cmds, m.actionsLoadCommand(m.actions.activeLoadRequest))
+	}
+	if m.mode == modeActions && m.actions.preview.status == previewLoading && m.actions.preview.requestID != 0 {
+		if run, ok := m.selectedWorkflowRun(); ok && run.ID == m.actions.preview.focusedRunID {
+			repo, repoOK := m.selectedRepoRef()
+			if repoOK {
+				cmds = append(cmds, m.actionsPreviewCommand(actionsPreviewRequest{
+					requestID: m.actions.preview.requestID,
+					repo:      repo,
+					run:       run,
+				}))
+			}
+		}
 	}
 	if m.preview.status != previewLoading || m.previewLoader == nil {
 		return batchCommands(cmds...)
@@ -262,6 +286,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case workbenchReloadMsg:
 		return m, m.handleWorkbenchReload(msg)
+	case actionsLoadMsg:
+		return m, m.handleActionsLoad(msg)
+	case actionsPreviewMsg:
+		m.handleActionsPreview(msg)
+		return m, nil
+	case actionsLogMsg:
+		m.handleActionsLog(msg)
+		return m, nil
 	case tea.KeyMsg:
 		if action, ok := m.matchedAction(msg); ok {
 			return m, m.handleAction(action)
@@ -340,7 +372,7 @@ func (m *model) handlePreviewResult(msg previewResultMsg) {
 }
 
 func (m model) matchedAction(msg tea.KeyMsg) (actionID, bool) {
-	for _, binding := range m.keys.actionBindings() {
+	for _, binding := range m.keys.actionBindings(m.mode) {
 		if key.Matches(msg, binding.binding) {
 			return binding.id, true
 		}
@@ -354,6 +386,10 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		return tea.Quit
 	case actionToggleHelp:
 		m.help.ShowAll = !m.help.ShowAll
+	case actionShowActions:
+		return m.switchMode(modeActions)
+	case actionShowWorkbench:
+		return m.switchMode(modeWorkbench)
 	case actionFocusNextPane:
 		m.focusNextPane()
 	case actionFocusPreviousPane:
@@ -366,17 +402,20 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.focusPaneByNumber(3)
 	case actionMoveDown:
 		m.moveFocusedSelection(1)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startFocusedPreviewOrLoad()
 	case actionMoveUp:
 		m.moveFocusedSelection(-1)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startFocusedPreviewOrLoad()
 	case actionJumpTop:
 		m.jumpFocusedSelection(false)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startFocusedPreviewOrLoad()
 	case actionJumpBottom:
 		m.jumpFocusedSelection(true)
-		return m.startPreviewLoadIfFocusedItemChanged()
+		return m.startFocusedPreviewOrLoad()
 	case actionRefresh:
+		if m.mode == modeActions {
+			return m.refreshActionsData()
+		}
 		cmd := m.refreshWorkbenchData()
 		if cmd == nil {
 			m.statusMessage = "Refresh unavailable"
@@ -388,11 +427,48 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 	case actionOpenIssue:
 		return m.openIssue()
 	case actionCopyURL:
+		if m.mode == modeActions {
+			return m.copyWorkflowRunURL()
+		}
 		return m.copyURL()
 	case actionCopyWorktreePath:
 		return m.copyWorktreePath()
+	case actionOpenWorkflowRun:
+		return m.openWorkflowRun()
+	case actionCopyWorkflowRunID:
+		return m.copyWorkflowRunID()
+	case actionFetchWorkflowRunLogs:
+		return m.fetchActionsLogs()
+	case actionFilterStatus:
+		return m.applyActionsFilter(actionsFilterFieldStatus)
+	case actionFilterConclusion:
+		return m.applyActionsFilter(actionsFilterFieldConclusion)
+	case actionFilterBranch:
+		return m.applyActionsFilter(actionsFilterFieldBranch)
+	case actionFilterWorkflow:
+		return m.applyActionsFilter(actionsFilterFieldWorkflow)
+	case actionFilterEvent:
+		return m.applyActionsFilter(actionsFilterFieldEvent)
+	case actionFilterActor:
+		return m.applyActionsFilter(actionsFilterFieldActor)
+	case actionClearFilters:
+		return m.clearActionsFilters()
 	}
 	return nil
+}
+
+func (m *model) startFocusedPreviewOrLoad() tea.Cmd {
+	if m.mode != modeActions {
+		return m.startPreviewLoadIfFocusedItemChanged()
+	}
+	switch m.activePane() {
+	case paneRepositories:
+		return m.startActionsLoadForSelectedRepo("Loading workflow runs...")
+	case paneWorkItems:
+		return m.startActionsPreviewIfFocusedRunChanged()
+	default:
+		return nil
+	}
 }
 
 func (m *model) openPullRequest() tea.Cmd {
@@ -460,6 +536,77 @@ func (m *model) copyWorktreePath() tea.Cmd {
 	return m.actionCommand("Copied worktree path", "Copy worktree path failed", func(ctx context.Context) error {
 		return m.runner().Copy(ctx, item.Worktree.Path)
 	})
+}
+
+func (m *model) openWorkflowRun() tea.Cmd {
+	run, ok := m.selectedWorkflowRun()
+	if !ok {
+		m.statusMessage = "No workflow run selected"
+		return nil
+	}
+	if run.URL == "" {
+		m.statusMessage = "No run URL for selected workflow run"
+		return nil
+	}
+	label := run.NumberLabel()
+	m.statusMessage = "Opening " + label + "..."
+	return m.actionCommand("Opened "+label, "Open workflow run failed", func(ctx context.Context) error {
+		return m.runner().Open(ctx, run.URL)
+	})
+}
+
+func (m *model) copyWorkflowRunURL() tea.Cmd {
+	run, ok := m.selectedWorkflowRun()
+	if !ok {
+		m.statusMessage = "No workflow run selected"
+		return nil
+	}
+	if run.URL == "" {
+		m.statusMessage = "No run URL for selected workflow run"
+		return nil
+	}
+	m.statusMessage = "Copying run URL..."
+	return m.actionCommand("Copied run URL", "Copy run URL failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, run.URL)
+	})
+}
+
+func (m *model) copyWorkflowRunID() tea.Cmd {
+	run, ok := m.selectedWorkflowRun()
+	if !ok {
+		m.statusMessage = "No workflow run selected"
+		return nil
+	}
+	if run.ID == 0 {
+		m.statusMessage = "No run ID for selected workflow run"
+		return nil
+	}
+	m.statusMessage = "Copying run ID..."
+	return m.actionCommand("Copied run ID", "Copy run ID failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, fmt.Sprintf("%d", run.ID))
+	})
+}
+
+func (m *model) applyActionsFilter(field actionsFilterField) tea.Cmd {
+	if m.mode != modeActions {
+		return nil
+	}
+	m.cycleActionsFilter(field)
+	return m.startActionsPreviewForCurrentRun()
+}
+
+func (m *model) clearActionsFilters() tea.Cmd {
+	if m.mode != modeActions {
+		return nil
+	}
+	if !m.actions.filter.active() {
+		m.statusMessage = "Actions filters: none"
+		return nil
+	}
+	m.actions.filter = actionsFilter{}
+	m.actions.selectedRun = 0
+	m.statusMessage = "Actions filters cleared"
+	return m.startActionsPreviewForCurrentRun()
 }
 
 func (m *model) actionCommand(success string, failure string, run func(context.Context) error) tea.Cmd {
@@ -638,6 +785,10 @@ func (m *model) moveFocusedSelection(delta int) {
 	case paneRepositories:
 		m.moveRepoSelection(delta)
 	case paneWorkItems:
+		if m.mode == modeActions {
+			m.moveWorkflowRunSelection(delta)
+			return
+		}
 		m.moveWorkItemSelection(delta)
 	}
 }
@@ -652,6 +803,10 @@ func (m *model) jumpFocusedSelection(toEnd bool) {
 		}
 		m.setRepoPaneIndex(0)
 	case paneWorkItems:
+		if m.mode == modeActions {
+			m.jumpWorkflowRunSelection(toEnd)
+			return
+		}
 		items := m.visibleWorkItems()
 		if toEnd {
 			if len(items) > 0 {
@@ -692,6 +847,9 @@ func (m *model) moveWorkItemSelection(delta int) {
 }
 
 func (m model) repoPaneEntryCount() int {
+	if m.mode == modeActions {
+		return len(m.repos)
+	}
 	return len(m.repos) + len(repoViews)
 }
 
@@ -713,6 +871,12 @@ func (m *model) setRepoPaneIndex(index int) {
 	}
 
 	index = clamp(index, 0, count-1)
+	if m.mode == modeActions {
+		m.selectedRepo = index
+		m.viewSelected = false
+		m.actions.selectedRun = 0
+		return
+	}
 	if index < len(m.repos) {
 		m.selectedRepo = index
 		m.viewSelected = false
@@ -932,9 +1096,9 @@ func (m model) renderFull(width int) string {
 	focus := m.activePane()
 
 	left := m.repoLines(paneTextWidth(repoPaneWidth), focus == paneRepositories)
-	middle := m.workItemLines(paneTextWidth(workItemPaneWidth), focus == paneWorkItems)
-	right := m.previewLines(paneTextWidth(rightWidth))
-	out := m.headerLines("gh-zen  repository workbench", width)
+	middle := m.middlePaneLines(paneTextWidth(workItemPaneWidth), focus == paneWorkItems)
+	right := m.previewPaneLines(paneTextWidth(rightWidth))
+	out := m.headerLines(m.headerTitle(false), width)
 	bodyHeight := m.frameBodyHeight(max(len(left), max(len(middle), len(right))), len(out))
 
 	body := lipgloss.JoinHorizontal(
@@ -952,10 +1116,10 @@ func (m model) renderFull(width int) string {
 func (m model) renderCompact(width int) string {
 	contentWidth := max(width-paneBorderWidth, 0)
 	focus := m.activePane()
-	out := m.headerLines("gh-zen workbench", width)
+	out := m.headerLines(m.headerTitle(true), width)
 
-	workLines := m.workItemLines(paneTextWidth(contentWidth), focus == paneWorkItems)
-	previewLines := m.previewLines(paneTextWidth(contentWidth))
+	workLines := m.middlePaneLines(paneTextWidth(contentWidth), focus == paneWorkItems)
+	previewLines := m.previewPaneLines(paneTextWidth(contentWidth))
 	workHeight := len(workLines)
 	previewHeight := len(previewLines)
 	if m.height > 0 {
@@ -972,6 +1136,33 @@ func (m model) renderCompact(width int) string {
 	return strings.Join(out, "\n") + "\n"
 }
 
+func (m model) headerTitle(compact bool) string {
+	if m.mode == modeActions {
+		if compact {
+			return "gh-zen actions"
+		}
+		return "gh-zen  GitHub Actions"
+	}
+	if compact {
+		return "gh-zen workbench"
+	}
+	return "gh-zen  repository workbench"
+}
+
+func (m model) middlePaneLines(width int, focused bool) []string {
+	if m.mode == modeActions {
+		return m.actionsRunLines(width, focused)
+	}
+	return m.workItemLines(width, focused)
+}
+
+func (m model) previewPaneLines(width int) []string {
+	if m.mode == modeActions {
+		return m.actionsPreviewLines(width)
+	}
+	return m.previewLines(width)
+}
+
 func (m model) repoLines(width int, focused bool) []string {
 	lines := []string{}
 	if len(m.repos) == 0 {
@@ -981,6 +1172,9 @@ func (m model) repoLines(width int, focused bool) []string {
 			marker := selectionMarker(!m.viewSelected && i == m.selectedRepo, focused)
 			lines = append(lines, truncate(fmt.Sprintf("%s %s", marker, repo.FullName()), width))
 		}
+	}
+	if m.mode == modeActions {
+		return lines
 	}
 	lines = append(lines, "", "Views")
 	for i, view := range repoViews {
@@ -1065,9 +1259,9 @@ func (m model) headerLines(title string, width int) []string {
 // keymapLines keeps the active pane affordances visible near the title.
 func (m model) keymapLines(width int) []string {
 	focus := m.activePane()
-	prefix := focus.label() + " keys: "
+	prefix := m.paneLabel(focus) + " keys: "
 	helpWidth := max(width-lipgloss.Width(prefix), 0)
-	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(focus, m.paneOrder()))
+	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(m.mode, focus, m.paneOrder()))
 	lines := strings.Split(helpView, "\n")
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 
@@ -1169,9 +1363,37 @@ func paneTextWidth(width int) int {
 func (m model) paneHeading(pane paneFocus) string {
 	number, ok := m.paneNumber(pane)
 	if !ok {
-		return pane.borderLabel()
+		return m.paneBorderLabel(pane)
 	}
-	return fmt.Sprintf("%s[%d]", pane.borderLabel(), number)
+	return fmt.Sprintf("%s[%d]", m.paneBorderLabel(pane), number)
+}
+
+func (m model) paneLabel(pane paneFocus) string {
+	if m.mode == modeActions {
+		switch pane {
+		case paneRepositories:
+			return "Repositories"
+		case panePreview:
+			return "Preview"
+		default:
+			return "Runs"
+		}
+	}
+	return pane.label()
+}
+
+func (m model) paneBorderLabel(pane paneFocus) string {
+	if m.mode == modeActions {
+		switch pane {
+		case paneRepositories:
+			return "Repositories"
+		case panePreview:
+			return "Preview"
+		default:
+			return "Runs"
+		}
+	}
+	return pane.borderLabel()
 }
 
 func (m model) paneNumber(pane paneFocus) (int, bool) {
