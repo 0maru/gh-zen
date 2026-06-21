@@ -278,6 +278,83 @@ func TestUpdate_RefreshPreservesSelectedWorkItemRepo(t *testing.T) {
 	}
 }
 
+func TestUpdate_FullRefreshPreservesSelectedRepositoryAndWorkItem(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	repoAItem := workbench.WorkItem{ID: "branch:main", Repo: repoA, Branch: &workbench.BranchRef{Name: "main"}}
+	repoBFirst := workbench.WorkItem{ID: "branch:first", Repo: repoB, Branch: &workbench.BranchRef{Name: "first"}}
+	repoBSecond := workbench.WorkItem{ID: "branch:second", Repo: repoB, Branch: &workbench.BranchRef{Name: "second"}}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repoB.FullName(): {
+				Repo: repoB,
+				Repositories: []workbench.RepositorySummary{
+					{Repo: repoA, Path: "/repos/gh-zen"},
+					{Repo: repoB, Path: "/repos/dotfiles"},
+				},
+				Items: []workbench.WorkItem{repoAItem, repoBSecond, repoBFirst},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{repoAItem, repoBFirst, repoBSecond},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.selectedRepo = 1
+	start.selectedItem = 1
+	start.focusedWorkItemID = repoBSecond.ID
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	mm := got.(model)
+
+	if mm.selectedRepo != 1 {
+		t.Fatalf("expected selected repository to remain repo B, got %d", mm.selectedRepo)
+	}
+	if item, ok := mm.selectedWorkItem(); !ok || item.Repo != repoB || item.ID != repoBSecond.ID {
+		t.Fatalf("expected selected work item to follow repo B second item, got %+v ok=%v", item, ok)
+	}
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected selected item to follow stable ID to index 0, got %d", mm.selectedItem)
+	}
+}
+
+func TestUpdate_FullRefreshFallsBackWhenSelectedRepositoryDisappears(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	repoAItem := workbench.WorkItem{ID: "branch:main", Repo: repoA, Branch: &workbench.BranchRef{Name: "main"}}
+	repoBItem := workbench.WorkItem{ID: "branch:old", Repo: repoB, Branch: &workbench.BranchRef{Name: "old"}}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repoB.FullName(): {
+				Repo:         repoB,
+				Repositories: []workbench.RepositorySummary{{Repo: repoA, Path: "/repos/gh-zen"}},
+				Items:        []workbench.WorkItem{repoAItem},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{repoAItem, repoBItem},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.selectedRepo = 1
+	start.selectedItem = 0
+	start.focusedWorkItemID = repoBItem.ID
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	mm := got.(model)
+
+	if mm.selectedRepo != 0 || len(mm.repos) != 1 || mm.repos[0] != repoA {
+		t.Fatalf("expected fallback to first remaining repo, got selected=%d repos=%+v", mm.selectedRepo, mm.repos)
+	}
+	if item, ok := mm.selectedWorkItem(); !ok || item.Repo != repoA || item.ID != repoAItem.ID {
+		t.Fatalf("expected fallback selected item from repo A, got %+v ok=%v", item, ok)
+	}
+}
+
 func TestUpdate_StaleRefreshResultIsDiscarded(t *testing.T) {
 	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
@@ -516,6 +593,41 @@ func TestInit_StartsInitialWorkbenchLoad(t *testing.T) {
 	}
 	if items := mm.visibleWorkItems(); len(items) != 1 || items[0].ID != loaded.ID {
 		t.Fatalf("expected loaded work item, got %+v", items)
+	}
+}
+
+func TestInit_StartsInitialWorkbenchLoadWithoutSelectedRepository(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	loaded := workbench.WorkItem{
+		ID:     "branch:loaded",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "loaded"},
+	}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			(workbench.RepoRef{}).FullName(): {
+				Repositories: []workbench.RepositorySummary{{Repo: repo, Path: "/repos/gh-zen"}},
+				Items:        []workbench.WorkItem{loaded},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), "", WorkbenchData{
+		Reloader:       reloader,
+		InitialLoading: true,
+	}, fakeDelayedPreviewLoader(0))
+
+	msg := requireWorkbenchReloadMsg(t, start.Init())
+	got, _ := start.Update(msg)
+	mm := got.(model)
+
+	if len(reloader.calls) != 1 || reloader.calls[0] != (workbench.RepoRef{}) {
+		t.Fatalf("expected reload without selected repository, got %+v", reloader.calls)
+	}
+	if len(mm.repos) != 1 || mm.repos[0] != repo {
+		t.Fatalf("expected discovered repository to populate model, got %+v", mm.repos)
+	}
+	if item, ok := mm.selectedWorkItem(); !ok || item.ID != loaded.ID {
+		t.Fatalf("expected loaded item to be selected, got %+v ok=%v", item, ok)
 	}
 }
 

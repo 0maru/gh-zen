@@ -35,7 +35,10 @@ func run() error {
 		return err
 	}
 
-	reloader := runtimeWorkbenchReloader{config: loadResult.Config}
+	reloader := runtimeWorkbenchReloader{
+		config:      loadResult.Config,
+		startupRepo: startupRepo.Repo,
+	}
 	data := loadStartupWorkbenchData(startupRepo, reloader)
 
 	_, err = tea.NewProgram(app.NewWithWorkbenchData(loadResult.Config, startupRepo.Repo, data), tea.WithAltScreen()).Run()
@@ -43,69 +46,209 @@ func run() error {
 }
 
 type runtimeWorkbenchReloader struct {
-	config config.Config
+	config      config.Config
+	startupRepo string
+	local       localrepo.Service
+	github      workbench.GitHubWorkbenchDiscovery
 }
 
 func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+	local := r.local
+	rootPaths, rootDiagnostics := resolvedRepositoryRootPaths(r.config)
+	discovered, discoveryDiagnostics := local.DiscoverRepositories(ctx, rootPaths)
+
+	checkouts, diagnostics := r.repositoryCheckouts(ctx, repo, discovered)
+	diagnostics = append(diagnostics, repositoryDiagnosticsFromConfig(rootDiagnostics)...)
+	diagnostics = append(diagnostics, repositoryDiagnosticsFromLocal(discoveryDiagnostics)...)
+
+	items := []workbench.WorkItem{}
+	summaries := make([]workbench.RepositorySummary, 0, len(checkouts))
+	for _, checkout := range checkouts {
+		if checkout.path == "" {
+			items = append(items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
+			summaries = append(summaries, workbench.RepositorySummary{Repo: checkout.repo})
+			continue
+		}
+		result := (workbench.RuntimeLoader{
+			Repo:     checkout.repo,
+			RepoPath: checkout.path,
+			Local:    local,
+			GitHub:   r.githubDiscovery(),
+		}).Load(ctx)
+		items = append(items, result.Items...)
+		if len(checkout.diagnostics) > 0 {
+			items = append(items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
+		}
+		summaries = append(summaries, workbench.SummarizeRepository(
+			checkout.repo,
+			checkout.path,
+			checkout.defaultBranch,
+			checkout.remotes,
+			result.Items,
+		))
+	}
+	if len(diagnostics) > 0 {
+		diagnosticRepo := repositoryDiagnosticRepo(repo, summaries, r.startupRepo)
+		if len(summaries) == 0 {
+			summaries = append(summaries, workbench.RepositorySummary{Repo: diagnosticRepo})
+		}
+		items = append(items, workbench.RepositoryPathErrorItem(diagnosticRepo, diagnostics))
+	}
+
+	return workbench.RuntimeLoadResult{
+		Repo:         repo,
+		Repositories: summaries,
+		Items:        items,
+	}
+}
+
+func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {
+	data := app.WorkbenchData{
+		Reloader:       reloader,
+		InitialLoading: reloader != nil,
+	}
+	repo, ok := repoRefFromFullName(startupRepo.Repo)
+	if !ok {
+		return data
+	}
+
+	data.Repos = []workbench.RepoRef{repo}
+	return data
+}
+
+type repositoryCheckout struct {
+	repo          workbench.RepoRef
+	path          string
+	defaultBranch string
+	remotes       []string
+	diagnostics   []workbench.RepositoryDiagnostic
+}
+
+func (r runtimeWorkbenchReloader) repositoryCheckouts(ctx context.Context, selected workbench.RepoRef, discovered []localrepo.Repository) ([]repositoryCheckout, []workbench.RepositoryDiagnostic) {
+	checkouts := make([]repositoryCheckout, 0, len(discovered)+1)
+	diagnostics := []workbench.RepositoryDiagnostic{}
+	seen := map[workbench.RepoRef]struct{}{}
+	for _, repository := range discovered {
+		repoName, err := config.ParseGitHubRemoteURL(repository.OriginURL)
+		if err != nil {
+			diagnostics = append(diagnostics, workbench.RepositoryDiagnostic{
+				Path:    repository.Path,
+				Message: err.Error(),
+			})
+			continue
+		}
+		repo, ok := repoRefFromFullName(repoName)
+		if !ok {
+			continue
+		}
+		if _, ok := seen[repo]; ok {
+			continue
+		}
+		seen[repo] = struct{}{}
+		checkouts = append(checkouts, repositoryCheckout{
+			repo:          repo,
+			path:          repository.Path,
+			defaultBranch: repository.DefaultBranch,
+			remotes:       repository.Remotes,
+		})
+	}
+	requested, ok := r.requestedRepository(selected)
+	if !ok {
+		return checkouts, diagnostics
+	}
+	if _, ok := seen[requested]; ok {
+		return checkouts, diagnostics
+	}
+	checkout := r.checkoutForRepository(ctx, requested)
+	return append([]repositoryCheckout{checkout}, checkouts...), diagnostics
+}
+
+func (r runtimeWorkbenchReloader) checkoutForRepository(ctx context.Context, repo workbench.RepoRef) repositoryCheckout {
 	resolvedPath := config.ResolveRepositoryPath(config.RepositoryPathOptions{
 		Repo:   repo.FullName(),
 		Config: r.config,
 	})
 	if resolvedPath.Path == "" {
-		return workbench.RuntimeLoadResult{
-			Repo:  repo,
-			Items: []workbench.WorkItem{repositoryPathErrorItem(repo, resolvedPath.Diagnostics)},
+		return repositoryCheckout{
+			repo:        repo,
+			diagnostics: repositoryDiagnosticsFromConfig(resolvedPath.Diagnostics),
 		}
 	}
-	return (workbench.RuntimeLoader{
-		Repo:     repo,
-		RepoPath: resolvedPath.Path,
-		Local:    localrepo.Service{},
-		GitHub:   github.CLIService{},
-	}).Load(ctx)
-}
-
-func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {
-	repo, ok := repoRefFromFullName(startupRepo.Repo)
-	if !ok {
-		return app.WorkbenchData{}
+	metadata, err := r.local.RepositoryMetadata(ctx, resolvedPath.Path)
+	if err != nil {
+		return repositoryCheckout{
+			repo: repo,
+			path: resolvedPath.Path,
+			diagnostics: []workbench.RepositoryDiagnostic{{
+				Path:    resolvedPath.Path,
+				Message: err.Error(),
+			}},
+		}
 	}
-
-	data := app.WorkbenchData{
-		Repos:          []workbench.RepoRef{repo},
-		Reloader:       reloader,
-		InitialLoading: reloader != nil,
-	}
-	return data
-}
-
-func repositoryPathErrorItem(repo workbench.RepoRef, diagnostics []config.Diagnostic) workbench.WorkItem {
-	summary := "repository path resolution failed"
-	if len(diagnostics) > 0 {
-		summary += ": " + diagnosticSummary(diagnostics)
-	}
-	return workbench.WorkItem{
-		ID:     "repository-path-error:" + repo.FullName(),
-		Repo:   repo,
-		Branch: &workbench.BranchRef{Name: "repository path error"},
-		Local: &workbench.LocalStatus{
-			State:   workbench.LocalUnknown,
-			Summary: summary,
-		},
-		Checks: workbench.CheckSummary{State: workbench.CheckUnknown},
+	return repositoryCheckout{
+		repo:          repo,
+		path:          resolvedPath.Path,
+		defaultBranch: metadata.DefaultBranch,
+		remotes:       metadata.Remotes,
 	}
 }
 
-func diagnosticSummary(diagnostics []config.Diagnostic) string {
-	parts := make([]string, 0, len(diagnostics))
+func (r runtimeWorkbenchReloader) requestedRepository(selected workbench.RepoRef) (workbench.RepoRef, bool) {
+	if selected != (workbench.RepoRef{}) {
+		return selected, true
+	}
+	return repoRefFromFullName(r.startupRepo)
+}
+
+func (r runtimeWorkbenchReloader) githubDiscovery() workbench.GitHubWorkbenchDiscovery {
+	if r.github != nil {
+		return r.github
+	}
+	return github.CLIService{}
+}
+
+func resolvedRepositoryRootPaths(cfg config.Config) ([]string, []config.Diagnostic) {
+	roots, diagnostics := config.ResolveRepositoryRoots(cfg)
+	paths := make([]string, 0, len(roots))
+	for _, root := range roots {
+		paths = append(paths, root.Path)
+	}
+	return paths, diagnostics
+}
+
+func repositoryDiagnosticsFromConfig(diagnostics []config.Diagnostic) []workbench.RepositoryDiagnostic {
+	out := make([]workbench.RepositoryDiagnostic, 0, len(diagnostics))
 	for _, diagnostic := range diagnostics {
-		if diagnostic.Path == "" {
-			parts = append(parts, diagnostic.Message)
-			continue
-		}
-		parts = append(parts, diagnostic.Path+": "+diagnostic.Message)
+		out = append(out, workbench.RepositoryDiagnostic{
+			Path:    diagnostic.Path,
+			Message: diagnostic.Message,
+		})
 	}
-	return strings.Join(parts, "; ")
+	return out
+}
+
+func repositoryDiagnosticsFromLocal(diagnostics []localrepo.RepositoryDiagnostic) []workbench.RepositoryDiagnostic {
+	out := make([]workbench.RepositoryDiagnostic, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		out = append(out, workbench.RepositoryDiagnostic{
+			Path:    diagnostic.Path,
+			Message: diagnostic.Message,
+		})
+	}
+	return out
+}
+
+func repositoryDiagnosticRepo(selected workbench.RepoRef, summaries []workbench.RepositorySummary, startupRepo string) workbench.RepoRef {
+	if selected != (workbench.RepoRef{}) {
+		return selected
+	}
+	if repo, ok := repoRefFromFullName(startupRepo); ok {
+		return repo
+	}
+	if len(summaries) > 0 {
+		return summaries[0].Repo
+	}
+	return workbench.RepoRef{Owner: "local", Name: "repositories"}
 }
 
 func repoRefFromFullName(repoName string) (workbench.RepoRef, bool) {

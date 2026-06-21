@@ -3,8 +3,10 @@ package localrepo
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -29,6 +31,20 @@ type Branch struct {
 	RemoteOnly bool
 }
 
+// Repository describes one local Git checkout discovered below configured roots.
+type Repository struct {
+	Path          string
+	OriginURL     string
+	DefaultBranch string
+	Remotes       []string
+}
+
+// RepositoryDiagnostic describes a non-fatal repository discovery warning.
+type RepositoryDiagnostic struct {
+	Path    string
+	Message string
+}
+
 // Runner executes Git commands for the local repository service.
 type Runner interface {
 	Run(ctx context.Context, dir string, args ...string) (string, error)
@@ -50,6 +66,123 @@ func (GitRunner) Run(ctx context.Context, dir string, args ...string) (string, e
 // Service discovers local repository state behind a Git command boundary.
 type Service struct {
 	Runner Runner
+}
+
+// DiscoverRepositories finds Git repositories below the configured roots.
+func (s Service) DiscoverRepositories(ctx context.Context, roots []string) ([]Repository, []RepositoryDiagnostic) {
+	repositories := []Repository{}
+	diagnostics := []RepositoryDiagnostic{}
+	seen := map[string]struct{}{}
+	visited := map[string]struct{}{}
+	for _, root := range roots {
+		walkRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			diagnostics = append(diagnostics, RepositoryDiagnostic{Path: root, Message: fmt.Sprintf("resolve root: %v", err)})
+			continue
+		}
+		if _, ok := visited[walkRoot]; ok {
+			continue
+		}
+		visited[walkRoot] = struct{}{}
+		s.discoverRepositoriesInRoot(ctx, root, walkRoot, visited, seen, &repositories, &diagnostics)
+	}
+	sort.SliceStable(repositories, func(i, j int) bool {
+		if repositories[i].Path == repositories[j].Path {
+			return repositories[i].OriginURL < repositories[j].OriginURL
+		}
+		return repositories[i].Path < repositories[j].Path
+	})
+	return repositories, diagnostics
+}
+
+func (s Service) discoverRepositoriesInRoot(ctx context.Context, displayRoot string, walkRoot string, visited map[string]struct{}, seen map[string]struct{}, repositories *[]Repository, diagnostics *[]RepositoryDiagnostic) {
+	err := filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		diagnosticPath := repositoryDiagnosticPath(displayRoot, walkRoot, path)
+		if walkErr != nil {
+			*diagnostics = append(*diagnostics, RepositoryDiagnostic{Path: diagnosticPath, Message: fmt.Sprintf("read: %v", walkErr)})
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() == ".git" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !entry.IsDir() {
+			if entry.Type()&fs.ModeSymlink == 0 {
+				return nil
+			}
+			linkedRoot, ok := repositorySymlinkDir(path, diagnosticPath, diagnostics)
+			if !ok {
+				return nil
+			}
+			if _, ok := visited[linkedRoot]; ok {
+				return nil
+			}
+			visited[linkedRoot] = struct{}{}
+			s.discoverRepositoriesInRoot(ctx, diagnosticPath, linkedRoot, visited, seen, repositories, diagnostics)
+			return nil
+		}
+		if !hasGitMetadata(path) {
+			return nil
+		}
+		repository, err := s.RepositoryMetadata(ctx, path)
+		if err != nil {
+			*diagnostics = append(*diagnostics, RepositoryDiagnostic{Path: diagnosticPath, Message: fmt.Sprintf("read repository metadata: %v", err)})
+			return nil
+		}
+		if repository.Path == "" {
+			repository.Path = path
+		}
+		if _, ok := seen[repository.Path]; ok {
+			return nil
+		}
+		seen[repository.Path] = struct{}{}
+		*repositories = append(*repositories, repository)
+		return nil
+	})
+	if err != nil {
+		*diagnostics = append(*diagnostics, RepositoryDiagnostic{Path: displayRoot, Message: fmt.Sprintf("scan: %v", err)})
+	}
+}
+
+// RepositoryMetadata reads repository-level metadata through Git.
+func (s Service) RepositoryMetadata(ctx context.Context, repoPath string) (Repository, error) {
+	runner := s.runner()
+	root, err := runner.Run(ctx, repoPath, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return Repository{}, fmt.Errorf("resolve repository root: %w", err)
+	}
+	originURL, err := runner.Run(ctx, root, "remote", "get-url", "origin")
+	if err != nil {
+		return Repository{}, fmt.Errorf("read origin remote: %w", err)
+	}
+	remoteOutput, err := runner.Run(ctx, root, "remote")
+	if err != nil {
+		return Repository{}, fmt.Errorf("list remotes: %w", err)
+	}
+	return Repository{
+		Path:          root,
+		OriginURL:     originURL,
+		DefaultBranch: s.defaultBranch(ctx, root),
+		Remotes:       parseRemoteNames(remoteOutput),
+	}, nil
+}
+
+func (s Service) defaultBranch(ctx context.Context, repoPath string) string {
+	runner := s.runner()
+	branch, err := runner.Run(ctx, repoPath, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	if err == nil && branch != "" {
+		return strings.TrimPrefix(branch, "origin/")
+	}
+	branch, err = runner.Run(ctx, repoPath, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err == nil {
+		return branch
+	}
+	return ""
 }
 
 // DiscoverWorktrees lists local worktrees and reads their dirty status.
@@ -218,4 +351,40 @@ func trimGitOutput(output []byte) string {
 func missingPath(path string) bool {
 	_, err := os.Stat(path)
 	return os.IsNotExist(err)
+}
+
+func repositoryDiagnosticPath(root string, walkRoot string, path string) string {
+	if root == walkRoot {
+		return path
+	}
+	rel, err := filepath.Rel(walkRoot, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	if rel == "." {
+		return root
+	}
+	return filepath.Join(root, rel)
+}
+
+func repositorySymlinkDir(path string, diagnosticPath string, diagnostics *[]RepositoryDiagnostic) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		*diagnostics = append(*diagnostics, RepositoryDiagnostic{Path: diagnosticPath, Message: err.Error()})
+		return "", false
+	}
+	if !info.IsDir() {
+		return "", false
+	}
+	linkedRoot, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		*diagnostics = append(*diagnostics, RepositoryDiagnostic{Path: diagnosticPath, Message: fmt.Sprintf("resolve symlink: %v", err)})
+		return "", false
+	}
+	return linkedRoot, true
+}
+
+func hasGitMetadata(path string) bool {
+	_, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil
 }
