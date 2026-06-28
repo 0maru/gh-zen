@@ -22,6 +22,41 @@ type RepositoryPathResult struct {
 	Diagnostics []Diagnostic
 }
 
+// RepositoryRoot is one configured repository discovery root after expansion.
+type RepositoryRoot struct {
+	ConfigPath string
+	Path       string
+}
+
+// ResolveRepositoryRoots expands configured repository roots and reports
+// non-fatal diagnostics for roots that cannot be scanned.
+func ResolveRepositoryRoots(cfg Config) ([]RepositoryRoot, []Diagnostic) {
+	roots := make([]RepositoryRoot, 0, len(cfg.Repos.Roots))
+	diagnostics := []Diagnostic{}
+	for i, root := range cfg.Repos.Roots {
+		rootPath := expandHomePath(root)
+		info, err := os.Stat(rootPath)
+		if err != nil {
+			diagnostics = append(diagnostics, repositoryRootDiagnostic(i, fmt.Sprintf("%q is not accessible: %v", rootPath, err)))
+			continue
+		}
+		if !info.IsDir() {
+			diagnostics = append(diagnostics, repositoryRootDiagnostic(i, fmt.Sprintf("%q is not a directory", rootPath)))
+			continue
+		}
+		walkRoot, err := filepath.EvalSymlinks(rootPath)
+		if err != nil {
+			diagnostics = append(diagnostics, repositoryRootDiagnostic(i, fmt.Sprintf("resolve %q: %v", rootPath, err)))
+			continue
+		}
+		roots = append(roots, RepositoryRoot{
+			ConfigPath: fmt.Sprintf("repos.roots[%d]", i),
+			Path:       walkRoot,
+		})
+	}
+	return roots, diagnostics
+}
+
 // ResolveRepositoryPath maps an owner/repo name to a local checkout path.
 func ResolveRepositoryPath(options RepositoryPathOptions) RepositoryPathResult {
 	result := RepositoryPathResult{Repo: options.Repo}

@@ -8,10 +8,11 @@ type GitHubWorkbenchDiscovery interface {
 	IssueCheckDiscovery
 }
 
-// RuntimeLoadResult contains workbench data loaded for one repository.
+// RuntimeLoadResult contains refreshed workbench data.
 type RuntimeLoadResult struct {
-	Repo  RepoRef
-	Items []WorkItem
+	Repo         RepoRef
+	Repositories []RepositorySummary
+	Items        []WorkItem
 }
 
 // RuntimeLoader composes local Git discovery with GitHub workbench enrichment.
