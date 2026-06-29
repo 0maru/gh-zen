@@ -266,6 +266,69 @@ func TestService_DiscoverBranchesUsesRemoteNames(t *testing.T) {
 	}
 }
 
+func TestService_DiscoverRepositories(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	ghZen := filepath.Join(root, "0maru", "gh-zen")
+	dotfiles := filepath.Join(root, "0maru", "dotfiles")
+	nested := filepath.Join(ghZen, "node_modules", "nested")
+	initTempGitRepoAt(t, ghZen)
+	initTempGitRepoAt(t, dotfiles)
+	initTempGitRepoAt(t, nested)
+	runGit(t, ghZen, "remote", "add", "origin", "https://github.com/0maru/gh-zen.git")
+	runGit(t, ghZen, "remote", "add", "upstream", "https://github.com/example/gh-zen.git")
+	runGit(t, dotfiles, "remote", "add", "origin", "https://github.com/0maru/dotfiles.git")
+	runGit(t, nested, "remote", "add", "origin", "https://github.com/example/nested.git")
+
+	repositories, diagnostics := (Service{}).DiscoverRepositories(context.Background(), []string{root})
+
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics, got %+v", diagnostics)
+	}
+	ghZenRepo := requireRepository(t, repositories, ghZen)
+	if ghZenRepo.OriginURL != "https://github.com/0maru/gh-zen.git" {
+		t.Fatalf("expected gh-zen origin URL, got %+v", ghZenRepo)
+	}
+	if ghZenRepo.DefaultBranch != "main" {
+		t.Fatalf("expected default branch main, got %+v", ghZenRepo)
+	}
+	if !reflect.DeepEqual(ghZenRepo.Remotes, []string{"origin", "upstream"}) {
+		t.Fatalf("expected remotes origin/upstream, got %+v", ghZenRepo.Remotes)
+	}
+	dotfilesRepo := requireRepository(t, repositories, dotfiles)
+	if dotfilesRepo.OriginURL != "https://github.com/0maru/dotfiles.git" {
+		t.Fatalf("expected dotfiles origin URL, got %+v", dotfilesRepo)
+	}
+	nestedPath := canonicalPath(t, nested)
+	for _, repository := range repositories {
+		if canonicalPath(t, repository.Path) == nestedPath {
+			t.Fatalf("expected nested repository to be skipped, got %+v", repositories)
+		}
+	}
+}
+
+func TestService_DiscoverRepositoriesReportsMetadataDiagnostics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	noOrigin := filepath.Join(root, "no-origin")
+	initTempGitRepoAt(t, noOrigin)
+
+	repositories, diagnostics := (Service{}).DiscoverRepositories(context.Background(), []string{root})
+
+	if len(repositories) != 0 {
+		t.Fatalf("expected repository without origin to be skipped, got %+v", repositories)
+	}
+	if len(diagnostics) != 1 || diagnostics[0].Path != noOrigin || !strings.Contains(diagnostics[0].Message, "read origin remote") {
+		t.Fatalf("expected origin diagnostic, got %+v", diagnostics)
+	}
+}
+
 func TestService_DiscoverWorktreesMarksMissingWorktrees(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary Git repositories and worktrees")
@@ -313,6 +376,18 @@ func hasBranch(branches []Branch, want Branch) bool {
 	return false
 }
 
+func requireRepository(t *testing.T, repositories []Repository, path string) Repository {
+	t.Helper()
+	wantPath := canonicalPath(t, path)
+	for _, repository := range repositories {
+		if canonicalPath(t, repository.Path) == wantPath {
+			return repository
+		}
+	}
+	t.Fatalf("repository %q not found in %+v", path, repositories)
+	return Repository{}
+}
+
 func canonicalPath(t *testing.T, path string) string {
 	t.Helper()
 	canonical, err := filepath.EvalSymlinks(path)
@@ -329,12 +404,20 @@ func canonicalPath(t *testing.T, path string) string {
 func initTempGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	initTempGitRepoAt(t, dir)
+	return dir
+}
+
+func initTempGitRepoAt(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
 	runGit(t, dir, "init", "-b", "main")
 	runGit(t, dir, "config", "user.email", "test@example.com")
 	runGit(t, dir, "config", "user.name", "Test User")
 	runGit(t, dir, "config", "commit.gpgsign", "false")
 	runGit(t, dir, "config", "tag.gpgsign", "false")
-	return dir
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

@@ -11,9 +11,10 @@ type GitHubWorkbenchDiscovery interface {
 	IssueCheckDiscovery
 }
 
-// RuntimeLoadResult contains workbench data loaded for one repository.
+// RuntimeLoadResult contains refreshed workbench data.
 type RuntimeLoadResult struct {
 	Repo               RepoRef
+	Repositories       []RepositorySummary
 	Items              []WorkItem
 	PullRequests       []PullRequestRef
 	PullRequestsLoaded bool

@@ -104,6 +104,7 @@ type model struct {
 	height               int
 	screen               appScreen
 	repos                []workbench.RepoRef
+	repoSummaries        []workbench.RepositorySummary
 	selectedRepo         int
 	selectedView         int
 	viewSelected         bool
@@ -122,6 +123,7 @@ type model struct {
 	workbenchSource      workbenchDataSource
 	workbenchLoading     bool
 	focusedPane          paneFocus
+	focusedWorkItemRepo  workbench.RepoRef
 	focusedWorkItemID    string
 	preview              previewState
 	nextPreviewRequestID int
@@ -139,14 +141,15 @@ type model struct {
 
 // WorkbenchData contains resolved repository workbench state for app startup.
 type WorkbenchData struct {
-	Repos          []workbench.RepoRef
-	WorkItems      []workbench.WorkItem
-	PullRequests   []workbench.PullRequestRef
-	Issues         []workbench.IssueRef
-	ViewerSubject  workbench.ReviewSubjects
-	Reloader       WorkbenchReloader
-	InitialLoading bool
-	Demo           bool
+	Repos               []workbench.RepoRef
+	RepositorySummaries []workbench.RepositorySummary
+	WorkItems           []workbench.WorkItem
+	PullRequests        []workbench.PullRequestRef
+	Issues              []workbench.IssueRef
+	ViewerSubject       workbench.ReviewSubjects
+	Reloader            WorkbenchReloader
+	InitialLoading      bool
+	Demo                bool
 }
 
 type workbenchReturnState struct {
@@ -158,7 +161,8 @@ type workbenchReturnState struct {
 	focusedPane  paneFocus
 }
 
-// WorkbenchReloader reloads runtime workbench data for one selected repository.
+// WorkbenchReloader reloads runtime workbench data using the selected repository
+// as the selection anchor.
 type WorkbenchReloader interface {
 	Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult
 }
@@ -232,8 +236,10 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 	if data.Demo {
 		source = workbenchDataDemo
 	}
+	repoSummaries := normalizeRepositorySummaries(data.RepositorySummaries, data.Repos)
 	m := model{
-		repos:             cloneRepoRefs(data.Repos),
+		repos:             repoRefsFromSummaries(repoSummaries),
+		repoSummaries:     cloneRepositorySummaries(repoSummaries),
 		workItems:         cloneWorkItems(data.WorkItems),
 		issues:            cloneIssueRefs(data.Issues),
 		issueFilter:       defaultIssueFilterState(),
@@ -290,13 +296,14 @@ func (m model) Init() tea.Cmd {
 		return batchCommands(cmds...)
 	}
 	item, ok := m.selectedWorkItem()
-	if !ok || item.ID != m.focusedWorkItemID {
+	if !ok || !m.focusedWorkItemMatches(item) {
 		return batchCommands(cmds...)
 	}
 	cmds = append(cmds, m.previewLoader(previewRequest{
-		requestID:  m.preview.requestID,
-		workItemID: item.ID,
-		item:       item,
+		requestID:    m.preview.requestID,
+		workItemRepo: item.Repo,
+		workItemID:   item.ID,
+		item:         item,
 	}))
 	return batchCommands(cmds...)
 }
@@ -349,16 +356,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) startPreviewLoadIfFocusedItemChanged() tea.Cmd {
 	item, ok := m.selectedWorkItem()
 	if !ok {
-		m.focusedWorkItemID = ""
+		m.clearFocusedWorkItem()
 		m.preview = previewState{status: previewEmpty}
 		return nil
 	}
 	if item.ID == "" {
-		m.focusedWorkItemID = ""
+		m.clearFocusedWorkItem()
 		m.preview = previewState{status: previewEmpty}
 		return nil
 	}
-	if item.ID == m.focusedWorkItemID {
+	if m.focusedWorkItemMatches(item) {
 		return nil
 	}
 	return m.startPreviewLoadForCurrentItem()
@@ -367,37 +374,41 @@ func (m *model) startPreviewLoadIfFocusedItemChanged() tea.Cmd {
 func (m *model) startPreviewLoadForCurrentItem() tea.Cmd {
 	item, ok := m.selectedWorkItem()
 	if !ok || item.ID == "" {
-		m.focusedWorkItemID = ""
+		m.clearFocusedWorkItem()
 		m.preview = previewState{status: previewEmpty}
 		return nil
 	}
 
 	m.nextPreviewRequestID++
 	requestID := m.nextPreviewRequestID
+	m.focusedWorkItemRepo = item.Repo
 	m.focusedWorkItemID = item.ID
 	m.preview = previewState{
-		status:            previewLoading,
-		requestID:         requestID,
-		focusedWorkItemID: item.ID,
+		status:              previewLoading,
+		requestID:           requestID,
+		focusedWorkItemRepo: item.Repo,
+		focusedWorkItemID:   item.ID,
 	}
 	if m.previewLoader == nil {
 		return nil
 	}
 	return m.previewLoader(previewRequest{
-		requestID:  requestID,
-		workItemID: item.ID,
-		item:       item,
+		requestID:    requestID,
+		workItemRepo: item.Repo,
+		workItemID:   item.ID,
+		item:         item,
 	})
 }
 
 func (m *model) handlePreviewResult(msg previewResultMsg) {
-	if msg.requestID != m.preview.requestID || msg.workItemID != m.focusedWorkItemID {
+	if msg.requestID != m.preview.requestID || msg.workItemID != m.focusedWorkItemID || msg.workItemRepo != m.focusedWorkItemRepo {
 		return
 	}
 
 	next := previewState{
-		requestID:         msg.requestID,
-		focusedWorkItemID: msg.workItemID,
+		requestID:           msg.requestID,
+		focusedWorkItemRepo: msg.workItemRepo,
+		focusedWorkItemID:   msg.workItemID,
 	}
 	switch {
 	case msg.err != nil:
@@ -410,6 +421,9 @@ func (m *model) handlePreviewResult(msg previewResultMsg) {
 		next.loaded = msg.data
 		if next.loaded.workItemID == "" {
 			next.loaded.workItemID = msg.workItemID
+		}
+		if next.loaded.workItemRepo == (workbench.RepoRef{}) {
+			next.loaded.workItemRepo = msg.workItemRepo
 		}
 	}
 	m.preview = next
@@ -701,7 +715,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		return nil
 	}
 	repo, ok := m.reloadRepoRef()
-	if !ok || repo != msg.request.repo {
+	if msg.request.repo != (workbench.RepoRef{}) && (!ok || repo != msg.request.repo) {
 		m.workbenchLoading = false
 		if m.screen == screenIssues {
 			m.issuesLoading = false
@@ -718,7 +732,11 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		selectedWorkItemRepo = item.Repo
 		selectedWorkItemID = item.ID
 	}
-	m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+	if len(msg.result.Repositories) > 0 {
+		m.replaceWorkbenchData(msg.result, msg.request.repo)
+	} else {
+		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+	}
 	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
 	if m.screen == screenIssues && m.workbenchReturn.valid {
 		m.workbenchReturn.selectedRepo = m.selectedRepo
@@ -949,6 +967,23 @@ func hasRepoRef(repo workbench.RepoRef) bool {
 	return repo.Owner != "" || repo.Name != ""
 }
 
+func (m model) selectedRepoSummary() (workbench.RepositorySummary, bool) {
+	repo, ok := m.selectedRepoRef()
+	if !ok {
+		return workbench.RepositorySummary{}, false
+	}
+	return m.repoSummary(repo)
+}
+
+func (m model) repoSummary(repo workbench.RepoRef) (workbench.RepositorySummary, bool) {
+	for _, summary := range m.repoSummaries {
+		if summary.Repo == repo {
+			return summary, true
+		}
+	}
+	return workbench.RepositorySummary{}, false
+}
+
 func (m model) selectedRepoView() (repoView, bool) {
 	if m.selectedView < 0 || m.selectedView >= len(repoViews) {
 		return repoView{}, false
@@ -985,6 +1020,33 @@ func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, re
 	return out
 }
 
+func (m *model) replaceWorkbenchData(result workbench.RuntimeLoadResult, selectedRepo workbench.RepoRef) {
+	m.repoSummaries = cloneRepositorySummaries(result.Repositories)
+	m.repos = repoRefsFromSummaries(m.repoSummaries)
+	m.workItems = cloneWorkItems(result.Items)
+	m.restoreSelectedRepo(selectedRepo)
+}
+
+func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
+	if repo != (workbench.RepoRef{}) {
+		for i, candidate := range m.repos {
+			if candidate == repo {
+				m.selectedRepo = i
+				return
+			}
+		}
+	}
+	if len(m.repos) == 0 {
+		m.selectedRepo = 0
+		m.viewSelected = false
+		return
+	}
+	m.selectedRepo = clamp(m.selectedRepo, 0, len(m.repos)-1)
+	if m.viewSelected {
+		m.selectedView = clamp(m.selectedView, 0, max(len(repoViews)-1, 0))
+	}
+}
+
 func hasWorkbenchErrorItems(items []workbench.WorkItem) bool {
 	for _, item := range items {
 		for _, prefix := range workbenchErrorIDPrefixes {
@@ -1015,6 +1077,33 @@ func (m *model) restoreSelectedWorkItem(repo workbench.RepoRef, workItemID strin
 
 func cloneRepoRefs(repos []workbench.RepoRef) []workbench.RepoRef {
 	return append([]workbench.RepoRef(nil), repos...)
+}
+
+func normalizeRepositorySummaries(summaries []workbench.RepositorySummary, repos []workbench.RepoRef) []workbench.RepositorySummary {
+	if len(summaries) > 0 {
+		return cloneRepositorySummaries(summaries)
+	}
+	out := make([]workbench.RepositorySummary, 0, len(repos))
+	for _, repo := range repos {
+		out = append(out, workbench.RepositorySummary{Repo: repo})
+	}
+	return out
+}
+
+func repoRefsFromSummaries(summaries []workbench.RepositorySummary) []workbench.RepoRef {
+	repos := make([]workbench.RepoRef, 0, len(summaries))
+	for _, summary := range summaries {
+		repos = append(repos, summary.Repo)
+	}
+	return repos
+}
+
+func cloneRepositorySummaries(summaries []workbench.RepositorySummary) []workbench.RepositorySummary {
+	out := append([]workbench.RepositorySummary(nil), summaries...)
+	for i := range out {
+		out[i].Remotes = append([]string(nil), summaries[i].Remotes...)
+	}
+	return out
 }
 
 func cloneWorkItems(items []workbench.WorkItem) []workbench.WorkItem {
@@ -1053,13 +1142,24 @@ func (m *model) applyStartupRepo(repoName string) {
 			m.selectedRepo = i
 			m.viewSelected = false
 			m.selectedItem = 0
+			m.ensureRepositorySummary(repo)
 			return
 		}
 	}
 	m.repos = append(m.repos, repo)
+	m.repoSummaries = append(m.repoSummaries, workbench.RepositorySummary{Repo: repo})
 	m.selectedRepo = len(m.repos) - 1
 	m.viewSelected = false
 	m.selectedItem = 0
+}
+
+func (m *model) ensureRepositorySummary(repo workbench.RepoRef) {
+	for _, summary := range m.repoSummaries {
+		if summary.Repo == repo {
+			return
+		}
+	}
+	m.repoSummaries = append(m.repoSummaries, workbench.RepositorySummary{Repo: repo})
 }
 
 func matchesWorkbenchFilter(item workbench.WorkItem, filter cfgpkg.WorkbenchFilter) bool {
@@ -1184,7 +1284,11 @@ func (m model) repoLines(width int, focused bool) []string {
 	} else {
 		for i, repo := range m.repos {
 			marker := selectionMarker(!m.viewSelected && i == m.selectedRepo, focused)
-			lines = append(lines, truncate(fmt.Sprintf("%s %s", marker, repo.FullName()), width))
+			label := repo.FullName()
+			if counts := m.repositoryCountLabel(repo); counts != "" {
+				label += " " + counts
+			}
+			lines = append(lines, truncate(fmt.Sprintf("%s %s", marker, label), width))
 		}
 	}
 	lines = append(lines, "", "Views")
@@ -1223,11 +1327,16 @@ func (m model) emptyWorkItemLine() string {
 }
 
 func (m model) previewLines(width int) []string {
+	if m.activePane() == paneRepositories && !m.viewSelected {
+		if summary, ok := m.selectedRepoSummary(); ok {
+			return repositoryPreviewLines(summary, width)
+		}
+	}
 	switch m.preview.status {
 	case previewLoading:
 		return m.previewStatusLines(width, "Loading preview...")
 	case previewLoaded:
-		if m.preview.loaded.workItemID != m.focusedWorkItemID {
+		if m.preview.loaded.workItemID != m.focusedWorkItemID || m.preview.loaded.workItemRepo != m.focusedWorkItemRepo {
 			return m.previewStatusLines(width, "Loading preview...")
 		}
 		return workItemPreviewLines(m.preview.loaded.item, width)
@@ -1248,6 +1357,49 @@ func (m model) previewLines(width int) []string {
 		}
 		return m.previewStatusLines(width, "Preview idle")
 	}
+}
+
+func repositoryPreviewLines(summary workbench.RepositorySummary, width int) []string {
+	path := summary.Path
+	if path == "" {
+		path = "unknown"
+	}
+	defaultBranch := summary.DefaultBranch
+	if defaultBranch == "" {
+		defaultBranch = "unknown"
+	}
+	remotes := strings.Join(summary.Remotes, ", ")
+	if remotes == "" {
+		remotes = "none"
+	}
+	return []string{
+		truncate("Repo: "+summary.Repo.FullName(), width),
+		truncate("Path: "+path, width),
+		truncate("Default branch: "+defaultBranch, width),
+		truncate("Remotes: "+remotes, width),
+		truncate(fmt.Sprintf("Active worktrees: %d", summary.ActiveWorktreeCount), width),
+		truncate(fmt.Sprintf("Open PRs: %d", summary.OpenPullRequestCount), width),
+		truncate(fmt.Sprintf("Open issues: %d", summary.OpenIssueCount), width),
+		truncate(fmt.Sprintf("Failing checks: %d", summary.FailingCheckCount), width),
+	}
+}
+
+func (m model) repositoryCountLabel(repo workbench.RepoRef) string {
+	summary, ok := m.repoSummary(repo)
+	if !ok || emptyRepositorySummary(summary) {
+		return ""
+	}
+	return fmt.Sprintf("wt%d pr%d issue%d fail%d", summary.ActiveWorktreeCount, summary.OpenPullRequestCount, summary.OpenIssueCount, summary.FailingCheckCount)
+}
+
+func emptyRepositorySummary(summary workbench.RepositorySummary) bool {
+	return summary.Path == "" &&
+		summary.DefaultBranch == "" &&
+		len(summary.Remotes) == 0 &&
+		summary.ActiveWorktreeCount == 0 &&
+		summary.OpenPullRequestCount == 0 &&
+		summary.OpenIssueCount == 0 &&
+		summary.FailingCheckCount == 0
 }
 
 func (m model) previewStatusLines(width int, status string) []string {
@@ -1403,6 +1555,15 @@ func (m model) selectedWorkItem() (workbench.WorkItem, bool) {
 		return workbench.WorkItem{}, false
 	}
 	return items[m.selectedItem], true
+}
+
+func (m model) focusedWorkItemMatches(item workbench.WorkItem) bool {
+	return item.Repo == m.focusedWorkItemRepo && item.ID == m.focusedWorkItemID
+}
+
+func (m *model) clearFocusedWorkItem() {
+	m.focusedWorkItemRepo = workbench.RepoRef{}
+	m.focusedWorkItemID = ""
 }
 
 func shortRemoteLabel(item workbench.WorkItem) string {
