@@ -13,6 +13,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+
+	cfgpkg "github.com/0maru/gh-zen/internal/config"
+	"github.com/0maru/gh-zen/internal/workbench"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -171,6 +174,62 @@ func TestView_PullRequestViewRendersListAndPreview(t *testing.T) {
 	}
 	if !strings.Contains(got, "Branch: 0maru/feat/config-loader -> main") {
 		t.Fatalf("expected PR preview branch refs, got:\n%s", got)
+	}
+}
+
+func TestView_RepositoryPaneRendersRepositorySummaries(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	start := NewWithWorkbenchData(cfgpkg.Defaults(), repoB.FullName(), WorkbenchData{
+		RepositorySummaries: []workbench.RepositorySummary{
+			{
+				Repo:                 repoA,
+				Path:                 "/repos/gh-zen",
+				DefaultBranch:        "main",
+				Remotes:              []string{"origin", "upstream"},
+				ActiveWorktreeCount:  2,
+				OpenPullRequestCount: 1,
+				OpenIssueCount:       3,
+				FailingCheckCount:    4,
+			},
+			{
+				Repo:                 repoB,
+				Path:                 "/repos/dotfiles",
+				DefaultBranch:        "trunk",
+				Remotes:              []string{"origin"},
+				ActiveWorktreeCount:  1,
+				OpenPullRequestCount: 0,
+				OpenIssueCount:       1,
+				FailingCheckCount:    0,
+			},
+		},
+	}).(model)
+
+	lines := strings.Join(start.repoLines(120, true), "\n")
+	for _, want := range []string{
+		"0maru/gh-zen wt2 pr1 issue3 fail4",
+		"> 0maru/dotfiles wt1 pr0 issue1 fail0",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("expected repository pane to contain %q, got:\n%s", want, lines)
+		}
+	}
+
+	start.focusedPane = paneRepositories
+	preview := strings.Join(start.previewLines(120), "\n")
+	for _, want := range []string{
+		"Repo: 0maru/dotfiles",
+		"Path: /repos/dotfiles",
+		"Default branch: trunk",
+		"Remotes: origin",
+		"Active worktrees: 1",
+		"Open PRs: 0",
+		"Open issues: 1",
+		"Failing checks: 0",
+	} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("expected repository preview to contain %q, got:\n%s", want, preview)
+		}
 	}
 }
 

@@ -3,9 +3,52 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestResolveRepositoryRoots_ExpandsAccessibleRootsAndDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	cfg := Defaults()
+	cfg.Repos.Roots = []string{root, filepath.Join(root, "missing")}
+
+	roots, diagnostics := ResolveRepositoryRoots(cfg)
+
+	if len(roots) != 1 {
+		t.Fatalf("expected one accessible root, got %+v", roots)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	if roots[0].Path != resolvedRoot || roots[0].ConfigPath != "repos.roots[0]" {
+		t.Fatalf("expected resolved root path, got %+v", roots[0])
+	}
+	if !hasDiagnosticContaining(diagnostics, "repos.roots[1]", "not accessible") {
+		t.Fatalf("expected missing root diagnostic, got %+v", diagnostics)
+	}
+}
+
+func TestResolveRepositoryRoots_RejectsFiles(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(filePath, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write file root: %v", err)
+	}
+	cfg := Defaults()
+	cfg.Repos.Roots = []string{filePath}
+
+	roots, diagnostics := ResolveRepositoryRoots(cfg)
+
+	if len(roots) != 0 {
+		t.Fatalf("expected no roots, got %+v", roots)
+	}
+	want := []Diagnostic{{Path: "repos.roots[0]", Message: "\"" + filePath + "\" is not a directory"}}
+	if !reflect.DeepEqual(diagnostics, want) {
+		t.Fatalf("expected diagnostics %+v, got %+v", want, diagnostics)
+	}
+}
 
 func TestResolveRepositoryPath_PrefersMatchingCurrentCheckout(t *testing.T) {
 	if testing.Short() {

@@ -24,30 +24,34 @@ const (
 )
 
 type previewState struct {
-	status            previewStatus
-	requestID         int
-	focusedWorkItemID string
-	loaded            previewData
-	errorMessage      string
+	status              previewStatus
+	requestID           int
+	focusedWorkItemRepo workbench.RepoRef
+	focusedWorkItemID   string
+	loaded              previewData
+	errorMessage        string
 }
 
 type previewRequest struct {
-	requestID  int
-	workItemID string
-	item       workbench.WorkItem
+	requestID    int
+	workItemRepo workbench.RepoRef
+	workItemID   string
+	item         workbench.WorkItem
 }
 
 type previewData struct {
-	workItemID string
-	item       workbench.WorkItem
+	workItemRepo workbench.RepoRef
+	workItemID   string
+	item         workbench.WorkItem
 }
 
 type previewResultMsg struct {
-	requestID  int
-	workItemID string
-	data       previewData
-	empty      bool
-	err        error
+	requestID    int
+	workItemRepo workbench.RepoRef
+	workItemID   string
+	data         previewData
+	empty        bool
+	err          error
 }
 
 type previewLoader func(previewRequest) tea.Cmd
@@ -88,11 +92,13 @@ func fakeDelayedPreviewLoader(delay time.Duration) previewLoader {
 				time.Sleep(delay)
 			}
 			return previewResultMsg{
-				requestID:  req.requestID,
-				workItemID: req.workItemID,
+				requestID:    req.requestID,
+				workItemRepo: req.workItemRepo,
+				workItemID:   req.workItemID,
 				data: previewData{
-					workItemID: req.workItemID,
-					item:       req.item,
+					workItemRepo: req.workItemRepo,
+					workItemID:   req.workItemID,
+					item:         req.item,
 				},
 			}
 		}
