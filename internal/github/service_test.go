@@ -119,10 +119,14 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 }
 
 func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[{"name":"enhancement"}],"assignees":[{"login":"0maru"}],"milestone":{"title":"v1"},"author":{"login":"alice"},"comments":3,"updatedAt":"2026-05-03T12:00:00Z"}]`)}
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields):                 []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[{"name":"enhancement"}],"assignees":[{"login":"0maru"}],"milestone":{"title":"v1"},"author":{"login":"alice"},"updatedAt":"2026-05-03T12:00:00Z"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+issueCommentCountsQuery): []byte(`{"data":{"repository":{"issues":{"nodes":[{"number":9,"comments":{"totalCount":3}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
 	service := CLIService{Runner: runner}
 
-	got, err := service.Issues(context.Background(), "0maru/gh-zen")
+	got, err := service.Issues(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("expected issues to parse, got %v", err)
 	}
@@ -143,11 +147,14 @@ func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)
 	}
-	if !hasArgPair(runner.args, "--limit", listLimit) {
-		t.Fatalf("expected gh issue list limit, got %#v", runner.args)
+	if !hasArgPair(runner.calls[0], "--limit", listLimit) {
+		t.Fatalf("expected gh issue list limit, got %#v", runner.calls)
 	}
-	if !hasArgValue(runner.args, issueListFields) {
-		t.Fatalf("expected gh issue list to request issue detail fields, got %#v", runner.args)
+	if !hasArgValue(runner.calls[0], issueListFields) {
+		t.Fatalf("expected gh issue list to request issue detail fields, got %#v", runner.calls)
+	}
+	if strings.Contains(issueListFields, "comments") {
+		t.Fatalf("expected gh issue list not to request comment bodies, got %q", issueListFields)
 	}
 }
 
@@ -187,6 +194,7 @@ func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 		commandKey("pr", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", prListFields):                  []byte(`[{"number":24,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/pull/24","author":{"login":"0maru"},"headRefName":"feature/issue-123-runtime","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"APPROVED","reviewRequests":[],"latestReviews":[],"body":"Closes #123"}]`),
 		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":24,"closingIssuesReferences":{"nodes":[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123"}]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
 		commandKey("issue", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", issueListFields):            []byte(`[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123","body":"Runtime issue","labels":[],"assignees":[],"milestone":null,"updatedAt":"2026-05-03T12:00:00Z"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+issueCommentCountsQuery):       []byte(`{"data":{"repository":{"issues":{"nodes":[{"number":123,"comments":{"totalCount":2}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
 		commandKey("pr", "checks", "feature/issue-123-runtime", "--repo", repo.FullName(), "--json", "name,state"):                           []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"SUCCESS"}]`),
 	}}
 	service := CLIService{Runner: runner}
@@ -221,8 +229,8 @@ func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 	if items[0].Checks.State != workbench.CheckPassing || items[0].Checks.Passing != 2 {
 		t.Fatalf("expected CLI check data to enrich work item, got %+v", items[0])
 	}
-	if len(runner.calls) != 4 {
-		t.Fatalf("expected four gh calls, got %#v", runner.calls)
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected five gh calls, got %#v", runner.calls)
 	}
 }
 

@@ -115,6 +115,28 @@ func TestInit_ReturnsNilCmd(t *testing.T) {
 	}
 }
 
+func TestInit_StartsInitialReloadWithoutSelectedRepository(t *testing.T) {
+	reloader := &fakeWorkbenchReloader{}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), "", WorkbenchData{
+		Reloader:       reloader,
+		InitialLoading: true,
+	}, fakeDelayedPreviewLoader(0))
+
+	if !start.workbenchLoading || start.activeReloadRequest.requestID == 0 {
+		t.Fatalf("expected initial workbench reload request, got loading=%v request=%+v", start.workbenchLoading, start.activeReloadRequest)
+	}
+	if start.activeReloadRequest.repo != (workbench.RepoRef{}) {
+		t.Fatalf("expected zero repo reload request, got %+v", start.activeReloadRequest.repo)
+	}
+	msg := requireWorkbenchReloadMsg(t, start.Init())
+	if msg.request.repo != (workbench.RepoRef{}) {
+		t.Fatalf("expected zero repo reload command, got %+v", msg.request.repo)
+	}
+	if len(reloader.calls) != 1 || reloader.calls[0] != (workbench.RepoRef{}) {
+		t.Fatalf("expected reloader to be called with zero repo, got %+v", reloader.calls)
+	}
+}
+
 func TestUpdate_RefreshReloadsWorkbenchData(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	original := workbench.WorkItem{

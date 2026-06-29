@@ -17,6 +17,7 @@ type fakeMainGitHub struct {
 	prsByRepo    map[string][]workbench.PullRequestRef
 	issuesByRepo map[string][]workbench.IssueRef
 	checks       map[string]workbench.CheckSummary
+	subjects     workbench.ReviewSubjects
 }
 
 func (f fakeMainGitHub) PullRequests(_ context.Context, repo string) ([]workbench.PullRequestRef, error) {
@@ -32,6 +33,10 @@ func (f fakeMainGitHub) CheckSummary(_ context.Context, repo string, ref string)
 		return summary, nil
 	}
 	return workbench.CheckSummary{State: workbench.CheckUnknown}, nil
+}
+
+func (f fakeMainGitHub) ViewerReviewSubjects(context.Context) (workbench.ReviewSubjects, error) {
+	return f.subjects, nil
 }
 
 func TestRepoRefFromFullName(t *testing.T) {
@@ -164,6 +169,54 @@ func TestRuntimeWorkbenchReloaderDiscoversConfiguredRoots(t *testing.T) {
 			strings.Contains(item.Local.Summary, "not accessible")
 	}) {
 		t.Fatalf("expected missing root diagnostic item while preserving work, got %+v", result.Items)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderPropagatesSelectedRepoRawData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	ghZenPath := filepath.Join(root, "0maru", "gh-zen")
+	initRuntimeRepo(t, ghZenPath, "https://github.com/0maru/gh-zen.git")
+
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			prsByRepo: map[string][]workbench.PullRequestRef{
+				repo.FullName(): {{
+					Number:     81,
+					Title:      "Issue browsing",
+					State:      "open",
+					HeadOwner:  "0maru",
+					HeadBranch: "feature/issues",
+				}},
+			},
+			issuesByRepo: map[string][]workbench.IssueRef{
+				repo.FullName(): {{
+					Number:  123,
+					Title:   "Raw issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+			subjects: workbench.ReviewSubjects{Login: "0maru"},
+		},
+	}
+
+	result := reloader.Load(context.Background(), repo)
+	if !result.PullRequestsLoaded || len(result.PullRequests) != 1 || result.PullRequests[0].Number != 81 {
+		t.Fatalf("expected selected repo pull requests to propagate, got loaded=%v prs=%+v", result.PullRequestsLoaded, result.PullRequests)
+	}
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 123 {
+		t.Fatalf("expected selected repo issues to propagate, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if result.ViewerSubject.Login != "0maru" {
+		t.Fatalf("expected viewer subject to propagate, got %+v", result.ViewerSubject)
 	}
 }
 

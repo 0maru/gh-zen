@@ -51,8 +51,9 @@ const (
 	ErrorNetwork ErrorKind = "network"
 	ErrorCommand ErrorKind = "command"
 
-	issueListFields = "number,title,state,url,body,labels,assignees,milestone,author,comments,updatedAt"
+	issueListFields = "number,title,state,url,body,labels,assignees,milestone,author,updatedAt"
 	listLimit       = "1000"
+	listLimitCount  = 1000
 	prListFields    = "number,title,state,url,headRefName,headRepositoryOwner,baseRefName,isDraft,updatedAt,author,reviewRequests,latestReviews,reviewDecision,body"
 
 	pullRequestClosingIssuesQuery = `
@@ -68,6 +69,24 @@ query($owner:String!, $name:String!, $after:String) {
             state
             url
           }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}`
+
+	issueCommentCountsQuery = `
+query($owner:String!, $name:String!, $after:String) {
+  repository(owner:$owner, name:$name) {
+    issues(first:100, after:$after, states:[OPEN, CLOSED], orderBy:{field:UPDATED_AT, direction:DESC}) {
+      nodes {
+        number
+        comments {
+          totalCount
         }
       }
       pageInfo {
@@ -203,13 +222,13 @@ func (s CLIService) Issues(ctx context.Context, repo string) ([]workbench.IssueR
 		Milestone *struct {
 			Title string `json:"title"`
 		} `json:"milestone"`
-		Author    ghUser          `json:"author"`
-		Comments  ghCommentsCount `json:"comments"`
-		UpdatedAt string          `json:"updatedAt"`
+		Author    ghUser `json:"author"`
+		UpdatedAt string `json:"updatedAt"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("parse gh issue list output: %w", err)
 	}
+	commentCounts, _ := s.issueCommentCounts(ctx, repo)
 	issues := make([]workbench.IssueRef, 0, len(payload))
 	for _, issue := range payload {
 		issues = append(issues, workbench.IssueRef{
@@ -222,7 +241,7 @@ func (s CLIService) Issues(ctx context.Context, repo string) ([]workbench.IssueR
 			Assignees:     userLogins(issue.Assignees),
 			Milestone:     milestoneTitle(issue.Milestone),
 			AuthorLogin:   issue.Author.Login,
-			CommentsCount: int(issue.Comments),
+			CommentsCount: commentCounts[issue.Number],
 			UpdatedAt:     issue.UpdatedAt,
 			Certain:       true,
 		})
@@ -318,6 +337,57 @@ func (s CLIService) pullRequestClosingIssues(ctx context.Context, repo string) (
 	}
 }
 
+func (s CLIService) issueCommentCounts(ctx context.Context, repo string) (map[int]int, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, nil
+	}
+
+	counts := map[int]int{}
+	after := ""
+	fetched := 0
+	for {
+		output, err := s.runner().Run(ctx, "api", "graphql", "-f", "owner="+owner, "-f", "name="+name, "-f", "after="+after, "-f", "query="+issueCommentCountsQuery)
+		if err != nil {
+			return counts, err
+		}
+		var payload struct {
+			Data struct {
+				Repository struct {
+					Issues struct {
+						Nodes []struct {
+							Number   int `json:"number"`
+							Comments struct {
+								TotalCount int `json:"totalCount"`
+							} `json:"comments"`
+						} `json:"nodes"`
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+					} `json:"issues"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(output, &payload); err != nil {
+			return counts, fmt.Errorf("parse gh issue comment counts output: %w", err)
+		}
+		for _, issue := range payload.Data.Repository.Issues.Nodes {
+			if issue.Number > 0 {
+				counts[issue.Number] = issue.Comments.TotalCount
+			}
+		}
+		fetched += len(payload.Data.Repository.Issues.Nodes)
+		if !payload.Data.Repository.Issues.PageInfo.HasNextPage || fetched >= listLimitCount {
+			return counts, nil
+		}
+		after = payload.Data.Repository.Issues.PageInfo.EndCursor
+		if after == "" {
+			return counts, nil
+		}
+	}
+}
+
 func (s CLIService) runner() Runner {
 	if s.Runner != nil {
 		return s.Runner
@@ -327,32 +397,6 @@ func (s CLIService) runner() Runner {
 
 type ghUser struct {
 	Login string `json:"login"`
-}
-
-type ghCommentsCount int
-
-func (c *ghCommentsCount) UnmarshalJSON(data []byte) error {
-	var count int
-	if err := json.Unmarshal(data, &count); err == nil {
-		*c = ghCommentsCount(count)
-		return nil
-	}
-
-	var comments []json.RawMessage
-	if err := json.Unmarshal(data, &comments); err == nil {
-		*c = ghCommentsCount(len(comments))
-		return nil
-	}
-
-	var connection struct {
-		TotalCount int `json:"totalCount"`
-	}
-	if err := json.Unmarshal(data, &connection); err == nil {
-		*c = ghCommentsCount(connection.TotalCount)
-		return nil
-	}
-
-	return nil
 }
 
 type ghLabel struct {

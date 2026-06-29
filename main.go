@@ -63,6 +63,8 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 
 	items := []workbench.WorkItem{}
 	summaries := make([]workbench.RepositorySummary, 0, len(checkouts))
+	rawResultRepo, _ := r.requestedRepository(repo)
+	selectedRawResult := workbench.RuntimeLoadResult{}
 	for _, checkout := range checkouts {
 		if checkout.path == "" {
 			items = append(items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
@@ -75,6 +77,9 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 			Local:    local,
 			GitHub:   r.githubDiscovery(),
 		}).Load(ctx)
+		if checkout.repo == rawResultRepo {
+			selectedRawResult = result
+		}
 		items = append(items, result.Items...)
 		if len(checkout.diagnostics) > 0 {
 			items = append(items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
@@ -96,9 +101,14 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 	}
 
 	return workbench.RuntimeLoadResult{
-		Repo:         repo,
-		Repositories: summaries,
-		Items:        items,
+		Repo:               repo,
+		Repositories:       summaries,
+		Items:              items,
+		PullRequests:       selectedRawResult.PullRequests,
+		PullRequestsLoaded: selectedRawResult.PullRequestsLoaded,
+		Issues:             selectedRawResult.Issues,
+		IssuesLoaded:       selectedRawResult.IssuesLoaded,
+		ViewerSubject:      selectedRawResult.ViewerSubject,
 	}
 }
 

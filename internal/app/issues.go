@@ -77,14 +77,19 @@ func (m *model) enterIssueView() tea.Cmd {
 		targetIssueNumber = item.Issue.Number
 	}
 
+	returnRepo := workbench.RepoRef{}
+	if selectedRepo, ok := m.selectedRepoRef(); ok {
+		returnRepo = selectedRepo
+	}
 	m.prepareIssueDataForRepo(repo)
 	m.workbenchReturn = workbenchReturnState{
-		valid:        true,
-		selectedRepo: m.selectedRepo,
-		selectedView: m.selectedView,
-		viewSelected: m.viewSelected,
-		selectedItem: m.selectedItem,
-		focusedPane:  m.focusedPane,
+		valid:           true,
+		selectedRepo:    m.selectedRepo,
+		selectedRepoRef: returnRepo,
+		selectedView:    m.selectedView,
+		viewSelected:    m.viewSelected,
+		selectedItem:    m.selectedItem,
+		focusedPane:     m.focusedPane,
 	}
 	m.screen = screenIssues
 	m.focusedPane = paneWorkItems
@@ -138,10 +143,11 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 		selectedNumber = issue.Number
 	}
 	m.issueRepo = result.Repo
+	workItemIssues := issuesFromWorkItems(result.Items, result.Repo)
 	if result.IssuesLoaded {
-		m.issues = cloneIssueRefs(result.Issues)
+		m.issues = mergeIssueRefs(result.Issues, workItemIssues)
 	} else {
-		m.issues = issuesFromWorkItems(result.Items, result.Repo)
+		m.issues = workItemIssues
 	}
 	if result.PullRequestsLoaded {
 		m.prsByIssueNumber = pullRequestsByIssueNumber(result.PullRequests)
@@ -671,6 +677,26 @@ func issuesFromWorkItems(items []workbench.WorkItem, repo workbench.RepoRef) []w
 		ordered = append(ordered, issue)
 	}
 	return ordered
+}
+
+func mergeIssueRefs(primary []workbench.IssueRef, extras []workbench.IssueRef) []workbench.IssueRef {
+	out := make([]workbench.IssueRef, 0, len(primary)+len(extras))
+	seen := map[int]bool{}
+	for _, issue := range primary {
+		if issue.Number == 0 || seen[issue.Number] {
+			continue
+		}
+		seen[issue.Number] = true
+		out = append(out, issue)
+	}
+	for _, issue := range extras {
+		if issue.Number == 0 || seen[issue.Number] {
+			continue
+		}
+		seen[issue.Number] = true
+		out = append(out, issue)
+	}
+	return out
 }
 
 func pullRequestsFromWorkItems(items []workbench.WorkItem, repo workbench.RepoRef) []workbench.PullRequestRef {

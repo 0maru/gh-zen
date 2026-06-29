@@ -153,12 +153,13 @@ type WorkbenchData struct {
 }
 
 type workbenchReturnState struct {
-	valid        bool
-	selectedRepo int
-	selectedView int
-	viewSelected bool
-	selectedItem int
-	focusedPane  paneFocus
+	valid           bool
+	selectedRepo    int
+	selectedRepoRef workbench.RepoRef
+	selectedView    int
+	viewSelected    bool
+	selectedItem    int
+	focusedPane     paneFocus
 }
 
 // WorkbenchReloader reloads runtime workbench data using the selected repository
@@ -262,9 +263,7 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 	m.applyStartupRepo(startupRepo)
 	if repo, ok := m.selectedRepoRef(); ok {
 		m.issueRepo = repo
-		if len(m.issues) == 0 {
-			m.issues = issuesFromWorkItems(m.workItems, repo)
-		}
+		m.issues = mergeIssueRefs(m.issues, issuesFromWorkItems(m.workItems, repo))
 		if len(m.prsByIssueNumber) == 0 {
 			m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo))
 		}
@@ -277,9 +276,10 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 }
 
 type workbenchReloadRequest struct {
-	requestID int
-	repo      workbench.RepoRef
-	status    string
+	requestID   int
+	repo        workbench.RepoRef
+	status      string
+	issueScoped bool
 }
 
 type workbenchReloadMsg struct {
@@ -683,13 +683,17 @@ func (m *model) beginWorkbenchReload(status string) bool {
 	}
 	repo, ok := m.reloadRepoRef()
 	if !ok {
-		return false
+		if !m.canReloadWithoutSelectedRepo() {
+			return false
+		}
+		repo = workbench.RepoRef{}
 	}
 	m.nextReloadRequestID++
 	request := workbenchReloadRequest{
-		requestID: m.nextReloadRequestID,
-		repo:      repo,
-		status:    status,
+		requestID:   m.nextReloadRequestID,
+		repo:        repo,
+		status:      status,
+		issueScoped: m.screen == screenIssues && hasRepoRef(m.issueRepo),
 	}
 	m.activeReloadRequest = request
 	m.workbenchLoading = true
@@ -699,6 +703,10 @@ func (m *model) beginWorkbenchReload(status string) bool {
 	}
 	m.statusMessage = status
 	return true
+}
+
+func (m model) canReloadWithoutSelectedRepo() bool {
+	return m.screen == screenWorkbench && len(m.repos) == 0
 }
 
 func (m model) workbenchReloadCommand(request workbenchReloadRequest) tea.Cmd {
@@ -714,8 +722,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	if msg.request != m.activeReloadRequest {
 		return nil
 	}
-	repo, ok := m.reloadRepoRef()
-	if msg.request.repo != (workbench.RepoRef{}) && (!ok || repo != msg.request.repo) {
+	if !msg.request.issueScoped && m.reloadRequestIsStale(msg.request) {
 		m.workbenchLoading = false
 		if m.screen == screenIssues {
 			m.issuesLoading = false
@@ -732,16 +739,20 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		selectedWorkItemRepo = item.Repo
 		selectedWorkItemID = item.ID
 	}
+	selectedRepo := msg.request.repo
+	if msg.request.issueScoped && m.screen != screenIssues {
+		if repo, ok := m.selectedRepoRef(); ok {
+			selectedRepo = repo
+		}
+	}
 	if len(msg.result.Repositories) > 0 {
-		m.replaceWorkbenchData(msg.result, msg.request.repo)
+		m.replaceWorkbenchData(msg.result, selectedRepo)
 	} else {
 		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
 	}
 	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
 	if m.screen == screenIssues && m.workbenchReturn.valid {
-		m.workbenchReturn.selectedRepo = m.selectedRepo
-		m.workbenchReturn.selectedView = m.selectedView
-		m.workbenchReturn.viewSelected = m.viewSelected
+		m.syncWorkbenchReturnAfterReload()
 		m.workbenchReturn.selectedItem = m.selectedItem
 	}
 	m.updateIssueDataFromRuntimeResult(msg.result)
@@ -756,6 +767,22 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		return nil
 	}
 	return m.startPreviewLoadForCurrentItem()
+}
+
+func (m model) reloadRequestIsStale(request workbenchReloadRequest) bool {
+	repo, ok := m.reloadRepoRef()
+	return request.repo != (workbench.RepoRef{}) && (!ok || repo != request.repo)
+}
+
+func (m *model) syncWorkbenchReturnAfterReload() {
+	if m.workbenchReturn.selectedRepoRef == (workbench.RepoRef{}) {
+		return
+	}
+	if index, ok := m.repoIndex(m.workbenchReturn.selectedRepoRef); ok {
+		m.workbenchReturn.selectedRepo = index
+		return
+	}
+	m.workbenchReturn.selectedRepo = m.selectedRepo
 }
 
 func (m model) reloadRepoRef() (workbench.RepoRef, bool) {
@@ -1028,13 +1055,9 @@ func (m *model) replaceWorkbenchData(result workbench.RuntimeLoadResult, selecte
 }
 
 func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
-	if repo != (workbench.RepoRef{}) {
-		for i, candidate := range m.repos {
-			if candidate == repo {
-				m.selectedRepo = i
-				return
-			}
-		}
+	if index, ok := m.repoIndex(repo); ok {
+		m.selectedRepo = index
+		return
 	}
 	if len(m.repos) == 0 {
 		m.selectedRepo = 0
@@ -1045,6 +1068,18 @@ func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
 	if m.viewSelected {
 		m.selectedView = clamp(m.selectedView, 0, max(len(repoViews)-1, 0))
 	}
+}
+
+func (m model) repoIndex(repo workbench.RepoRef) (int, bool) {
+	if repo == (workbench.RepoRef{}) {
+		return 0, false
+	}
+	for i, candidate := range m.repos {
+		if candidate == repo {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func hasWorkbenchErrorItems(items []workbench.WorkItem) bool {
