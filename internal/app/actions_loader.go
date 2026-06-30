@@ -53,7 +53,7 @@ func (l githubActionsLoader) LoadRunPreview(ctx context.Context, repo workbench.
 	for _, job := range jobs {
 		jobAnnotations, err := l.service.JobAnnotations(ctx, repo.FullName(), job.ID)
 		if err != nil {
-			return ActionsRunPreview{Run: detail, Jobs: jobs, Annotations: annotations}, err
+			continue
 		}
 		if len(jobAnnotations) > 0 {
 			annotations[job.ID] = jobAnnotations

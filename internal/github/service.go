@@ -350,12 +350,12 @@ func (s CLIService) WorkflowRunJobs(ctx context.Context, repo string, runID int6
 
 // JobAnnotations loads check-run annotations for one workflow job through gh api.
 func (s CLIService) JobAnnotations(ctx context.Context, repo string, jobID int64) ([]workbench.AnnotationRef, error) {
-	output, err := s.runner().Run(ctx, "api", fmt.Sprintf("repos/%s/check-runs/%d/annotations", repo, jobID))
+	output, err := s.runner().Run(ctx, "api", fmt.Sprintf("repos/%s/check-runs/%d/annotations", repo, jobID), "--paginate", "--slurp")
 	if err != nil {
 		return nil, err
 	}
-	var payload []ghAnnotation
-	if err := json.Unmarshal(output, &payload); err != nil {
+	payload, err := parseAnnotationPages(output)
+	if err != nil {
 		return nil, fmt.Errorf("parse gh job annotations output: %w", err)
 	}
 	annotations := make([]workbench.AnnotationRef, 0, len(payload))
@@ -368,6 +368,26 @@ func (s CLIService) JobAnnotations(ctx context.Context, repo string, jobID int64
 			Title:     annotation.Title,
 			Message:   annotation.Message,
 		})
+	}
+	return annotations, nil
+}
+
+func parseAnnotationPages(output []byte) ([]ghAnnotation, error) {
+	var pages [][]ghAnnotation
+	if err := json.Unmarshal(output, &pages); err == nil {
+		count := 0
+		for _, page := range pages {
+			count += len(page)
+		}
+		annotations := make([]ghAnnotation, 0, count)
+		for _, page := range pages {
+			annotations = append(annotations, page...)
+		}
+		return annotations, nil
+	}
+	var annotations []ghAnnotation
+	if err := json.Unmarshal(output, &annotations); err != nil {
+		return nil, err
 	}
 	return annotations, nil
 }

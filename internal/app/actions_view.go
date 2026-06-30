@@ -121,6 +121,10 @@ func (m *model) startActionsLoadForSelectedRepo(status string) tea.Cmd {
 		m.actions.preview = actionsPreviewState{status: previewEmpty}
 		return nil
 	}
+	if m.actions.repo != repo {
+		m.actions.preview = actionsPreviewState{status: previewEmpty}
+		m.actions.logsByRunID = nil
+	}
 	m.actions.nextLoadRequestID++
 	request := actionsLoadRequest{
 		requestID: m.actions.nextLoadRequestID,

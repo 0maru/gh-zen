@@ -27,6 +27,15 @@ type recordingActionsLoader struct {
 	logCalls     []github.LogFetchOptions
 }
 
+type annotationErrorService struct {
+	github.FakeService
+	err error
+}
+
+func (s annotationErrorService) JobAnnotations(context.Context, string, int64) ([]workbench.AnnotationRef, error) {
+	return nil, s.err
+}
+
 func (l *recordingActionsLoader) LoadRuns(_ context.Context, repo workbench.RepoRef) ([]workbench.WorkflowRunRef, error) {
 	l.runCalls = append(l.runCalls, repo)
 	if l.runErr != nil {
@@ -181,6 +190,30 @@ func TestActionsMode_LoadsRunsAndPreview(t *testing.T) {
 	}
 }
 
+func TestGitHubActionsLoader_KeepsPreviewWhenAnnotationsFail(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	run := workbench.FakeWorkflowRuns()[0]
+	jobs := workbench.FakeWorkflowJobs()[run.ID]
+	loader := NewGitHubActionsLoader(annotationErrorService{
+		FakeService: github.FakeService{
+			WorkflowRunsByRepo: map[string][]workbench.WorkflowRunRef{repo.FullName(): {run}},
+			JobsByRunID:        map[int64][]workbench.WorkflowJobRef{run.ID: jobs},
+		},
+		err: errors.New("annotations unavailable"),
+	})
+
+	got, err := loader.LoadRunPreview(context.Background(), repo, run)
+	if err != nil {
+		t.Fatalf("expected annotation errors not to fail preview, got %v", err)
+	}
+	if got.Run.ID != run.ID || len(got.Jobs) != len(jobs) {
+		t.Fatalf("expected run and jobs to remain available, got %+v", got)
+	}
+	if len(got.Annotations) != 0 {
+		t.Fatalf("expected failed annotations to be omitted, got %+v", got.Annotations)
+	}
+}
+
 func TestActionsMode_MovingRunLoadsPreviewButNotLogs(t *testing.T) {
 	runs := workbench.FakeWorkflowRuns()
 	jobs := workbench.FakeWorkflowJobs()
@@ -268,6 +301,46 @@ func TestActionsMode_StaleLoadResultIsDiscarded(t *testing.T) {
 	mm := got.(model)
 	if len(mm.actions.runs) != 0 {
 		t.Fatalf("expected stale result not to set runs, got %+v", mm.actions.runs)
+	}
+}
+
+func TestActionsMode_NewRepoLoadClearsStalePreview(t *testing.T) {
+	repos := []workbench.RepoRef{
+		{Owner: "0maru", Name: "gh-zen"},
+		{Owner: "0maru", Name: "skills"},
+	}
+	runs := workbench.FakeWorkflowRuns()
+	loader := &recordingActionsLoader{runs: runs}
+	mm := newModelWithRuntimeData(config.Defaults(), repos[0].FullName(), WorkbenchData{
+		Repos:         repos,
+		ActionsLoader: loader,
+	}, fakeDelayedPreviewLoader(0))
+	mm.mode = modeActions
+	mm.actions.repo = repos[0]
+	mm.actions.runs = runs
+	mm.actions.preview = actionsPreviewState{
+		status:       previewLoaded,
+		focusedRunID: runs[0].ID,
+		loaded:       ActionsRunPreview{Run: runs[0]},
+	}
+	mm.actions.logsByRunID = map[int64]workbench.WorkflowLog{
+		runs[0].ID: {RunID: runs[0].ID, Lines: []string{"stale"}},
+	}
+	mm.selectedRepo = 1
+
+	cmd := mm.startActionsLoadForSelectedRepo("Loading workflow runs...")
+	if cmd == nil {
+		t.Fatalf("expected actions load command")
+	}
+	if mm.actions.preview.status != previewEmpty {
+		t.Fatalf("expected stale preview to clear, got %+v", mm.actions.preview)
+	}
+	if len(mm.actions.logsByRunID) != 0 {
+		t.Fatalf("expected stale logs to clear, got %+v", mm.actions.logsByRunID)
+	}
+	msg := requireActionsLoadMsg(t, cmd)
+	if msg.request.repo != repos[1] {
+		t.Fatalf("expected load request for new repo, got %+v", msg.request.repo)
 	}
 }
 

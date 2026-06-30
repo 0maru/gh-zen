@@ -238,7 +238,7 @@ func TestCLIService_WorkflowRunJobsParsesGHOutput(t *testing.T) {
 func TestCLIService_JobAnnotationsParsesGHOutput(t *testing.T) {
 	repo := "0maru/gh-zen"
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
-		commandKey("api", "repos/"+repo+"/check-runs/201/annotations"): []byte(`[{"path":"internal/app/model.go","start_line":42,"end_line":42,"annotation_level":"failure","title":"Test failure","message":"expected preview"}]`),
+		commandKey("api", "repos/"+repo+"/check-runs/201/annotations", "--paginate", "--slurp"): []byte(`[[{"path":"internal/app/model.go","start_line":42,"end_line":42,"annotation_level":"failure","title":"Test failure","message":"expected preview"}],[{"path":"internal/app/view.go","start_line":7,"end_line":8,"annotation_level":"warning","title":"Lint","message":"second page"}]]`),
 	}}
 	service := CLIService{Runner: runner}
 
@@ -246,7 +246,10 @@ func TestCLIService_JobAnnotationsParsesGHOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected annotations to parse, got %v", err)
 	}
-	want := []workbench.AnnotationRef{{Path: "internal/app/model.go", StartLine: 42, EndLine: 42, Level: "failure", Title: "Test failure", Message: "expected preview"}}
+	want := []workbench.AnnotationRef{
+		{Path: "internal/app/model.go", StartLine: 42, EndLine: 42, Level: "failure", Title: "Test failure", Message: "expected preview"},
+		{Path: "internal/app/view.go", StartLine: 7, EndLine: 8, Level: "warning", Title: "Lint", Message: "second page"},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)
 	}
