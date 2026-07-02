@@ -777,7 +777,12 @@ func (m *model) refreshActiveData() tea.Cmd {
 }
 
 func (m *model) showPullRequests() tea.Cmd {
+	selectedWorkItemRepo := workbench.RepoRef{}
+	selectedWorkItemID := ""
+	m.pendingPullRequest = 0
 	if item, ok := m.selectedWorkItem(); ok {
+		selectedWorkItemRepo = item.Repo
+		selectedWorkItemID = item.ID
 		if item.Repo != (workbench.RepoRef{}) {
 			m.restoreSelectedRepo(item.Repo)
 		}
@@ -789,14 +794,15 @@ func (m *model) showPullRequests() tea.Cmd {
 	m.activeView = appViewPullRequests
 	m.focusedPane = panePullRequests
 	m.viewSelected = false
+	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
 	if m.pendingPullRequest > 0 {
 		m.restoreSelectedPullRequest(m.pendingPullRequest)
 	}
-	cmd := m.startPullRequestLoad("Loading pull requests...")
-	if cmd != nil {
-		return cmd
+	loadCmd := m.startPullRequestLoad("Loading pull requests...")
+	if m.pullRequestsLoading {
+		return batchCommands(loadCmd, m.startPullRequestPreviewLoadForCurrent())
 	}
-	return m.startPullRequestPreviewLoadForCurrent()
+	return loadCmd
 }
 
 func (m *model) showWorkbench() tea.Cmd {
@@ -1112,6 +1118,7 @@ func (m *model) handlePullRequestLoad(msg pullRequestLoadMsg) tea.Cmd {
 	repo, ok := m.selectedRepoRef()
 	if !ok || repo != msg.request.repo || m.activeView != appViewPullRequests {
 		m.pullRequestsLoading = false
+		m.pendingPullRequest = 0
 		if m.statusMessage == msg.request.status {
 			m.statusMessage = ""
 		}
@@ -1126,6 +1133,7 @@ func (m *model) handlePullRequestLoad(msg pullRequestLoadMsg) tea.Cmd {
 	}
 	if msg.err != nil {
 		m.pullRequestsLoading = false
+		m.pendingPullRequest = 0
 		m.statusMessage = "Pull requests failed: " + msg.err.Error()
 		return nil
 	}

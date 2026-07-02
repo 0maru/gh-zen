@@ -41,6 +41,35 @@ func requirePullRequestPreviewResultMsg(t *testing.T, cmd tea.Cmd) pullRequestPr
 	return result
 }
 
+func commandMessages(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("expected command, got nil")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		messages := make([]tea.Msg, 0, len(batch))
+		for _, batchCmd := range batch {
+			if batchCmd != nil {
+				messages = append(messages, batchCmd())
+			}
+		}
+		return messages
+	}
+	return []tea.Msg{msg}
+}
+
+func requirePullRequestLoadMsg(t *testing.T, cmd tea.Cmd) pullRequestLoadMsg {
+	t.Helper()
+	for _, msg := range commandMessages(t, cmd) {
+		if result, ok := msg.(pullRequestLoadMsg); ok {
+			return result
+		}
+	}
+	t.Fatalf("expected pullRequestLoadMsg")
+	return pullRequestLoadMsg{}
+}
+
 func requireModelEqualIgnoringPreviewLoader(t *testing.T, got tea.Model, want model) {
 	t.Helper()
 	mm, ok := got.(model)
@@ -1371,10 +1400,7 @@ func TestUpdate_ShowPullRequestsSelectsWorkItemRepo(t *testing.T) {
 	if repo, ok := mm.selectedRepoRef(); !ok || repo != repoB {
 		t.Fatalf("expected selected repo to follow work item repo %v, got %v ok=%v", repoB, repo, ok)
 	}
-	msg, ok := cmd().(pullRequestLoadMsg)
-	if !ok {
-		t.Fatalf("expected pullRequestLoadMsg")
-	}
+	msg := requirePullRequestLoadMsg(t, cmd)
 	if msg.request.repo != repoB || len(service.calls) != 1 || service.calls[0] != repoB.FullName() {
 		t.Fatalf("expected PR load for repo B, got request=%+v calls=%+v", msg.request, service.calls)
 	}
@@ -1410,13 +1436,155 @@ func TestUpdate_ShowPullRequestsSelectsWorkItemRepoWithoutPullRequest(t *testing
 	if repo, ok := mm.selectedRepoRef(); !ok || repo != repoB {
 		t.Fatalf("expected selected repo to follow non-PR work item repo %v, got %v ok=%v", repoB, repo, ok)
 	}
-	msg, ok := cmd().(pullRequestLoadMsg)
-	if !ok {
-		t.Fatalf("expected pullRequestLoadMsg")
-	}
+	msg := requirePullRequestLoadMsg(t, cmd)
 	if msg.request.repo != repoB || len(service.calls) != 1 || service.calls[0] != repoB.FullName() {
 		t.Fatalf("expected PR load for repo B, got request=%+v calls=%+v", msg.request, service.calls)
 	}
+}
+
+func TestUpdate_ShowPullRequestsPreservesAggregateWorkItemSelection(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	earlierRepoBItem := workbench.WorkItem{
+		ID:     "branch:setup",
+		Repo:   repoB,
+		Branch: &workbench.BranchRef{Name: "setup"},
+	}
+	target := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repoB,
+		PullRequest: &workbench.PullRequestRef{
+			Number:                42,
+			Title:                 "Cross repo PR",
+			State:                 "open",
+			URL:                   "https://github.com/0maru/dotfiles/pull/42",
+			ViewerReviewRequested: true,
+		},
+	}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos: []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{
+			earlierRepoBItem,
+			target,
+		},
+		PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+			repoB.FullName(): {{Number: 42, Title: "Cross repo PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+		}},
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.viewSelected = true
+	start.selectedView = 1
+	start.selectedRepo = 0
+	start.selectedItem = 0
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected PR load command")
+	}
+	mm := got.(model)
+	if mm.selectedItem != 1 {
+		t.Fatalf("expected repo-scoped selected item to follow %q at index 1, got %d", target.ID, mm.selectedItem)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	mm = got.(model)
+	item, ok := mm.selectedWorkItem()
+	if !ok || item.ID != target.ID {
+		t.Fatalf("expected workbench to restore selected item %q, got %+v ok=%v", target.ID, item, ok)
+	}
+}
+
+func TestUpdate_ShowPullRequestsStartsSeededPreviewWhileListLoads(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	target := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repo,
+		PullRequest: &workbench.PullRequestRef{
+			Number: 42,
+			Title:  "Seeded PR",
+			State:  "open",
+			URL:    "https://github.com/0maru/gh-zen/pull/42",
+		},
+	}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{target},
+		PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+			repo.FullName(): {{Number: 42, Title: "Loaded PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+		}},
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected batched PR load and preview command")
+	}
+	mm := got.(model)
+	if mm.pullRequestPreview.status != previewLoading || mm.pullRequestPreview.focusedPullRequestKey != "pr:42" {
+		t.Fatalf("expected seeded PR preview loading for pr:42, got %+v", mm.pullRequestPreview)
+	}
+	var sawLoad bool
+	var previewMsg pullRequestPreviewResultMsg
+	for _, msg := range commandMessages(t, cmd) {
+		switch msg := msg.(type) {
+		case pullRequestLoadMsg:
+			sawLoad = true
+		case pullRequestPreviewResultMsg:
+			previewMsg = msg
+		}
+	}
+	if !sawLoad {
+		t.Fatalf("expected PR list load to be batched with seeded preview")
+	}
+	if previewMsg.pullRequestKey != "pr:42" || previewMsg.data.pr.Number != 42 {
+		t.Fatalf("expected seeded PR preview result for #42, got %+v", previewMsg)
+	}
+}
+
+func TestHandlePullRequestLoadClearsPendingSelectionOnFailureOrDiscard(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+
+	t.Run("failure", func(t *testing.T) {
+		start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+			Repos:           []workbench.RepoRef{repo},
+			PullRequestsAPI: &fakePullRequestService{err: errors.New("boom")},
+		}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+		start.activeView = appViewPullRequests
+		start.pendingPullRequest = 24
+
+		msg := requirePullRequestLoadMsg(t, start.startPullRequestLoad("Loading pull requests..."))
+		got, _ := start.Update(msg)
+		mm := got.(model)
+		if mm.pendingPullRequest != 0 {
+			t.Fatalf("expected pending PR to clear after failed load, got %d", mm.pendingPullRequest)
+		}
+		if mm.statusMessage != "Pull requests failed: boom" {
+			t.Fatalf("expected failure status, got %q", mm.statusMessage)
+		}
+	})
+
+	t.Run("discarded", func(t *testing.T) {
+		start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+			Repos: []workbench.RepoRef{repo},
+			PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+				repo.FullName(): {{Number: 24, Title: "Loaded PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+			}},
+		}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+		start.activeView = appViewPullRequests
+		start.pendingPullRequest = 24
+
+		cmd := start.startPullRequestLoad("Loading pull requests...")
+		start.activeView = appViewWorkbench
+		msg := requirePullRequestLoadMsg(t, cmd)
+		got, _ := start.Update(msg)
+		mm := got.(model)
+		if mm.pendingPullRequest != 0 {
+			t.Fatalf("expected pending PR to clear after discarded load, got %d", mm.pendingPullRequest)
+		}
+		if mm.pullRequestsLoading {
+			t.Fatalf("expected discarded load to stop loading")
+		}
+	})
 }
 
 func TestBeginPullRequestLoadClearsStalePreviewOnRepoChange(t *testing.T) {
