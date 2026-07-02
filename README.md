@@ -96,8 +96,8 @@ The left pane also includes these views:
 
 ## Key Bindings
 
-The TUI currently uses these built-in defaults. The action IDs match the
-`[keys]` TOML map in the configuration model.
+The TUI currently uses these built-in defaults. Key remapping through
+configuration is not wired into the TUI yet.
 
 | Action ID | Default keys | Behavior |
 | --- | --- | --- |
@@ -146,7 +146,7 @@ default_branch = "main"
 worktree_root = "~/workspaces/github.com/0maru"
 
 [workbench.filter]
-worktree = "~/workspaces/github.com/0maru/gh-zen*"
+worktree = "/home/alice/workspaces/github.com/0maru/gh-zen*"
 branch_pattern = "feat/*"
 pull_request = "any"
 local_status = "any"
@@ -154,8 +154,8 @@ local_status = "any"
 
 `repos.roots` is used to discover local checkouts. The per-repository
 `worktree_root` key is accepted by the configuration model for repository-scoped
-settings, and `workbench.filter.worktree` narrows visible work items by
-worktree path glob.
+settings, and `workbench.filter.worktree` narrows visible work items by absolute
+worktree path glob. The worktree filter does not expand `~`.
 
 ## Current Limitations
 
