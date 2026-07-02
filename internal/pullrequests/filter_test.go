@@ -8,18 +8,19 @@ import (
 func TestFilter_Combinatorics(t *testing.T) {
 	prs := []PullRequest{
 		{
-			Number:         1,
-			Title:          "Open ready",
-			State:          "open",
-			Author:         "alice",
-			HeadRef:        "alice/feature",
-			BaseRef:        "main",
-			ReviewDecision: "review required",
-			ReviewRequests: []ReviewRequest{{Login: "bob"}},
-			Checks:         CheckSummary{State: CheckFailing, Failing: 1},
-			UpdatedAt:      "2026-05-03T12:00:00Z",
-			BodyExcerpt:    "Closes #10",
-			LinkedIssues:   []LinkedIssue{{Number: 10, Title: "Searchable issue"}},
+			Number:          1,
+			Title:           "Open ready",
+			State:           "open",
+			Author:          "alice",
+			HeadRef:         "alice/feature",
+			BaseRef:         "main",
+			ReviewDecision:  "review required",
+			ReviewRequests:  []ReviewRequest{{Login: "bob"}},
+			WaitingOnReview: true,
+			Checks:          CheckSummary{State: CheckFailing, Failing: 1},
+			UpdatedAt:       "2026-05-03T12:00:00Z",
+			BodyExcerpt:     "Closes #10",
+			LinkedIssues:    []LinkedIssue{{Number: 10, Title: "Searchable issue"}},
 		},
 		{
 			Number:    2,
@@ -81,6 +82,23 @@ func TestFilter_Combinatorics(t *testing.T) {
 				t.Fatalf("expected numbers %+v, got %+v", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestFilter_WaitingOnReviewRequiresExplicitViewerScopedFlag(t *testing.T) {
+	prs := []PullRequest{
+		{
+			Number:         1,
+			Title:          "Needs my review",
+			State:          "open",
+			ReviewDecision: "review required",
+			ReviewRequests: []ReviewRequest{{Login: "0maru"}},
+		},
+	}
+
+	got := Filter(prs, PullRequestFilter{WaitingOnReview: true})
+	if len(got) != 0 {
+		t.Fatalf("expected review-requested PR not to match waiting-on-review filter, got %+v", got)
 	}
 }
 

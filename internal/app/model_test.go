@@ -122,6 +122,29 @@ func (r *fakeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef
 	return workbench.RuntimeLoadResult{Repo: repo}
 }
 
+type fakePullRequestService struct {
+	prsByRepo map[string][]pullrequests.PullRequest
+	calls     []string
+	err       error
+}
+
+func (s *fakePullRequestService) List(_ context.Context, repo string, _ pullrequests.PullRequestFilter) ([]pullrequests.PullRequest, error) {
+	s.calls = append(s.calls, repo)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]pullrequests.PullRequest(nil), s.prsByRepo[repo]...), nil
+}
+
+func (s *fakePullRequestService) Detail(_ context.Context, repo string, number int) (pullrequests.PullRequest, error) {
+	for _, pr := range s.prsByRepo[repo] {
+		if pr.Number == number {
+			return pr, nil
+		}
+	}
+	return pullrequests.PullRequest{}, nil
+}
+
 func requireWorkbenchReloadMsg(t *testing.T, cmd tea.Cmd) workbenchReloadMsg {
 	t.Helper()
 	if cmd == nil {
@@ -1310,6 +1333,78 @@ func TestUpdate_PullRequestActionsRouteSelectedPRData(t *testing.T) {
 	}
 	if status := got.(model).statusMessage; status != "Opened PR #24" {
 		t.Fatalf("expected open success status, got %q", status)
+	}
+}
+
+func TestUpdate_ShowPullRequestsSelectsWorkItemRepo(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	itemB := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repoB,
+		PullRequest: &workbench.PullRequestRef{
+			Number:                42,
+			Title:                 "Cross repo PR",
+			State:                 "open",
+			URL:                   "https://github.com/0maru/dotfiles/pull/42",
+			ViewerReviewRequested: true,
+		},
+	}
+	service := &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+		repoB.FullName(): {{Number: 42, Title: "Cross repo PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+	}}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:           []workbench.RepoRef{repoA, repoB},
+		WorkItems:       []workbench.WorkItem{itemB},
+		PullRequestsAPI: service,
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.viewSelected = true
+	start.selectedView = 1
+	start.selectedRepo = 0
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected PR load command")
+	}
+	mm := got.(model)
+	if repo, ok := mm.selectedRepoRef(); !ok || repo != repoB {
+		t.Fatalf("expected selected repo to follow work item repo %v, got %v ok=%v", repoB, repo, ok)
+	}
+	msg, ok := cmd().(pullRequestLoadMsg)
+	if !ok {
+		t.Fatalf("expected pullRequestLoadMsg")
+	}
+	if msg.request.repo != repoB || len(service.calls) != 1 || service.calls[0] != repoB.FullName() {
+		t.Fatalf("expected PR load for repo B, got request=%+v calls=%+v", msg.request, service.calls)
+	}
+}
+
+func TestBeginPullRequestLoadClearsStalePreviewOnRepoChange(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:           []workbench.RepoRef{repoA, repoB},
+		PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{}},
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.activeView = appViewPullRequests
+	start.selectedRepo = 1
+	start.pullRequestRepo = repoA
+	start.pullRequests = pullrequests.FakePullRequests()
+	start.pullRequestPreview = pullRequestPreviewState{
+		status:                previewLoaded,
+		focusedPullRequestKey: "pr:24",
+		loaded:                pullRequestPreviewData{pullRequestKey: "pr:24", pr: pullrequests.FakePullRequests()[0]},
+	}
+
+	if !start.beginPullRequestLoad("Loading pull requests...") {
+		t.Fatalf("expected pull request load to start")
+	}
+	if len(start.pullRequests) != 0 || start.selectedPR != 0 {
+		t.Fatalf("expected stale PR list to clear, got selected=%d prs=%+v", start.selectedPR, start.pullRequests)
+	}
+	if start.pullRequestPreview.status != previewEmpty {
+		t.Fatalf("expected stale PR preview to clear, got %v", start.pullRequestPreview.status)
 	}
 }
 

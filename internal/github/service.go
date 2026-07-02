@@ -399,7 +399,12 @@ func (s CLIService) RepositoryPullRequests(ctx context.Context, repo string) ([]
 	prs := []pullrequests.PullRequest{}
 	after := ""
 	for {
-		output, err := s.runner().Run(ctx, "api", "graphql", "-f", "owner="+owner, "-f", "name="+name, "-f", "after="+after, "-f", "query="+repositoryPullRequestsQuery)
+		args := []string{"api", "graphql", "-f", "owner=" + owner, "-f", "name=" + name}
+		if after != "" {
+			args = append(args, "-f", "after="+after)
+		}
+		args = append(args, "-f", "query="+repositoryPullRequestsQuery)
+		output, err := s.runner().Run(ctx, args...)
 		if err != nil {
 			return prs, err
 		}
@@ -994,8 +999,10 @@ func summarizeCheckStates(states []string) workbench.CheckSummary {
 
 func normalizedCheckState(value string) workbench.CheckState {
 	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "_", " ")
+	value = strings.ReplaceAll(value, "-", " ")
 	switch {
-	case strings.Contains(value, "fail"), strings.Contains(value, "error"), strings.Contains(value, "cancel"):
+	case strings.Contains(value, "fail"), strings.Contains(value, "error"), strings.Contains(value, "cancel"), strings.Contains(value, "timed out"), strings.Contains(value, "timeout"), strings.Contains(value, "action required"):
 		return workbench.CheckFailing
 	case strings.Contains(value, "pending"), strings.Contains(value, "queued"), strings.Contains(value, "progress"), strings.Contains(value, "waiting"):
 		return workbench.CheckPending

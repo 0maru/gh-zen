@@ -773,6 +773,7 @@ func (m *model) refreshActiveData() tea.Cmd {
 func (m *model) showPullRequests() tea.Cmd {
 	if item, ok := m.selectedWorkItem(); ok && item.PullRequest != nil {
 		m.pendingPullRequest = item.PullRequest.Number
+		m.restoreSelectedRepo(item.Repo)
 		m.ensurePullRequestFromWorkItem(item)
 	}
 	m.activeView = appViewPullRequests
@@ -800,6 +801,13 @@ func (m *model) ensurePullRequestFromWorkItem(item workbench.WorkItem) {
 	if item.PullRequest == nil {
 		return
 	}
+	if item.Repo != (workbench.RepoRef{}) {
+		if m.pullRequestRepo != (workbench.RepoRef{}) && m.pullRequestRepo != item.Repo {
+			m.pullRequests = nil
+			m.selectedPR = 0
+		}
+		m.pullRequestRepo = item.Repo
+	}
 	pr := pullRequestFromWorkItem(item)
 	for i, existing := range m.pullRequests {
 		if existing.Number == pr.Number {
@@ -809,9 +817,6 @@ func (m *model) ensurePullRequestFromWorkItem(item workbench.WorkItem) {
 	}
 	m.pullRequests = append(m.pullRequests, pr)
 	pullrequests.SortByUpdatedDesc(m.pullRequests)
-	if repo, ok := m.selectedRepoRef(); ok {
-		m.pullRequestRepo = repo
-	}
 }
 
 func pullRequestFromWorkItem(item workbench.WorkItem) pullrequests.PullRequest {
@@ -1051,6 +1056,7 @@ func (m *model) beginPullRequestLoad(status string) bool {
 			if m.pullRequestRepo != (workbench.RepoRef{}) && m.pullRequestRepo != repo {
 				m.pullRequests = nil
 				m.selectedPR = 0
+				m.pullRequestPreview = pullRequestPreviewState{status: previewEmpty}
 			}
 			m.pullRequestRepo = repo
 		}
@@ -1060,6 +1066,11 @@ func (m *model) beginPullRequestLoad(status string) bool {
 	repo, ok := m.selectedRepoRef()
 	if !ok {
 		return false
+	}
+	if m.pullRequestRepo != (workbench.RepoRef{}) && m.pullRequestRepo != repo {
+		m.pullRequests = nil
+		m.selectedPR = 0
+		m.pullRequestPreview = pullRequestPreviewState{status: previewEmpty}
 	}
 	m.nextPRLoadRequestID++
 	request := pullRequestLoadRequest{

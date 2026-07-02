@@ -58,7 +58,7 @@ func (f PullRequestFilter) Matches(pr PullRequest) bool {
 	if f.ReviewRequested && len(pr.ReviewRequests) == 0 && !pr.ViewerReviewRequested {
 		return false
 	}
-	if f.WaitingOnReview && !pr.WaitingOnReview && !isWaitingOnReview(pr) {
+	if f.WaitingOnReview && !pr.WaitingOnReview {
 		return false
 	}
 	if f.FailedChecks && pr.Checks.State != CheckFailing {
@@ -152,14 +152,6 @@ func normalizeDraftFilter(value DraftFilter) DraftFilter {
 	default:
 		return DraftAny
 	}
-}
-
-func isWaitingOnReview(pr PullRequest) bool {
-	if pr.IsDraft || !strings.EqualFold(pr.State, "open") {
-		return false
-	}
-	decision := strings.ToLower(pr.ReviewDecision)
-	return len(pr.ReviewRequests) > 0 || strings.Contains(decision, "review required")
 }
 
 func matchesTextQuery(pr PullRequest, query string) bool {
