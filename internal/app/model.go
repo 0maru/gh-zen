@@ -19,21 +19,22 @@ import (
 )
 
 const (
-	defaultWidth           = 100
-	repoPaneWidth          = 23
-	workItemPaneWidth      = 41
-	paneGapWidth           = 1
-	paneContentPaddingLeft = 1
-	paneBorderGlyph        = "│"
-	paneBorderWidth        = 2
-	frameBorderLines       = 2
-	horizontalLineGlyph    = "─"
-	frameTopLeftGlyph      = "┌"
-	frameTopRightGlyph     = "┐"
-	frameBottomLeftGlyph   = "└"
-	frameBottomRightGlyph  = "┘"
-	previewPaneMinWidth    = 28
-	fullLayoutMinWidth     = repoPaneWidth + workItemPaneWidth + previewPaneMinWidth + paneBorderWidth*3 + paneGapWidth*2
+	defaultWidth            = 100
+	repoPaneWidth           = 23
+	workItemPaneWidth       = 41
+	pullRequestPaneMinWidth = 96
+	paneGapWidth            = 1
+	paneContentPaddingLeft  = 1
+	paneBorderGlyph         = "│"
+	paneBorderWidth         = 2
+	frameBorderLines        = 2
+	horizontalLineGlyph     = "─"
+	frameTopLeftGlyph       = "┌"
+	frameTopRightGlyph      = "┐"
+	frameBottomLeftGlyph    = "└"
+	frameBottomRightGlyph   = "┘"
+	previewPaneMinWidth     = 28
+	fullLayoutMinWidth      = repoPaneWidth + workItemPaneWidth + previewPaneMinWidth + paneBorderWidth*3 + paneGapWidth*2
 )
 
 // paneFocus tracks the pane that owns pane-scoped key handling.
@@ -73,48 +74,49 @@ func (p paneFocus) borderLabel() string {
 }
 
 type model struct {
-	width                int
-	height               int
-	activeView           appView
-	repos                []workbench.RepoRef
-	repoSummaries        []workbench.RepositorySummary
-	selectedRepo         int
-	selectedView         int
-	viewSelected         bool
-	workItems            []workbench.WorkItem
-	selectedItem         int
-	workbenchSource      workbenchDataSource
-	workbenchLoading     bool
-	focusedPane          paneFocus
-	focusedWorkItemRepo  workbench.RepoRef
-	focusedWorkItemID    string
-	preview              previewState
-	nextPreviewRequestID int
-	previewLoader        previewLoader
-	pullRequests         []pullrequests.PullRequest
-	pullRequestRepo      workbench.RepoRef
-	selectedPR           int
-	pendingPullRequest   int
-	pullRequestsLoading  bool
-	pullRequestFilter    pullrequests.PullRequestFilter
-	pullRequestSearch    bool
-	pullRequestSearchIn  string
-	pullRequestFilterUI  bool
-	pullRequestPreview   pullRequestPreviewState
-	nextPRPreviewRequest int
-	prPreviewLoader      pullRequestPreviewLoader
-	pullRequestService   pullrequests.Service
-	nextPRLoadRequestID  int
-	activePRLoadRequest  pullRequestLoadRequest
-	workbenchReloader    WorkbenchReloader
-	nextReloadRequestID  int
-	activeReloadRequest  workbenchReloadRequest
-	workbenchFilter      cfgpkg.WorkbenchFilter
-	actionRunner         actionRunner
-	statusMessage        string
-	styles               Styles
-	keys                 workbenchKeyMap
-	help                 help.Model
+	width                   int
+	height                  int
+	activeView              appView
+	repos                   []workbench.RepoRef
+	repoSummaries           []workbench.RepositorySummary
+	selectedRepo            int
+	selectedView            int
+	viewSelected            bool
+	workItems               []workbench.WorkItem
+	selectedItem            int
+	workbenchSource         workbenchDataSource
+	workbenchLoading        bool
+	focusedPane             paneFocus
+	focusedWorkItemRepo     workbench.RepoRef
+	focusedWorkItemID       string
+	preview                 previewState
+	nextPreviewRequestID    int
+	previewLoader           previewLoader
+	pullRequests            []pullrequests.PullRequest
+	pullRequestRepo         workbench.RepoRef
+	selectedPR              int
+	pendingPullRequest      int
+	pullRequestsLoading     bool
+	pullRequestFilter       pullrequests.PullRequestFilter
+	pullRequestSearch       bool
+	pullRequestSearchIn     string
+	pullRequestFilterUI     bool
+	pullRequestPreview      pullRequestPreviewState
+	nextPRPreviewRequest    int
+	prPreviewLoader         pullRequestPreviewLoader
+	pullRequestPreviewWidth float64
+	pullRequestService      pullrequests.Service
+	nextPRLoadRequestID     int
+	activePRLoadRequest     pullRequestLoadRequest
+	workbenchReloader       WorkbenchReloader
+	nextReloadRequestID     int
+	activeReloadRequest     workbenchReloadRequest
+	workbenchFilter         cfgpkg.WorkbenchFilter
+	actionRunner            actionRunner
+	statusMessage           string
+	styles                  Styles
+	keys                    workbenchKeyMap
+	help                    help.Model
 }
 
 // WorkbenchData contains resolved repository workbench state for app startup.
@@ -226,21 +228,22 @@ func newModelWithRuntimeDataLoaders(cfg cfgpkg.Config, startupRepo string, data 
 	pullrequests.SortByUpdatedDesc(prs)
 	repoSummaries := normalizeRepositorySummaries(data.RepositorySummaries, data.Repos)
 	m := model{
-		repos:              repoRefsFromSummaries(repoSummaries),
-		repoSummaries:      cloneRepositorySummaries(repoSummaries),
-		workItems:          cloneWorkItems(data.WorkItems),
-		workbenchSource:    source,
-		previewLoader:      loader,
-		prPreviewLoader:    prLoader,
-		pullRequests:       prs,
-		pullRequestFilter:  pullRequestFilterFromConfig(cfg.PullRequests.Filter),
-		pullRequestService: data.PullRequestsAPI,
-		workbenchReloader:  data.Reloader,
-		workbenchFilter:    cfg.Workbench.Filter,
-		actionRunner:       systemActionRunner{},
-		styles:             DefaultStyles(),
-		keys:               DefaultKeyMap(),
-		help:               newHelpModel(),
+		repos:                   repoRefsFromSummaries(repoSummaries),
+		repoSummaries:           cloneRepositorySummaries(repoSummaries),
+		workItems:               cloneWorkItems(data.WorkItems),
+		workbenchSource:         source,
+		previewLoader:           loader,
+		prPreviewLoader:         prLoader,
+		pullRequests:            prs,
+		pullRequestFilter:       pullRequestFilterFromConfig(cfg.PullRequests.Filter),
+		pullRequestPreviewWidth: cfg.PullRequests.PreviewWidth,
+		pullRequestService:      data.PullRequestsAPI,
+		workbenchReloader:       data.Reloader,
+		workbenchFilter:         cfg.Workbench.Filter,
+		actionRunner:            systemActionRunner{},
+		styles:                  DefaultStyles(),
+		keys:                    DefaultKeyMap(),
+		help:                    newHelpModel(),
 	}
 	m.applyStartupView(cfg.Startup.View)
 	if startupRepo == "" {
@@ -350,6 +353,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pullRequestLoadMsg:
 		return m, m.handlePullRequestLoad(msg)
 	case tea.KeyMsg:
+		if msg.Type == tea.KeyCtrlC {
+			return m, m.handleAction(actionQuit)
+		}
 		if m.pullRequestSearch {
 			return m, m.handlePullRequestSearchKey(msg)
 		}
@@ -771,10 +777,14 @@ func (m *model) refreshActiveData() tea.Cmd {
 }
 
 func (m *model) showPullRequests() tea.Cmd {
-	if item, ok := m.selectedWorkItem(); ok && item.PullRequest != nil {
-		m.pendingPullRequest = item.PullRequest.Number
-		m.restoreSelectedRepo(item.Repo)
-		m.ensurePullRequestFromWorkItem(item)
+	if item, ok := m.selectedWorkItem(); ok {
+		if item.Repo != (workbench.RepoRef{}) {
+			m.restoreSelectedRepo(item.Repo)
+		}
+		if item.PullRequest != nil {
+			m.pendingPullRequest = item.PullRequest.Number
+			m.ensurePullRequestFromWorkItem(item)
+		}
 	}
 	m.activeView = appViewPullRequests
 	m.focusedPane = panePullRequests
@@ -1623,26 +1633,50 @@ func (m model) View() string {
 }
 
 func (m model) renderFull(width int) string {
-	rightWidth := width - repoPaneWidth - workItemPaneWidth - paneBorderWidth*3 - paneGapWidth*2
+	repoWidth, listWidth, rightWidth := m.fullPaneWidths(width)
 	focus := m.activePane()
 	listPane := m.listPane()
 
-	left := m.repoLines(paneTextWidth(repoPaneWidth), focus == paneRepositories)
-	middle := m.listLines(paneTextWidth(workItemPaneWidth), focus == listPane)
+	left := m.repoLines(paneTextWidth(repoWidth), focus == paneRepositories)
+	middle := m.listLines(paneTextWidth(listWidth), focus == listPane)
 	right := m.previewLines(paneTextWidth(rightWidth))
 	out := m.headerLines(m.viewTitle(), width)
 	bodyHeight := m.frameBodyHeight(max(len(left), max(len(middle), len(right))), len(out))
 
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		m.renderPane(m.paneHeading(paneRepositories), left, repoPaneWidth, bodyHeight, focus == paneRepositories),
+		m.renderPane(m.paneHeading(paneRepositories), left, repoWidth, bodyHeight, focus == paneRepositories),
 		paneGap(bodyHeight+frameBorderLines),
-		m.renderPane(m.paneHeading(listPane), middle, workItemPaneWidth, bodyHeight, focus == listPane),
+		m.renderPane(m.paneHeading(listPane), middle, listWidth, bodyHeight, focus == listPane),
 		paneGap(bodyHeight+frameBorderLines),
 		m.renderPane(m.paneHeading(panePreview), right, rightWidth, bodyHeight, focus == panePreview),
 	)
 	out = append(out, body)
 	return strings.Join(out, "\n") + "\n"
+}
+
+func (m model) fullPaneWidths(width int) (int, int, int) {
+	listWidth := workItemPaneWidth
+	rightWidth := width - repoPaneWidth - listWidth - paneBorderWidth*3 - paneGapWidth*2
+	if m.activeView != appViewPullRequests {
+		return repoPaneWidth, listWidth, max(rightWidth, 0)
+	}
+
+	available := width - repoPaneWidth - paneBorderWidth*3 - paneGapWidth*2
+	if available <= 0 {
+		return repoPaneWidth, 0, 0
+	}
+	previewRatio := m.pullRequestPreviewWidth
+	if previewRatio <= 0 || previewRatio >= 1 {
+		previewRatio = cfgpkg.Defaults().PullRequests.PreviewWidth
+	}
+	rightWidth = max(int(float64(available)*previewRatio), previewPaneMinWidth)
+	listWidth = max(available-rightWidth, 0)
+	if listWidth < pullRequestPaneMinWidth {
+		listWidth = min(max(available-previewPaneMinWidth, 0), pullRequestPaneMinWidth)
+		rightWidth = max(available-listWidth, 0)
+	}
+	return repoPaneWidth, listWidth, rightWidth
 }
 
 func (m model) renderCompact(width int) string {
@@ -1740,14 +1774,14 @@ func (m model) pullRequestLines(width int, focused bool) []string {
 	lines := []string{}
 	for i, pr := range prs {
 		marker := selectionMarker(i == m.selectedPR, focused)
-		row := fmt.Sprintf("%s %-5s %-12s %-26s %-12s %-16s %-16s %s",
+		row := fmt.Sprintf("%s %-5s %-10s %-18s %-10s %-16s %-18s %s",
 			marker,
 			pr.ShortNumberLabel(),
-			pr.StateLabel(),
-			pr.Title,
-			authorLabel(pr.Author),
-			shortReviewLabel(pr),
-			pr.Checks.Label(),
+			truncate(pr.StateLabel(), 10),
+			truncate(pr.Title, 18),
+			truncate(authorLabel(pr.Author), 10),
+			truncate(shortReviewLabel(pr), 16),
+			truncate(pr.Checks.Label(), 18),
 			shortUpdatedAt(pr.UpdatedAt),
 		)
 		lines = append(lines, truncate(row, width))

@@ -58,6 +58,9 @@ const (
 
 	repositoryPullRequestsQuery = `
 query($owner:String!, $name:String!, $after:String) {
+  viewer {
+    login
+  }
   repository(owner:$owner, name:$name) {
     pullRequests(first:100, after:$after, states:[OPEN, CLOSED, MERGED], orderBy:{field:UPDATED_AT, direction:DESC}) {
       nodes {
@@ -410,6 +413,7 @@ func (s CLIService) RepositoryPullRequests(ctx context.Context, repo string) ([]
 		}
 		var payload struct {
 			Data struct {
+				Viewer     ghUser `json:"viewer"`
 				Repository struct {
 					PullRequests struct {
 						Nodes    []ghPullRequestBrowserNode `json:"nodes"`
@@ -425,7 +429,7 @@ func (s CLIService) RepositoryPullRequests(ctx context.Context, repo string) ([]
 			return prs, fmt.Errorf("parse gh repository pull requests output: %w", err)
 		}
 		for _, node := range payload.Data.Repository.PullRequests.Nodes {
-			prs = append(prs, pullRequestFromGraphQL(node))
+			prs = append(prs, pullRequestWithViewerPerspective(pullRequestFromGraphQL(node), payload.Data.Viewer.Login))
 		}
 		if !payload.Data.Repository.PullRequests.PageInfo.HasNextPage {
 			pullrequests.SortByUpdatedDesc(prs)
@@ -669,6 +673,38 @@ func pullRequestFromGraphQL(node ghPullRequestBrowserNode) pullrequests.PullRequ
 		URL:            node.URL,
 		BodyExcerpt:    textExcerpt(node.BodyText),
 	}
+}
+
+func pullRequestWithViewerPerspective(pr pullrequests.PullRequest, viewer string) pullrequests.PullRequest {
+	if viewer == "" {
+		return pr
+	}
+	pr.ViewerReviewRequested = pullRequestNeedsViewerReview(pr, viewer)
+	pr.WaitingOnReview = pullRequestWaitingOnViewerAuthoredReview(pr, viewer)
+	return pr
+}
+
+func pullRequestNeedsViewerReview(pr pullrequests.PullRequest, viewer string) bool {
+	if !pullRequestOpenForReview(pr) {
+		return false
+	}
+	for _, request := range pr.ReviewRequests {
+		if strings.EqualFold(request.Login, viewer) {
+			return true
+		}
+	}
+	return false
+}
+
+func pullRequestWaitingOnViewerAuthoredReview(pr pullrequests.PullRequest, viewer string) bool {
+	if !pullRequestOpenForReview(pr) || !strings.EqualFold(pr.Author, viewer) {
+		return false
+	}
+	return len(pr.ReviewRequests) > 0 || strings.EqualFold(pr.ReviewDecision, "review required")
+}
+
+func pullRequestOpenForReview(pr pullrequests.PullRequest) bool {
+	return strings.EqualFold(pr.State, "open") && !pr.IsDraft
 }
 
 func pullRequestHeadRef(owner string, branch string) string {

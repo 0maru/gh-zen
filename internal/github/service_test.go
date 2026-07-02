@@ -123,7 +123,7 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 func TestCLIService_RepositoryPullRequestsParsesGraphQLOutput(t *testing.T) {
 	repo := "0maru/gh-zen"
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
-		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"viewer":{"login":"alice"},"repository":{"pullRequests":{"nodes":[
 			{"number":3,"title":"Merged fix","state":"MERGED","isDraft":false,"url":"https://example.test/pull/3","bodyText":"Merged body","headRefName":"fix","baseRefName":"main","reviewDecision":"APPROVED","mergeable":"MERGEABLE","updatedAt":"2026-05-01T10:00:00Z","author":{"login":"0maru"},"headRepositoryOwner":{"login":"0maru"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[{"author":{"login":"bob"},"state":"APPROVED"}]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]}},
 			{"number":5,"title":"Review requested","state":"OPEN","isDraft":false,"url":"https://example.test/pull/5","bodyText":"Closes #12 with enough body text for an excerpt","headRefName":"feature","baseRefName":"main","reviewDecision":"REVIEW_REQUIRED","mergeable":"CONFLICTING","updatedAt":"2026-05-03T10:00:00Z","author":{"login":"alice"},"headRepositoryOwner":{"login":"alice"},"reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"0maru","name":"0maru"}}]},"latestReviews":{"nodes":[]},"closingIssuesReferences":{"nodes":[{"number":12,"title":"Linked issue","state":"OPEN","url":"https://example.test/issues/12"}]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","context":"build","state":"SUCCESS"}]}}}}]}},
 			{"number":4,"title":"Draft work","state":"OPEN","isDraft":true,"url":"https://example.test/pull/4","bodyText":"Draft body","headRefName":"draft","baseRefName":"main","reviewDecision":null,"mergeable":"UNKNOWN","updatedAt":"2026-05-02T10:00:00Z","author":{"login":"0maru"},"headRepositoryOwner":{"login":"0maru"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]}}}}]}}
@@ -154,6 +154,9 @@ func TestCLIService_RepositoryPullRequestsParsesGraphQLOutput(t *testing.T) {
 	}
 	if pr.Checks.State != "failing" || pr.Checks.Failing != 1 || pr.Checks.Passing != 1 {
 		t.Fatalf("expected failing check summary, got %+v", pr.Checks)
+	}
+	if !pr.WaitingOnReview || pr.ViewerReviewRequested {
+		t.Fatalf("expected viewer-authored PR to be waiting on review only, got %+v", pr)
 	}
 	if pr.Mergeability != "conflicting" || pr.BodyExcerpt == "" {
 		t.Fatalf("expected mergeability and body excerpt, got mergeability=%q body=%q", pr.Mergeability, pr.BodyExcerpt)

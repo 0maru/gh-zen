@@ -169,10 +169,12 @@ func TestView_PullRequestViewRendersListAndPreview(t *testing.T) {
 	if !strings.Contains(got, "gh-zen  pull requests") || !strings.Contains(got, "PullRequests[2]") {
 		t.Fatalf("expected PR view panes, got:\n%s", got)
 	}
-	if !strings.Contains(got, "#24") || !strings.Contains(got, "Add layered config model") {
-		t.Fatalf("expected PR row, got:\n%s", got)
+	for _, want := range []string{"#24", "Add layered", "@teammate", "review requested", "checks failing (1)", "2026-05-03"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected PR row to include %q, got:\n%s", want, got)
+		}
 	}
-	if !strings.Contains(got, "Branch: 0maru/feat/config-loader -> main") {
+	if !strings.Contains(got, "Branch: 0maru/feat/config") {
 		t.Fatalf("expected PR preview branch refs, got:\n%s", got)
 	}
 }
