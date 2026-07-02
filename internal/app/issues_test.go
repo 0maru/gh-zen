@@ -316,6 +316,60 @@ func TestUpdate_IssueViewRefreshUpdatesReturnSelection(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueViewReloadRefreshesPreviewOnReturn(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	original := workbench.WorkItem{
+		ID:     "branch:feature",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "feature"},
+		Issue:  &workbench.IssueRef{Number: 75, Title: "Old issue", State: "open"},
+	}
+	reloaded := original
+	reloaded.Issue = &workbench.IssueRef{Number: 75, Title: "Reloaded issue", State: "open"}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {
+				Repo:  repo,
+				Items: []workbench.WorkItem{reloaded},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{original},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.focusedWorkItemRepo = repo
+	start.focusedWorkItemID = original.ID
+	start.preview = previewState{
+		status:              previewLoaded,
+		focusedWorkItemRepo: repo,
+		focusedWorkItemID:   original.ID,
+		loaded: previewData{
+			workItemRepo: repo,
+			workItemID:   original.ID,
+			item:         original,
+		},
+	}
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatalf("expected preview reload command after issue reload")
+	}
+	previewMsg := requirePreviewResultMsg(t, cmd)
+	if previewMsg.data.item.Issue == nil || previewMsg.data.item.Issue.Title != "Reloaded issue" {
+		t.Fatalf("expected preview reload to use reloaded work item, got %+v", previewMsg.data.item)
+	}
+	got, _ = got.(model).Update(previewMsg)
+	mm := got.(model)
+	if mm.preview.loaded.item.Issue == nil || mm.preview.loaded.item.Issue.Title != "Reloaded issue" {
+		t.Fatalf("expected refreshed preview item, got %+v", mm.preview.loaded.item)
+	}
+}
+
 func TestUpdate_IssueViewRefreshPreservesReturnRepo(t *testing.T) {
 	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}

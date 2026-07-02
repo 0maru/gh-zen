@@ -764,6 +764,9 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		m.statusMessage = ""
 	}
 	if m.screen == screenIssues {
+		if msg.request.issueScoped {
+			m.clearFocusedWorkItem()
+		}
 		return nil
 	}
 	return m.startPreviewLoadForCurrentItem()
