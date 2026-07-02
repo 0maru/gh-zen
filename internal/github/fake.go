@@ -13,6 +13,12 @@ type FakeService struct {
 	IssuesByRepo       map[string][]workbench.IssueRef
 	Checks             map[string]workbench.CheckSummary
 	ReviewSubjects     workbench.ReviewSubjects
+	WorkflowRunsByRepo map[string][]workbench.WorkflowRunRef
+	WorkflowRunsByID   map[int64]workbench.WorkflowRunRef
+	JobsByRunID        map[int64][]workbench.WorkflowJobRef
+	AnnotationsByJobID map[int64][]workbench.AnnotationRef
+	LogsByRunID        map[int64]workbench.WorkflowLog
+	LogsByJobID        map[int64]workbench.WorkflowLog
 	Err                error
 }
 
@@ -67,6 +73,61 @@ func (f FakeService) ViewerReviewSubjects(context.Context) (workbench.ReviewSubj
 	return f.ReviewSubjects, nil
 }
 
+func (f FakeService) WorkflowRuns(_ context.Context, repo string, opts WorkflowRunListOptions) ([]workbench.WorkflowRunRef, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	runs := append([]workbench.WorkflowRunRef(nil), f.WorkflowRunsByRepo[repo]...)
+	if opts.Limit > 0 && len(runs) > opts.Limit {
+		runs = runs[:opts.Limit]
+	}
+	return runs, nil
+}
+
+func (f FakeService) WorkflowRun(_ context.Context, repo string, runID int64) (workbench.WorkflowRunRef, error) {
+	if f.Err != nil {
+		return workbench.WorkflowRunRef{}, f.Err
+	}
+	if run, ok := f.WorkflowRunsByID[runID]; ok {
+		return run, nil
+	}
+	for _, run := range f.WorkflowRunsByRepo[repo] {
+		if run.ID == runID {
+			return run, nil
+		}
+	}
+	return workbench.WorkflowRunRef{}, nil
+}
+
+func (f FakeService) WorkflowRunJobs(_ context.Context, _ string, runID int64) ([]workbench.WorkflowJobRef, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	return cloneWorkflowJobs(f.JobsByRunID[runID]), nil
+}
+
+func (f FakeService) JobAnnotations(_ context.Context, _ string, jobID int64) ([]workbench.AnnotationRef, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	return append([]workbench.AnnotationRef(nil), f.AnnotationsByJobID[jobID]...), nil
+}
+
+func (f FakeService) WorkflowRunLogs(_ context.Context, _ string, runID int64, opts LogFetchOptions) (workbench.WorkflowLog, error) {
+	if f.Err != nil {
+		return workbench.WorkflowLog{}, f.Err
+	}
+	if opts.JobID != nil {
+		if log, ok := f.LogsByJobID[*opts.JobID]; ok {
+			return cloneWorkflowLog(log), nil
+		}
+	}
+	if log, ok := f.LogsByRunID[runID]; ok {
+		return cloneWorkflowLog(log), nil
+	}
+	return workbench.WorkflowLog{RunID: runID, Failed: opts.FailedOnly}, nil
+}
+
 func (f FakeService) PullRequestsForRepo(repo string) ([]workbench.PullRequestRef, error) {
 	if f.Err != nil {
 		return nil, f.Err
@@ -86,4 +147,17 @@ func fakeCheckSummary(checks map[string]workbench.CheckSummary, key string) work
 		return summary
 	}
 	return workbench.CheckSummary{State: workbench.CheckUnknown}
+}
+
+func cloneWorkflowJobs(jobs []workbench.WorkflowJobRef) []workbench.WorkflowJobRef {
+	out := append([]workbench.WorkflowJobRef(nil), jobs...)
+	for i := range out {
+		out[i].Steps = append([]workbench.WorkflowStepRef(nil), out[i].Steps...)
+	}
+	return out
+}
+
+func cloneWorkflowLog(log workbench.WorkflowLog) workbench.WorkflowLog {
+	log.Lines = append([]string(nil), log.Lines...)
+	return log
 }
