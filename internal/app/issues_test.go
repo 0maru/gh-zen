@@ -214,6 +214,50 @@ func TestUpdate_IssueViewRefreshUsesIssueRepo(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueViewLoadsRawIssuesForSelectedRepo(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repoB.FullName(): {
+				Repo:         repoB,
+				IssuesLoaded: true,
+				Issues: []workbench.IssueRef{{
+					Number:  44,
+					Title:   "Unlinked repo B issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos: []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{{
+			ID:     "branch:repo-a",
+			Repo:   repoA,
+			Branch: &workbench.BranchRef{Name: "repo-a"},
+		}},
+		Reloader: reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.setRepoPaneIndex(1)
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	msg := requireWorkbenchReloadMsg(t, cmd)
+	if msg.request.repo != repoB {
+		t.Fatalf("expected issue view reload request for %+v, got %+v", repoB, msg.request.repo)
+	}
+	got, _ = got.(model).Update(msg)
+	mm := got.(model)
+
+	if len(reloader.calls) != 1 || reloader.calls[0] != repoB {
+		t.Fatalf("expected reload call for %+v, got %+v", repoB, reloader.calls)
+	}
+	if issues := mm.visibleIssues(); len(issues) != 1 || issues[0].Number != 44 {
+		t.Fatalf("expected raw repo B issue after issue view reload, got %+v", issues)
+	}
+}
+
 func TestUpdate_IssueViewBackRestoresWorkbenchSelection(t *testing.T) {
 	start := newModel()
 	start.selectedItem = 2

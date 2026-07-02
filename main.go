@@ -63,7 +63,7 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 
 	items := []workbench.WorkItem{}
 	summaries := make([]workbench.RepositorySummary, 0, len(checkouts))
-	rawResultRepo, _ := r.requestedRepository(repo)
+	rawResultRepo, hasRawResultRepo := r.requestedRepository(repo)
 	selectedRawResult := workbench.RuntimeLoadResult{}
 	for _, checkout := range checkouts {
 		if checkout.path == "" {
@@ -77,7 +77,7 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 			Local:    local,
 			GitHub:   r.githubDiscovery(),
 		}).Load(ctx)
-		if checkout.repo == rawResultRepo {
+		if shouldUseRawResult(checkout.repo, rawResultRepo, hasRawResultRepo, selectedRawResult) {
 			selectedRawResult = result
 		}
 		items = append(items, result.Items...)
@@ -110,6 +110,13 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 		IssuesLoaded:       selectedRawResult.IssuesLoaded,
 		ViewerSubject:      selectedRawResult.ViewerSubject,
 	}
+}
+
+func shouldUseRawResult(checkoutRepo workbench.RepoRef, rawResultRepo workbench.RepoRef, hasRawResultRepo bool, current workbench.RuntimeLoadResult) bool {
+	if hasRawResultRepo {
+		return repoFullNameKey(checkoutRepo) == repoFullNameKey(rawResultRepo)
+	}
+	return current.Repo == (workbench.RepoRef{})
 }
 
 func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {

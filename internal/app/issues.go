@@ -102,14 +102,21 @@ func (m *model) enterIssueView() tea.Cmd {
 		m.ensureIssueVisible(targetIssueNumber)
 		if m.selectIssueNumber(targetIssueNumber) {
 			m.statusMessage = ""
-			return nil
+			return m.startIssueViewReload()
 		}
 		m.statusMessage = fmt.Sprintf("Issue #%d is not in the loaded issue list", targetIssueNumber)
-		return nil
+		return m.startIssueViewReload()
 	}
 	m.clampIssueSelection()
 	m.statusMessage = ""
-	return nil
+	return m.startIssueViewReload()
+}
+
+func (m *model) startIssueViewReload() tea.Cmd {
+	if m.workbenchReloader == nil || !hasRepoRef(m.issueRepo) {
+		return nil
+	}
+	return m.startWorkbenchReload("Loading issues...")
 }
 
 func (m *model) backToWorkbench() tea.Cmd {

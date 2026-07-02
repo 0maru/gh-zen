@@ -220,6 +220,71 @@ func TestRuntimeWorkbenchReloaderPropagatesSelectedRepoRawData(t *testing.T) {
 	}
 }
 
+func TestRuntimeWorkbenchReloaderPropagatesFirstRepoRawDataForZeroRepoStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	ghZenPath := filepath.Join(root, "0maru", "gh-zen")
+	initRuntimeRepo(t, ghZenPath, "https://github.com/0maru/gh-zen.git")
+
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			issuesByRepo: map[string][]workbench.IssueRef{
+				repo.FullName(): {{
+					Number:  75,
+					Title:   "Discovered issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+		},
+	}
+
+	result := reloader.Load(context.Background(), workbench.RepoRef{})
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
+		t.Fatalf("expected first discovered repo issues to propagate, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderPropagatesRequestedRepoRawDataCaseInsensitively(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "Owner", "Repo")
+	initRuntimeRepo(t, repoPath, "https://github.com/Owner/Repo.git")
+
+	discoveredRepo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
+	requestedRepo := workbench.RepoRef{Owner: "owner", Name: "repo"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			issuesByRepo: map[string][]workbench.IssueRef{
+				discoveredRepo.FullName(): {{
+					Number:  82,
+					Title:   "Case-preserved issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+		},
+	}
+
+	result := reloader.Load(context.Background(), requestedRepo)
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 82 {
+		t.Fatalf("expected requested repo issues to propagate case-insensitively, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+}
+
 func requireRepositorySummary(t *testing.T, summaries []workbench.RepositorySummary, repo workbench.RepoRef) workbench.RepositorySummary {
 	t.Helper()
 	for _, summary := range summaries {
