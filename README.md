@@ -112,6 +112,8 @@ configuration is not wired into the TUI yet.
 | `focus_pane_3` | `3` | Focus the third visible pane. |
 | `toggle_help` | `?` | Toggle full contextual help. |
 | `refresh` | `r` | Reload workbench data for the selected repository. |
+| `show_actions` | `a` | Open the GitHub Actions view for the selected repository. |
+| `show_workbench` | `w` | Return to the repository workbench from another view. |
 | `open_pr` | `p` | Open the linked pull request URL. |
 | `open_issue` | `i` | Open the linked issue URL. |
 | `copy_url` | `y` | Copy the linked pull request URL, or the linked issue URL when no PR URL exists. |
