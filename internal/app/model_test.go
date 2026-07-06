@@ -754,7 +754,7 @@ func TestUpdate_QuitOnQuitKeys(t *testing.T) {
 
 func TestUpdate_NonQuitKey_NoCommand(t *testing.T) {
 	start := newModel()
-	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
 	if cmd != nil {
 		t.Fatalf("expected nil cmd for non-quit key, got %T", cmd)
 	}

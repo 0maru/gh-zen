@@ -1,6 +1,10 @@
 package workbench
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestRepoRef_FullName_ZeroValueSafe(t *testing.T) {
 	if got := (RepoRef{}).FullName(); got != "unknown repo" {
@@ -61,6 +65,57 @@ func TestPullRequestRef_HeadLabel(t *testing.T) {
 	}
 }
 
+func TestWorkflowRunRef_HoldsGitHubActionsFields(t *testing.T) {
+	created := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	updated := created.Add(4 * time.Minute)
+	run := WorkflowRunRef{
+		ID:           1001,
+		RunNumber:    77,
+		WorkflowName: "CI",
+		Branch:       "main",
+		Event:        "push",
+		Status:       "completed",
+		Conclusion:   "success",
+		Actor:        "0maru",
+		HeadSHA:      "abcdef1234567890",
+		Title:        "Build main",
+		URL:          "https://example.test/runs/1001",
+		CreatedAt:    created,
+		UpdatedAt:    updated,
+	}
+
+	if got := run.Label(); got != "run #77 Build main" {
+		t.Fatalf("expected run label, got %q", got)
+	}
+	if got := run.NumberLabel(); got != "run #77" {
+		t.Fatalf("expected run number label, got %q", got)
+	}
+	if got := run.StatusLabel(); got != "success" {
+		t.Fatalf("expected conclusion to win status label, got %q", got)
+	}
+	if got := run.ShortSHA(); got != "abcdef1" {
+		t.Fatalf("expected short SHA, got %q", got)
+	}
+	if run.CreatedAt != created || run.UpdatedAt != updated {
+		t.Fatalf("expected timestamps to round-trip, got %+v", run)
+	}
+}
+
+func TestWorkflowJobAndAnnotationLabels(t *testing.T) {
+	job := WorkflowJobRef{ID: 2001, Name: "test", Status: "completed", Conclusion: "failure"}
+	if got := job.Label(); got != "test" {
+		t.Fatalf("expected job label, got %q", got)
+	}
+	if got := job.StatusLabel(); got != "failure" {
+		t.Fatalf("expected job status label, got %q", got)
+	}
+
+	annotation := AnnotationRef{Path: "internal/app/model.go", StartLine: 42, Title: "Test failure"}
+	if got := annotation.Label(); got != "internal/app/model.go:42 Test failure" {
+		t.Fatalf("expected annotation label, got %q", got)
+	}
+}
+
 func TestWorkItem_LocationShowsPullRequestHeadForRemotePRBranch(t *testing.T) {
 	item := WorkItem{
 		Repo:        RepoRef{Owner: "0maru", Name: "gh-zen"},
@@ -69,6 +124,42 @@ func TestWorkItem_LocationShowsPullRequestHeadForRemotePRBranch(t *testing.T) {
 	}
 	if got := item.Location(); got != "contributor/feature" {
 		t.Fatalf("expected PR head location, got %q", got)
+	}
+}
+
+func TestFakeWorkflowRuns_CoverRequiredShapes(t *testing.T) {
+	runs := FakeWorkflowRuns()
+	if len(runs) < 3 {
+		t.Fatalf("expected at least three fake workflow runs, got %d", len(runs))
+	}
+
+	var hasSuccess bool
+	var hasFailure bool
+	var hasInProgress bool
+	for _, run := range runs {
+		if run.ID == 0 || run.RunNumber == 0 || run.WorkflowName == "" || run.Branch == "" || run.Event == "" || run.Status == "" || run.Actor == "" || run.HeadSHA == "" || run.Title == "" || run.URL == "" || run.CreatedAt.IsZero() || run.UpdatedAt.IsZero() {
+			t.Fatalf("fake workflow run missing required field: %+v", run)
+		}
+		switch {
+		case strings.EqualFold(run.Conclusion, "success"):
+			hasSuccess = true
+		case strings.EqualFold(run.Conclusion, "failure"):
+			hasFailure = true
+		case strings.EqualFold(run.Status, "in_progress"):
+			hasInProgress = true
+		}
+	}
+	if !hasSuccess || !hasFailure || !hasInProgress {
+		t.Fatalf("expected success, failure, and in-progress fake runs, got %+v", runs)
+	}
+	if len(FakeWorkflowJobs()[runs[1].ID]) == 0 {
+		t.Fatalf("expected fake jobs for failing run")
+	}
+	if len(FakeWorkflowAnnotations()) == 0 {
+		t.Fatalf("expected fake annotations")
+	}
+	if len(FakeWorkflowLogs()[runs[1].ID].Lines) == 0 {
+		t.Fatalf("expected fake failed logs")
 	}
 }
 

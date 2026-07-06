@@ -49,6 +49,15 @@ func TestView_Initial(t *testing.T) {
 	requireEqualGolden(t, []byte(newModel().View()))
 }
 
+func TestView_Actions_Loaded(t *testing.T) {
+	m := newModel()
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got, cmd = got.(model).Update(requireActionsLoadMsg(t, cmd))
+	got, _ = got.(model).Update(requireActionsPreviewMsg(t, cmd))
+
+	requireEqualGolden(t, []byte(got.(model).View()))
+}
+
 func TestView_Compact_HidesRepositoryPane(t *testing.T) {
 	m := newModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
@@ -125,6 +134,19 @@ func TestView_FullHelpShowsContextualActions(t *testing.T) {
 	}
 	if !strings.Contains(got, "p open PR") || !strings.Contains(got, "o open") || !strings.Contains(got, "r refresh") {
 		t.Fatalf("expected preview full help to keep actions, got:\n%s", got)
+	}
+
+	m = newModel()
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	updated, cmd = updated.(model).Update(requireActionsLoadMsg(t, cmd))
+	updated, _ = updated.(model).Update(requireActionsPreviewMsg(t, cmd))
+	actionsModel := updated.(model)
+	actionsModel.help.ShowAll = true
+	got = ansi.Strip(actionsModel.View())
+	for _, want := range []string{"w workbench", "o open run", "Y copy run ID", "L failed logs", "s status", "x clear filters"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected actions full help to include %q, got:\n%s", want, got)
+		}
 	}
 }
 

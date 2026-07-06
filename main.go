@@ -122,6 +122,7 @@ func shouldUseRawResult(checkoutRepo workbench.RepoRef, rawResultRepo workbench.
 func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {
 	data := app.WorkbenchData{
 		Reloader:       reloader,
+		ActionsLoader:  app.NewGitHubActionsLoader(github.CLIService{}),
 		InitialLoading: reloader != nil,
 	}
 	repo, ok := repoRefFromFullName(startupRepo.Repo)
