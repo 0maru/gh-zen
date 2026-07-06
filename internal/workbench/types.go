@@ -3,6 +3,7 @@ package workbench
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type RepoRef struct {
@@ -126,6 +127,135 @@ type ReviewRequestRef struct {
 type PullRequestReviewRef struct {
 	AuthorLogin string
 	State       string
+}
+
+type WorkflowRunRef struct {
+	ID           int64
+	RunNumber    int
+	WorkflowName string
+	Branch       string
+	Event        string
+	Status       string
+	Conclusion   string
+	Actor        string
+	HeadSHA      string
+	Title        string
+	URL          string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+func (r WorkflowRunRef) Label() string {
+	label := r.NumberLabel()
+	title := r.Title
+	if title == "" {
+		title = r.WorkflowName
+	}
+	if title == "" {
+		return label
+	}
+	return fmt.Sprintf("%s %s", label, title)
+}
+
+func (r WorkflowRunRef) NumberLabel() string {
+	switch {
+	case r.RunNumber > 0:
+		return fmt.Sprintf("run #%d", r.RunNumber)
+	case r.ID > 0:
+		return fmt.Sprintf("run %d", r.ID)
+	default:
+		return "run"
+	}
+}
+
+func (r WorkflowRunRef) StatusLabel() string {
+	switch {
+	case r.Conclusion != "":
+		return r.Conclusion
+	case r.Status != "":
+		return r.Status
+	default:
+		return "unknown"
+	}
+}
+
+func (r WorkflowRunRef) ShortSHA() string {
+	if len(r.HeadSHA) <= 7 {
+		return r.HeadSHA
+	}
+	return r.HeadSHA[:7]
+}
+
+type WorkflowJobRef struct {
+	ID          int64
+	Name        string
+	Status      string
+	Conclusion  string
+	StartedAt   time.Time
+	CompletedAt time.Time
+	Steps       []WorkflowStepRef
+	URL         string
+}
+
+func (j WorkflowJobRef) Label() string {
+	if j.Name != "" {
+		return j.Name
+	}
+	if j.ID > 0 {
+		return fmt.Sprintf("job %d", j.ID)
+	}
+	return "job"
+}
+
+func (j WorkflowJobRef) StatusLabel() string {
+	switch {
+	case j.Conclusion != "":
+		return j.Conclusion
+	case j.Status != "":
+		return j.Status
+	default:
+		return "unknown"
+	}
+}
+
+type WorkflowStepRef struct {
+	Name       string
+	Status     string
+	Conclusion string
+	Number     int
+}
+
+type AnnotationRef struct {
+	Path      string
+	StartLine int
+	EndLine   int
+	Level     string
+	Title     string
+	Message   string
+}
+
+func (a AnnotationRef) Label() string {
+	location := a.Path
+	if a.StartLine > 0 {
+		location = fmt.Sprintf("%s:%d", location, a.StartLine)
+	}
+	switch {
+	case a.Title != "" && location != "":
+		return location + " " + a.Title
+	case a.Title != "":
+		return a.Title
+	case location != "":
+		return location
+	default:
+		return "annotation"
+	}
+}
+
+type WorkflowLog struct {
+	RunID  int64
+	JobID  int64
+	Failed bool
+	Lines  []string
 }
 
 type ReviewSubjects struct {

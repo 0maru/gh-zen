@@ -106,6 +106,7 @@ func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app
 	data := app.WorkbenchData{
 		PullRequestsAPI: github.CLIService{},
 		Reloader:        reloader,
+		ActionsLoader:   app.NewGitHubActionsLoader(github.CLIService{}),
 		InitialLoading:  reloader != nil,
 	}
 	repo, ok := repoRefFromFullName(startupRepo.Repo)

@@ -27,6 +27,9 @@ Run it with:
 gh zen
 ```
 
+Inside `gh zen`, press `a` to browse GitHub Actions workflow runs for the
+selected repository and `w` to return to the repository workbench.
+
 ## Development
 
 Install local hooks:

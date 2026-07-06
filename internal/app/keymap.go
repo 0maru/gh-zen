@@ -20,6 +20,8 @@ const (
 	actionFocusPane3            actionID = "focus_pane_3"
 	actionToggleHelp            actionID = "toggle_help"
 	actionRefresh               actionID = "refresh"
+	actionShowActions           actionID = "show_actions"
+	actionShowWorkbench         actionID = "show_workbench"
 	actionOpenPullRequest       actionID = "open_pr"
 	actionOpenSelected          actionID = "open_selected"
 	actionOpenIssue             actionID = "open_issue"
@@ -28,9 +30,18 @@ const (
 	actionCopyPullRequestNumber actionID = "copy_pr_number"
 	actionCopyPullRequestHead   actionID = "copy_pr_head"
 	actionShowPullRequests      actionID = "show_pull_requests"
-	actionShowWorkbench         actionID = "show_workbench"
 	actionSearchPullRequests    actionID = "search_prs"
 	actionFilterPullRequests    actionID = "filter_prs"
+	actionOpenWorkflowRun       actionID = "open_workflow_run"
+	actionCopyWorkflowRunID     actionID = "copy_workflow_run_id"
+	actionFetchWorkflowRunLogs  actionID = "fetch_workflow_run_logs"
+	actionFilterStatus          actionID = "filter_status"
+	actionFilterConclusion      actionID = "filter_conclusion"
+	actionFilterBranch          actionID = "filter_branch"
+	actionFilterWorkflow        actionID = "filter_workflow"
+	actionFilterEvent           actionID = "filter_event"
+	actionFilterActor           actionID = "filter_actor"
+	actionClearFilters          actionID = "clear_filters"
 	actionQuit                  actionID = "quit"
 )
 
@@ -51,6 +62,8 @@ type workbenchKeyMap struct {
 	FocusPane3            key.Binding
 	ToggleHelp            key.Binding
 	Refresh               key.Binding
+	ShowActions           key.Binding
+	ShowWorkbench         key.Binding
 	OpenPullRequest       key.Binding
 	OpenSelected          key.Binding
 	OpenIssue             key.Binding
@@ -59,9 +72,18 @@ type workbenchKeyMap struct {
 	CopyPullRequestNumber key.Binding
 	CopyPullRequestHead   key.Binding
 	ShowPullRequests      key.Binding
-	ShowWorkbench         key.Binding
 	SearchPullRequests    key.Binding
 	FilterPullRequests    key.Binding
+	OpenWorkflowRun       key.Binding
+	CopyWorkflowRunID     key.Binding
+	FetchWorkflowRunLogs  key.Binding
+	FilterStatus          key.Binding
+	FilterConclusion      key.Binding
+	FilterBranch          key.Binding
+	FilterWorkflow        key.Binding
+	FilterEvent           key.Binding
+	FilterActor           key.Binding
+	ClearFilters          key.Binding
 	Quit                  key.Binding
 }
 
@@ -124,6 +146,14 @@ func DefaultKeyMap() workbenchKeyMap {
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
 		),
+		ShowActions: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "actions"),
+		),
+		ShowWorkbench: key.NewBinding(
+			key.WithKeys("w", "["),
+			key.WithHelp("w", "workbench"),
+		),
 		OpenPullRequest: key.NewBinding(
 			key.WithKeys("p"),
 			key.WithHelp("p", "open PR"),
@@ -156,10 +186,6 @@ func DefaultKeyMap() workbenchKeyMap {
 			key.WithKeys("]"),
 			key.WithHelp("]", "PR view"),
 		),
-		ShowWorkbench: key.NewBinding(
-			key.WithKeys("["),
-			key.WithHelp("[", "workbench"),
-		),
 		SearchPullRequests: key.NewBinding(
 			key.WithKeys("/"),
 			key.WithHelp("/", "search"),
@@ -168,6 +194,46 @@ func DefaultKeyMap() workbenchKeyMap {
 			key.WithKeys("f"),
 			key.WithHelp("f", "filter"),
 		),
+		OpenWorkflowRun: key.NewBinding(
+			key.WithKeys("o"),
+			key.WithHelp("o", "open run"),
+		),
+		CopyWorkflowRunID: key.NewBinding(
+			key.WithKeys("Y"),
+			key.WithHelp("Y", "copy run ID"),
+		),
+		FetchWorkflowRunLogs: key.NewBinding(
+			key.WithKeys("L"),
+			key.WithHelp("L", "failed logs"),
+		),
+		FilterStatus: key.NewBinding(
+			key.WithKeys("s"),
+			key.WithHelp("s", "status"),
+		),
+		FilterConclusion: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "conclusion"),
+		),
+		FilterBranch: key.NewBinding(
+			key.WithKeys("b"),
+			key.WithHelp("b", "branch"),
+		),
+		FilterWorkflow: key.NewBinding(
+			key.WithKeys("n"),
+			key.WithHelp("n", "workflow"),
+		),
+		FilterEvent: key.NewBinding(
+			key.WithKeys("e"),
+			key.WithHelp("e", "event"),
+		),
+		FilterActor: key.NewBinding(
+			key.WithKeys("u"),
+			key.WithHelp("u", "actor"),
+		),
+		ClearFilters: key.NewBinding(
+			key.WithKeys("x"),
+			key.WithHelp("x", "clear filters"),
+		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "esc", "ctrl+c"),
 			key.WithHelp("q", "quit"),
@@ -175,7 +241,7 @@ func DefaultKeyMap() workbenchKeyMap {
 	}
 }
 
-func (k workbenchKeyMap) actionBindings(view appView) []actionBinding {
+func (k workbenchKeyMap) actionBindings(view appView, mode appMode) []actionBinding {
 	common := []actionBinding{
 		{id: actionQuit, binding: k.Quit},
 		{id: actionToggleHelp, binding: k.ToggleHelp},
@@ -201,7 +267,24 @@ func (k workbenchKeyMap) actionBindings(view appView) []actionBinding {
 			actionBinding{id: actionFilterPullRequests, binding: k.FilterPullRequests},
 		)
 	}
+	if mode == modeActions {
+		return append(common,
+			actionBinding{id: actionShowWorkbench, binding: k.ShowWorkbench},
+			actionBinding{id: actionOpenWorkflowRun, binding: k.OpenWorkflowRun},
+			actionBinding{id: actionCopyURL, binding: k.CopyURL},
+			actionBinding{id: actionCopyWorkflowRunID, binding: k.CopyWorkflowRunID},
+			actionBinding{id: actionFetchWorkflowRunLogs, binding: k.FetchWorkflowRunLogs},
+			actionBinding{id: actionFilterStatus, binding: k.FilterStatus},
+			actionBinding{id: actionFilterConclusion, binding: k.FilterConclusion},
+			actionBinding{id: actionFilterBranch, binding: k.FilterBranch},
+			actionBinding{id: actionFilterWorkflow, binding: k.FilterWorkflow},
+			actionBinding{id: actionFilterEvent, binding: k.FilterEvent},
+			actionBinding{id: actionFilterActor, binding: k.FilterActor},
+			actionBinding{id: actionClearFilters, binding: k.ClearFilters},
+		)
+	}
 	return append(common,
+		actionBinding{id: actionShowActions, binding: k.ShowActions},
 		actionBinding{id: actionOpenPullRequest, binding: k.OpenPullRequest},
 		actionBinding{id: actionOpenIssue, binding: k.OpenIssue},
 		actionBinding{id: actionCopyURL, binding: k.CopyURL},
@@ -210,18 +293,25 @@ func (k workbenchKeyMap) actionBindings(view appView) []actionBinding {
 	)
 }
 
-func (k workbenchKeyMap) contextualHelp(view appView, focus paneFocus, visiblePanes []paneFocus) contextualHelpKeyMap {
+func (k workbenchKeyMap) contextualHelp(view appView, mode appMode, focus paneFocus, visiblePanes []paneFocus) contextualHelpKeyMap {
 	paneNumbers := k.visiblePaneBinding(visiblePanes)
 	paneKeys := combinedBinding("pane", k.FocusPreviousPane, k.FocusNextPane)
 	system := []key.Binding{k.ToggleHelp, k.Quit}
-	actions := []key.Binding{k.OpenPullRequest, k.OpenIssue, k.CopyURL, k.CopyWorktreePath, k.ShowPullRequests, k.Refresh}
+	actions := []key.Binding{k.ShowActions, k.OpenPullRequest, k.OpenIssue, k.CopyURL, k.CopyWorktreePath, k.ShowPullRequests, k.Refresh}
 	if view == appViewPullRequests {
 		actions = []key.Binding{k.OpenSelected, k.CopyURL, k.CopyPullRequestNumber, k.CopyPullRequestHead, k.SearchPullRequests, k.FilterPullRequests, k.ShowWorkbench, k.Refresh}
+	} else if mode == modeActions {
+		actions = []key.Binding{k.ShowWorkbench, k.OpenWorkflowRun, k.CopyURL, k.CopyWorkflowRunID, k.FetchWorkflowRunLogs, k.Refresh}
+		system = []key.Binding{k.ToggleHelp, k.Quit}
 	}
 	panes := []key.Binding{k.FocusPreviousPane, k.FocusNextPane, paneNumbers}
 
 	short := []key.Binding{paneNumbers, paneKeys, k.ToggleHelp, k.Quit}
 	full := [][]key.Binding{panes, actions, system}
+	if view != appViewPullRequests && mode == modeActions {
+		filters := []key.Binding{k.FilterStatus, k.FilterConclusion, k.FilterBranch, k.FilterWorkflow, k.FilterEvent, k.FilterActor, k.ClearFilters}
+		full = [][]key.Binding{panes, actions, filters, system}
+	}
 
 	if focus == paneRepositories || focus == paneWorkItems || focus == panePullRequests {
 		move := combinedBinding("move", k.MoveDown, k.MoveUp)
