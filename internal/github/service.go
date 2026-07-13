@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/0maru/gh-zen/internal/workbench"
 )
@@ -20,6 +21,11 @@ type Service interface {
 	Issues(ctx context.Context, repo string) ([]workbench.IssueRef, error)
 	CheckSummary(ctx context.Context, repo string, ref string) (workbench.CheckSummary, error)
 	ViewerReviewSubjects(ctx context.Context) (workbench.ReviewSubjects, error)
+	WorkflowRuns(ctx context.Context, repo string, opts WorkflowRunListOptions) ([]workbench.WorkflowRunRef, error)
+	WorkflowRun(ctx context.Context, repo string, runID int64) (workbench.WorkflowRunRef, error)
+	WorkflowRunJobs(ctx context.Context, repo string, runID int64) ([]workbench.WorkflowJobRef, error)
+	JobAnnotations(ctx context.Context, repo string, jobID int64) ([]workbench.AnnotationRef, error)
+	WorkflowRunLogs(ctx context.Context, repo string, runID int64, opts LogFetchOptions) (workbench.WorkflowLog, error)
 }
 
 // RepositorySummary contains lightweight GitHub data for a repository refresh.
@@ -40,6 +46,18 @@ type CLIService struct {
 	Runner Runner
 }
 
+// WorkflowRunListOptions controls workflow run list size.
+type WorkflowRunListOptions struct {
+	Limit int
+}
+
+// LogFetchOptions controls explicit workflow log fetches.
+type LogFetchOptions struct {
+	FailedOnly bool
+	JobID      *int64
+	TailLines  int
+}
+
 // GHRunner executes the gh binary.
 type GHRunner struct{}
 
@@ -51,9 +69,14 @@ const (
 	ErrorNetwork ErrorKind = "network"
 	ErrorCommand ErrorKind = "command"
 
-	issueListFields = "number,title,state,url,body,labels,assignees,milestone,updatedAt"
-	listLimit       = "1000"
-	prListFields    = "number,title,state,url,headRefName,headRepositoryOwner,baseRefName,isDraft,updatedAt,author,reviewRequests,latestReviews,reviewDecision,body"
+	issueListFields  = "number,title,state,url,body,labels,assignees,milestone,updatedAt"
+	listLimit        = "1000"
+	prListFields     = "number,title,state,url,headRefName,headRepositoryOwner,baseRefName,isDraft,updatedAt,author,reviewRequests,latestReviews,reviewDecision,body"
+	runListFields    = "databaseId,number,name,workflowName,headBranch,event,status,conclusion,headSha,displayTitle,url,createdAt,updatedAt"
+	runViewFields    = "databaseId,number,name,workflowName,headBranch,event,status,conclusion,headSha,displayTitle,url,createdAt,updatedAt"
+	runJobsFields    = "jobs"
+	runListLimit     = 30
+	logTailLineLimit = 500
 
 	pullRequestClosingIssuesQuery = `
 query($owner:String!, $name:String!, $after:String) {
@@ -265,6 +288,144 @@ func (s CLIService) ViewerReviewSubjects(ctx context.Context) (workbench.ReviewS
 	return subjects, nil
 }
 
+// WorkflowRuns loads recent GitHub Actions workflow runs through gh.
+func (s CLIService) WorkflowRuns(ctx context.Context, repo string, opts WorkflowRunListOptions) ([]workbench.WorkflowRunRef, error) {
+	limit := workflowRunLimit(opts)
+	output, err := s.runner().Run(ctx, "run", "list", "--repo", repo, "--limit", strconv.Itoa(limit), "--json", runListFields)
+	if err != nil {
+		return nil, err
+	}
+	var payload []ghWorkflowRun
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return nil, fmt.Errorf("parse gh run list output: %w", err)
+	}
+	runs := make([]workbench.WorkflowRunRef, 0, len(payload))
+	for _, run := range payload {
+		runs = append(runs, workflowRunRef(run))
+	}
+	actors := workflowRunActors(ctx, s, repo, limit)
+	for i := range runs {
+		if runs[i].Actor == "" {
+			runs[i].Actor = actors[runs[i].ID]
+		}
+	}
+	return runs, nil
+}
+
+// WorkflowRun loads one workflow run summary through gh.
+func (s CLIService) WorkflowRun(ctx context.Context, repo string, runID int64) (workbench.WorkflowRunRef, error) {
+	output, err := s.runner().Run(ctx, "run", "view", strconv.FormatInt(runID, 10), "--repo", repo, "--json", runViewFields)
+	if err != nil {
+		return workbench.WorkflowRunRef{}, err
+	}
+	var payload ghWorkflowRun
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return workbench.WorkflowRunRef{}, fmt.Errorf("parse gh run view output: %w", err)
+	}
+	run := workflowRunRef(payload)
+	if run.Actor == "" {
+		run.Actor = workflowRunActor(ctx, s, repo, run.ID)
+	}
+	return run, nil
+}
+
+// WorkflowRunJobs loads jobs for one workflow run through gh.
+func (s CLIService) WorkflowRunJobs(ctx context.Context, repo string, runID int64) ([]workbench.WorkflowJobRef, error) {
+	output, err := s.runner().Run(ctx, "run", "view", strconv.FormatInt(runID, 10), "--repo", repo, "--json", runJobsFields)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Jobs []ghWorkflowJob `json:"jobs"`
+	}
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return nil, fmt.Errorf("parse gh run jobs output: %w", err)
+	}
+	jobs := make([]workbench.WorkflowJobRef, 0, len(payload.Jobs))
+	for _, job := range payload.Jobs {
+		jobs = append(jobs, workflowJobRef(job))
+	}
+	return jobs, nil
+}
+
+// JobAnnotations loads check-run annotations for one workflow job through gh api.
+func (s CLIService) JobAnnotations(ctx context.Context, repo string, jobID int64) ([]workbench.AnnotationRef, error) {
+	output, err := s.runner().Run(ctx, "api", fmt.Sprintf("repos/%s/check-runs/%d/annotations", repo, jobID), "--paginate", "--slurp")
+	if err != nil {
+		return nil, err
+	}
+	payload, err := parseAnnotationPages(output)
+	if err != nil {
+		return nil, fmt.Errorf("parse gh job annotations output: %w", err)
+	}
+	annotations := make([]workbench.AnnotationRef, 0, len(payload))
+	for _, annotation := range payload {
+		annotations = append(annotations, workbench.AnnotationRef{
+			Path:      annotation.Path,
+			StartLine: annotation.StartLine,
+			EndLine:   annotation.EndLine,
+			Level:     strings.ToLower(annotation.Level),
+			Title:     annotation.Title,
+			Message:   annotation.Message,
+		})
+	}
+	return annotations, nil
+}
+
+func parseAnnotationPages(output []byte) ([]ghAnnotation, error) {
+	var pages [][]ghAnnotation
+	if err := json.Unmarshal(output, &pages); err == nil {
+		count := 0
+		for _, page := range pages {
+			count += len(page)
+		}
+		annotations := make([]ghAnnotation, 0, count)
+		for _, page := range pages {
+			annotations = append(annotations, page...)
+		}
+		return annotations, nil
+	}
+	var annotations []ghAnnotation
+	if err := json.Unmarshal(output, &annotations); err != nil {
+		return nil, err
+	}
+	return annotations, nil
+}
+
+// WorkflowRunLogs fetches logs only when the caller explicitly requests them.
+func (s CLIService) WorkflowRunLogs(ctx context.Context, repo string, runID int64, opts LogFetchOptions) (workbench.WorkflowLog, error) {
+	args := []string{"run", "view", strconv.FormatInt(runID, 10), "--repo", repo}
+	if opts.JobID != nil {
+		args = append(args, "--job", strconv.FormatInt(*opts.JobID, 10))
+	}
+	if opts.FailedOnly {
+		args = append(args, "--log-failed")
+	} else {
+		args = append(args, "--log")
+	}
+	output, err := s.runner().Run(ctx, args...)
+	if err != nil {
+		return workbench.WorkflowLog{}, err
+	}
+	lines := logLines(string(output))
+	tailLimit := opts.TailLines
+	if tailLimit <= 0 {
+		tailLimit = logTailLineLimit
+	}
+	if len(lines) > tailLimit {
+		lines = lines[len(lines)-tailLimit:]
+	}
+	log := workbench.WorkflowLog{
+		RunID:  runID,
+		Failed: opts.FailedOnly,
+		Lines:  lines,
+	}
+	if opts.JobID != nil {
+		log.JobID = *opts.JobID
+	}
+	return log, nil
+}
+
 func (s CLIService) pullRequestClosingIssues(ctx context.Context, repo string) (map[int][]workbench.IssueRef, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" {
@@ -346,6 +507,166 @@ type ghReviewRequest struct {
 type ghPullReviewItem struct {
 	Author ghUser `json:"author"`
 	State  string `json:"state"`
+}
+
+type ghWorkflowRun struct {
+	DatabaseID      int64     `json:"databaseId"`
+	ID              int64     `json:"id"`
+	Number          int       `json:"number"`
+	Name            string    `json:"name"`
+	WorkflowName    string    `json:"workflowName"`
+	HeadBranch      string    `json:"headBranch"`
+	Event           string    `json:"event"`
+	Status          string    `json:"status"`
+	Conclusion      string    `json:"conclusion"`
+	Actor           ghUser    `json:"actor"`
+	TriggeringActor ghUser    `json:"triggering_actor"`
+	HeadSHA         string    `json:"headSha"`
+	DisplayTitle    string    `json:"displayTitle"`
+	URL             string    `json:"url"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+type ghWorkflowJob struct {
+	DatabaseID  int64            `json:"databaseId"`
+	ID          int64            `json:"id"`
+	Name        string           `json:"name"`
+	Status      string           `json:"status"`
+	Conclusion  string           `json:"conclusion"`
+	StartedAt   time.Time        `json:"startedAt"`
+	CompletedAt time.Time        `json:"completedAt"`
+	Steps       []ghWorkflowStep `json:"steps"`
+	URL         string           `json:"url"`
+}
+
+type ghWorkflowStep struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Number     int    `json:"number"`
+}
+
+type ghAnnotation struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Level     string `json:"annotation_level"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+}
+
+type ghActionsRunsResponse struct {
+	WorkflowRuns []ghWorkflowRun `json:"workflow_runs"`
+}
+
+func workflowRunLimit(opts WorkflowRunListOptions) int {
+	if opts.Limit > 0 {
+		return opts.Limit
+	}
+	return runListLimit
+}
+
+func workflowRunRef(run ghWorkflowRun) workbench.WorkflowRunRef {
+	id := run.DatabaseID
+	if id == 0 {
+		id = run.ID
+	}
+	workflowName := run.WorkflowName
+	if workflowName == "" {
+		workflowName = run.Name
+	}
+	actor := run.Actor.Login
+	if actor == "" {
+		actor = run.TriggeringActor.Login
+	}
+	return workbench.WorkflowRunRef{
+		ID:           id,
+		RunNumber:    run.Number,
+		WorkflowName: workflowName,
+		Branch:       run.HeadBranch,
+		Event:        strings.ToLower(run.Event),
+		Status:       strings.ToLower(run.Status),
+		Conclusion:   strings.ToLower(run.Conclusion),
+		Actor:        actor,
+		HeadSHA:      run.HeadSHA,
+		Title:        run.DisplayTitle,
+		URL:          run.URL,
+		CreatedAt:    run.CreatedAt,
+		UpdatedAt:    run.UpdatedAt,
+	}
+}
+
+func workflowJobRef(job ghWorkflowJob) workbench.WorkflowJobRef {
+	id := job.DatabaseID
+	if id == 0 {
+		id = job.ID
+	}
+	steps := make([]workbench.WorkflowStepRef, 0, len(job.Steps))
+	for _, step := range job.Steps {
+		steps = append(steps, workbench.WorkflowStepRef{
+			Name:       step.Name,
+			Status:     strings.ToLower(step.Status),
+			Conclusion: strings.ToLower(step.Conclusion),
+			Number:     step.Number,
+		})
+	}
+	return workbench.WorkflowJobRef{
+		ID:          id,
+		Name:        job.Name,
+		Status:      strings.ToLower(job.Status),
+		Conclusion:  strings.ToLower(job.Conclusion),
+		StartedAt:   job.StartedAt,
+		CompletedAt: job.CompletedAt,
+		Steps:       steps,
+		URL:         job.URL,
+	}
+}
+
+func workflowRunActors(ctx context.Context, s CLIService, repo string, limit int) map[int64]string {
+	actors := map[int64]string{}
+	if repo == "" {
+		return actors
+	}
+	output, err := s.runner().Run(ctx, "api", "repos/"+repo+"/actions/runs", "--method", "GET", "-f", fmt.Sprintf("per_page=%d", limit))
+	if err != nil {
+		return actors
+	}
+	var payload ghActionsRunsResponse
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return actors
+	}
+	for _, run := range payload.WorkflowRuns {
+		ref := workflowRunRef(run)
+		if ref.ID == 0 || ref.Actor == "" {
+			continue
+		}
+		actors[ref.ID] = ref.Actor
+	}
+	return actors
+}
+
+func workflowRunActor(ctx context.Context, s CLIService, repo string, runID int64) string {
+	if repo == "" || runID == 0 {
+		return ""
+	}
+	output, err := s.runner().Run(ctx, "api", fmt.Sprintf("repos/%s/actions/runs/%d", repo, runID))
+	if err != nil {
+		return ""
+	}
+	var payload ghWorkflowRun
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return ""
+	}
+	return workflowRunRef(payload).Actor
+}
+
+func logLines(value string) []string {
+	value = strings.TrimRight(value, "\n")
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, "\n")
 }
 
 func linkedIssues(closingIssues []workbench.IssueRef, body string) []workbench.IssueRef {
