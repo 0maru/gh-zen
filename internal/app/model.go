@@ -1297,6 +1297,9 @@ func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, re
 
 func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, result workbench.RuntimeLoadResult) []workbench.WorkItem {
 	replacement := cloneWorkItems(result.Items)
+	if result.LocalDiscoveryError != "" {
+		replacement = rebuildAfterLocalDiscoveryFailure(items, repo, result)
+	}
 	byID := make(map[string]int, len(replacement))
 	for i, item := range replacement {
 		byID[item.ID] = i
@@ -1332,6 +1335,61 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 	}
 
 	return replaceRepoWorkItems(items, repo, replacement)
+}
+
+func rebuildAfterLocalDiscoveryFailure(items []workbench.WorkItem, repo workbench.RepoRef, result workbench.RuntimeLoadResult) []workbench.WorkItem {
+	localItems := filterWorkItems(items, func(item workbench.WorkItem) bool {
+		return sameRepoRef(item.Repo, repo) && isLocalDiscoveryWorkItem(item)
+	})
+	if !result.PullRequestsLoaded {
+		return append(cloneWorkItems(result.Items), localItems...)
+	}
+
+	for i := range localItems {
+		localItems[i].PullRequest = nil
+		localItems[i].Issue = nil
+		localItems[i].Checks = workbench.CheckSummary{}
+	}
+	rebuilt := workbench.LinkPullRequestsForRepo(repo, localItems, result.PullRequests)
+	rebuilt = workbench.LinkIssues(rebuilt, result.Issues)
+	for i := range rebuilt {
+		if rebuilt[i].PullRequest == nil {
+			continue
+		}
+		if checks, ok := checkSummaryForPullRequest(*rebuilt[i].PullRequest, result.Items); ok {
+			rebuilt[i].Checks = checks
+		}
+	}
+	for _, item := range result.Items {
+		if hasWorkbenchErrorItems([]workbench.WorkItem{item}) {
+			rebuilt = append(rebuilt, item)
+		}
+	}
+	return rebuilt
+}
+
+func isLocalDiscoveryWorkItem(item workbench.WorkItem) bool {
+	return item.Worktree != nil ||
+		strings.HasPrefix(item.ID, "worktree:") ||
+		strings.HasPrefix(item.ID, "branch:") ||
+		strings.HasPrefix(item.ID, "remote:")
+}
+
+func checkSummaryForPullRequest(pr workbench.PullRequestRef, items []workbench.WorkItem) (workbench.CheckSummary, bool) {
+	for _, item := range items {
+		if item.PullRequest == nil || !samePullRequest(pr, *item.PullRequest) {
+			continue
+		}
+		return item.Checks, true
+	}
+	return workbench.CheckSummary{}, false
+}
+
+func samePullRequest(left workbench.PullRequestRef, right workbench.PullRequestRef) bool {
+	if left.Number > 0 || right.Number > 0 {
+		return left.Number > 0 && left.Number == right.Number
+	}
+	return left.HeadBranch != "" && left.HeadBranch == right.HeadBranch && strings.EqualFold(left.HeadOwner, right.HeadOwner)
 }
 
 func preserveViewerReviewPerspective(current *workbench.PullRequestRef, previous *workbench.PullRequestRef) {

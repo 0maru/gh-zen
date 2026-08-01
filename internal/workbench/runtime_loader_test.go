@@ -100,6 +100,9 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	if result.Repo != repo {
 		t.Fatalf("expected repo %+v, got %+v", repo, result.Repo)
 	}
+	if result.LocalDiscoveryError != "" {
+		t.Fatalf("expected local discovery to succeed, got %q", result.LocalDiscoveryError)
+	}
 	if len(result.Items) != 1 {
 		t.Fatalf("expected one enriched item, got %+v", result.Items)
 	}
@@ -309,6 +312,9 @@ func TestRuntimeLoader_ReturnsLocalDiscoveryErrorItem(t *testing.T) {
 	}
 	if result.Items[0].Local == nil || !strings.Contains(result.Items[0].Local.Summary, "git failed") {
 		t.Fatalf("expected local discovery error summary, got %+v", result.Items[0].Local)
+	}
+	if !strings.Contains(result.LocalDiscoveryError, "git failed") {
+		t.Fatalf("expected local discovery error to be recorded, got %q", result.LocalDiscoveryError)
 	}
 }
 

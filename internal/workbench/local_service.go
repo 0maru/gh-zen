@@ -23,6 +23,11 @@ type LocalWorkItemService struct {
 
 // WorkItems returns workbench items for local worktrees and branch refs.
 func (s LocalWorkItemService) WorkItems(ctx context.Context) []WorkItem {
+	items, _ := s.load(ctx)
+	return items
+}
+
+func (s LocalWorkItemService) load(ctx context.Context) ([]WorkItem, error) {
 	discovery := s.Discovery
 	if discovery == nil {
 		discovery = localrepo.Service{}
@@ -30,14 +35,14 @@ func (s LocalWorkItemService) WorkItems(ctx context.Context) []WorkItem {
 
 	worktrees, err := discovery.DiscoverWorktrees(ctx, s.RepoPath)
 	if err != nil {
-		return []WorkItem{localDiscoveryErrorItem(s.Repo, err)}
+		return []WorkItem{localDiscoveryErrorItem(s.Repo, err)}, err
 	}
 	branches, err := discovery.DiscoverBranches(ctx, s.RepoPath)
 	if err != nil {
-		return []WorkItem{localDiscoveryErrorItem(s.Repo, err)}
+		return []WorkItem{localDiscoveryErrorItem(s.Repo, err)}, err
 	}
 
-	return AssembleLocalWorkItems(s.Repo, worktrees, branches)
+	return AssembleLocalWorkItems(s.Repo, worktrees, branches), nil
 }
 
 // AssembleLocalWorkItems converts local discovery data into workbench work items.

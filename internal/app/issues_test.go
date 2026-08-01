@@ -1058,6 +1058,113 @@ func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testin
 	}
 }
 
+func TestUpdate_IssueRefreshLocalDiscoveryFailureKeepsLocalWorkItems(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	previous := workbench.WorkItem{
+		ID:       "worktree:/repos/gh-zen-feature",
+		Repo:     repo,
+		Branch:   &workbench.BranchRef{Name: "feature"},
+		Worktree: &workbench.WorktreeRef{Path: "/repos/gh-zen-feature"},
+		Local:    &workbench.LocalStatus{State: workbench.LocalDirty, Summary: "1 status entry"},
+		PullRequest: &workbench.PullRequestRef{
+			Number:     10,
+			Title:      "Old title",
+			State:      "open",
+			HeadOwner:  "0maru",
+			HeadBranch: "feature",
+		},
+		Issue:  &workbench.IssueRef{Number: 75, Title: "Old issue", State: "open"},
+		Checks: workbench.CheckSummary{State: workbench.CheckFailing, Failing: 1},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		RepositorySummaries: []workbench.RepositorySummary{{Repo: repo, Path: "/repos/gh-zen"}},
+		WorkItems:           []workbench.WorkItem{previous},
+	}, fakeDelayedPreviewLoader(0))
+	request := workbenchReloadRequest{requestID: 1, repo: repo, status: "Loading issues...", issueScoped: true}
+	start.screen = screenIssues
+	start.issueRepo = repo
+	start.workbenchLoading = true
+	start.activeReloadRequest = request
+
+	refreshedPR := workbench.PullRequestRef{
+		Number:     10,
+		Title:      "New title",
+		State:      "open",
+		HeadOwner:  "0maru",
+		HeadBranch: "feature",
+		LinkedIssues: []workbench.IssueRef{{
+			Number: 75,
+		}},
+	}
+	got, _ := start.Update(workbenchReloadMsg{
+		request: request,
+		result: workbench.RuntimeLoadResult{
+			Repo: repo,
+			Repositories: []workbench.RepositorySummary{{
+				Repo: repo,
+				Path: "/repos/gh-zen",
+			}},
+			Items: []workbench.WorkItem{
+				{
+					ID:    "local-discovery-error:" + repo.FullName(),
+					Repo:  repo,
+					Local: &workbench.LocalStatus{State: workbench.LocalUnknown, Summary: "local discovery failed: git unavailable"},
+				},
+				{
+					ID:          "pull-request:" + repo.FullName() + ":#10",
+					Repo:        repo,
+					PullRequest: &refreshedPR,
+					Checks:      workbench.CheckSummary{State: workbench.CheckPassing, Passing: 2},
+				},
+			},
+			PullRequests:        []workbench.PullRequestRef{refreshedPR},
+			PullRequestsLoaded:  true,
+			IssuesRepo:          repo,
+			Issues:              []workbench.IssueRef{{Number: 75, Title: "New issue", State: "open"}},
+			IssuesLoaded:        true,
+			LocalDiscoveryError: "git unavailable",
+		},
+	})
+	mm := got.(model)
+
+	var reloaded workbench.WorkItem
+	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
+		if item.ID != previous.ID {
+			return false
+		}
+		reloaded = item
+		return true
+	}) {
+		t.Fatalf("expected local worktree to remain, got %+v", mm.workItems)
+	}
+	if reloaded.Worktree == nil || reloaded.Local == nil || reloaded.Local.State != workbench.LocalDirty {
+		t.Fatalf("expected local worktree state to remain, got %+v", reloaded)
+	}
+	if reloaded.PullRequest == nil || reloaded.PullRequest.Title != "New title" {
+		t.Fatalf("expected refreshed PR data on retained worktree, got %+v", reloaded.PullRequest)
+	}
+	if reloaded.Issue == nil || reloaded.Issue.Title != "New issue" {
+		t.Fatalf("expected refreshed issue data on retained worktree, got %+v", reloaded.Issue)
+	}
+	if reloaded.Checks.State != workbench.CheckPassing || reloaded.Checks.Passing != 2 {
+		t.Fatalf("expected refreshed checks on retained worktree, got %+v", reloaded.Checks)
+	}
+	if hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
+		return strings.HasPrefix(item.ID, "pull-request:")
+	}) {
+		t.Fatalf("expected linked PR not to be duplicated as a PR-only item, got %+v", mm.workItems)
+	}
+	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
+		return strings.HasPrefix(item.ID, "local-discovery-error:")
+	}) {
+		t.Fatalf("expected current local discovery error to remain visible, got %+v", mm.workItems)
+	}
+	summary, ok := mm.repoSummary(repo)
+	if !ok || summary.ActiveWorktreeCount != 1 || summary.OpenPullRequestCount != 1 || summary.OpenIssueCount != 1 {
+		t.Fatalf("expected summary from retained local worktree, got %+v ok=%v", summary, ok)
+	}
+}
+
 func TestUpdate_IssueRefreshCheckFailureKeepsOnlyFailedCheckState(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	failedItem := workbench.WorkItem{

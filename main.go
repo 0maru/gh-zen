@@ -101,18 +101,19 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 	}
 
 	return workbench.RuntimeLoadResult{
-		Repo:               repo,
-		Repositories:       summaries,
-		Items:              items,
-		PullRequests:       selectedRawResult.PullRequests,
-		PullRequestsLoaded: selectedRawResult.PullRequestsLoaded,
-		IssuesRepo:         selectedRawResult.IssuesRepo,
-		Issues:             selectedRawResult.Issues,
-		IssuesLoaded:       selectedRawResult.IssuesLoaded,
-		IssuesError:        selectedRawResult.IssuesError,
-		FailedCheckRefs:    append([]string(nil), selectedRawResult.FailedCheckRefs...),
-		ViewerSubject:      selectedRawResult.ViewerSubject,
-		ViewerSubjectError: selectedRawResult.ViewerSubjectError,
+		Repo:                repo,
+		Repositories:        summaries,
+		Items:               items,
+		PullRequests:        selectedRawResult.PullRequests,
+		PullRequestsLoaded:  selectedRawResult.PullRequestsLoaded,
+		IssuesRepo:          selectedRawResult.IssuesRepo,
+		Issues:              selectedRawResult.Issues,
+		IssuesLoaded:        selectedRawResult.IssuesLoaded,
+		IssuesError:         selectedRawResult.IssuesError,
+		LocalDiscoveryError: selectedRawResult.LocalDiscoveryError,
+		FailedCheckRefs:     append([]string(nil), selectedRawResult.FailedCheckRefs...),
+		ViewerSubject:       selectedRawResult.ViewerSubject,
+		ViewerSubjectError:  selectedRawResult.ViewerSubjectError,
 	}
 }
 

@@ -13,18 +13,19 @@ type GitHubWorkbenchDiscovery interface {
 
 // RuntimeLoadResult contains refreshed workbench data.
 type RuntimeLoadResult struct {
-	Repo               RepoRef
-	Repositories       []RepositorySummary
-	Items              []WorkItem
-	PullRequests       []PullRequestRef
-	PullRequestsLoaded bool
-	IssuesRepo         RepoRef
-	Issues             []IssueRef
-	IssuesLoaded       bool
-	IssuesError        string
-	FailedCheckRefs    []string
-	ViewerSubject      ReviewSubjects
-	ViewerSubjectError string
+	Repo                RepoRef
+	Repositories        []RepositorySummary
+	Items               []WorkItem
+	PullRequests        []PullRequestRef
+	PullRequestsLoaded  bool
+	IssuesRepo          RepoRef
+	Issues              []IssueRef
+	IssuesLoaded        bool
+	IssuesError         string
+	LocalDiscoveryError string
+	FailedCheckRefs     []string
+	ViewerSubject       ReviewSubjects
+	ViewerSubjectError  string
 }
 
 // RuntimeLoader composes local Git discovery with GitHub workbench enrichment.
@@ -37,13 +38,16 @@ type RuntimeLoader struct {
 
 // Load returns workbench items for one repository without failing on partial GitHub discovery errors.
 func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
-	items := (LocalWorkItemService{
+	items, localDiscoveryErr := (LocalWorkItemService{
 		Repo:      l.Repo,
 		RepoPath:  l.RepoPath,
 		Discovery: l.Local,
-	}).WorkItems(ctx)
+	}).load(ctx)
 
 	result := RuntimeLoadResult{Repo: l.Repo}
+	if localDiscoveryErr != nil {
+		result.LocalDiscoveryError = localDiscoveryErr.Error()
+	}
 	if l.GitHub == nil {
 		result.Items = items
 		return result
