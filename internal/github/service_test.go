@@ -156,6 +156,9 @@ func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
 	if strings.Contains(issueListFields, "comments") {
 		t.Fatalf("expected gh issue list not to request comment bodies, got %q", issueListFields)
 	}
+	if !strings.Contains(issueCommentCountsQuery, "field:CREATED_AT") || strings.Contains(issueCommentCountsQuery, "field:UPDATED_AT") {
+		t.Fatalf("expected issue comment count query to match gh issue list ordering, got %q", issueCommentCountsQuery)
+	}
 }
 
 func TestCLIService_CheckSummaryParsesGHOutput(t *testing.T) {

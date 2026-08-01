@@ -18,6 +18,7 @@ type RuntimeLoadResult struct {
 	Items              []WorkItem
 	PullRequests       []PullRequestRef
 	PullRequestsLoaded bool
+	IssuesRepo         RepoRef
 	Issues             []IssueRef
 	IssuesLoaded       bool
 	ViewerSubject      ReviewSubjects
@@ -72,6 +73,7 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 	if err != nil {
 		discoveryErrors = append(discoveryErrors, err)
 	} else {
+		result.IssuesRepo = l.Repo
 		result.Issues = append([]IssueRef(nil), issues...)
 		result.IssuesLoaded = true
 	}

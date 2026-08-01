@@ -105,7 +105,7 @@ query($owner:String!, $name:String!, $after:String) {
 	issueCommentCountsQuery = `
 query($owner:String!, $name:String!, $after:String) {
   repository(owner:$owner, name:$name) {
-    issues(first:100, after:$after, states:[OPEN, CLOSED], orderBy:{field:UPDATED_AT, direction:DESC}) {
+    issues(first:100, after:$after, states:[OPEN, CLOSED], orderBy:{field:CREATED_AT, direction:DESC}) {
       nodes {
         number
         comments {

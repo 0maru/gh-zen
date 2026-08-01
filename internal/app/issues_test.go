@@ -258,6 +258,49 @@ func TestUpdate_IssueViewLoadsRawIssuesForSelectedRepo(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueViewKeepsRawIssueSourceRepo(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {
+				Repo:         workbench.RepoRef{},
+				IssuesRepo:   repo,
+				IssuesLoaded: true,
+				Issues: []workbench.IssueRef{{
+					Number:  44,
+					Title:   "Unlinked issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:    []workbench.RepoRef{repo},
+		Reloader: reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.screen = screenIssues
+	start.issueRepo = repo
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatalf("expected issue refresh command")
+	}
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	mm := got.(model)
+
+	if mm.issueRepo != repo {
+		t.Fatalf("expected issue repo to remain %+v, got %+v", repo, mm.issueRepo)
+	}
+	if issues := mm.visibleIssues(); len(issues) != 1 || issues[0].Number != 44 {
+		t.Fatalf("expected raw issue to remain visible, got %+v", issues)
+	}
+	mm.prepareIssueDataForRepo(workbench.RepoRef{Owner: "owner", Name: "repo"})
+	if issues := mm.visibleIssues(); len(issues) != 1 || issues[0].Number != 44 {
+		t.Fatalf("expected raw issue cache to keep its case-insensitive source repo, got %+v", issues)
+	}
+}
+
 func TestUpdate_IssueViewBackRestoresWorkbenchSelection(t *testing.T) {
 	start := newModel()
 	start.selectedItem = 2

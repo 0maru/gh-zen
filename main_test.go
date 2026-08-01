@@ -215,6 +215,9 @@ func TestRuntimeWorkbenchReloaderPropagatesSelectedRepoRawData(t *testing.T) {
 	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 123 {
 		t.Fatalf("expected selected repo issues to propagate, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
 	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected selected repo issue source %+v, got %+v", repo, result.IssuesRepo)
+	}
 	if result.ViewerSubject.Login != "0maru" {
 		t.Fatalf("expected viewer subject to propagate, got %+v", result.ViewerSubject)
 	}
@@ -250,6 +253,9 @@ func TestRuntimeWorkbenchReloaderPropagatesFirstRepoRawDataForZeroRepoStartup(t 
 	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
 		t.Fatalf("expected first discovered repo issues to propagate, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
 	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected first discovered repo issue source %+v, got %+v", repo, result.IssuesRepo)
+	}
 }
 
 func TestRuntimeWorkbenchReloaderPropagatesRequestedRepoRawDataCaseInsensitively(t *testing.T) {
@@ -282,6 +288,9 @@ func TestRuntimeWorkbenchReloaderPropagatesRequestedRepoRawDataCaseInsensitively
 	result := reloader.Load(context.Background(), requestedRepo)
 	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 82 {
 		t.Fatalf("expected requested repo issues to propagate case-insensitively, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if result.IssuesRepo != discoveredRepo {
+		t.Fatalf("expected discovered repo issue source %+v, got %+v", discoveredRepo, result.IssuesRepo)
 	}
 }
 

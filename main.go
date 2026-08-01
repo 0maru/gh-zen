@@ -106,6 +106,7 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 		Items:              items,
 		PullRequests:       selectedRawResult.PullRequests,
 		PullRequestsLoaded: selectedRawResult.PullRequestsLoaded,
+		IssuesRepo:         selectedRawResult.IssuesRepo,
 		Issues:             selectedRawResult.Issues,
 		IssuesLoaded:       selectedRawResult.IssuesLoaded,
 		ViewerSubject:      selectedRawResult.ViewerSubject,

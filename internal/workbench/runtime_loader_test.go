@@ -109,6 +109,9 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 123 {
 		t.Fatalf("expected raw issues in result, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
 	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected raw issue source repo %+v, got %+v", repo, result.IssuesRepo)
+	}
 	item := result.Items[0]
 	if item.PullRequest == nil || item.PullRequest.Number != 24 || item.PullRequest.ReviewState != "approved" {
 		t.Fatalf("expected linked PR, got %+v", item.PullRequest)

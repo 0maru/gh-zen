@@ -134,7 +134,7 @@ func (m *model) backToWorkbench() tea.Cmd {
 }
 
 func (m *model) prepareIssueDataForRepo(repo workbench.RepoRef) {
-	if m.issueRepo == repo {
+	if strings.EqualFold(m.issueRepo.FullName(), repo.FullName()) {
 		return
 	}
 	m.issueRepo = repo
@@ -149,8 +149,12 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 	if issue, ok := m.selectedIssueRef(); ok {
 		selectedNumber = issue.Number
 	}
-	m.issueRepo = result.Repo
-	workItemIssues := issuesFromWorkItems(result.Items, result.Repo)
+	issueRepo := result.IssuesRepo
+	if !hasRepoRef(issueRepo) {
+		issueRepo = result.Repo
+	}
+	m.issueRepo = issueRepo
+	workItemIssues := issuesFromWorkItems(result.Items, issueRepo)
 	if result.IssuesLoaded {
 		m.issues = mergeIssueRefs(result.Issues, workItemIssues)
 	} else {
@@ -159,12 +163,12 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 	if result.PullRequestsLoaded {
 		m.prsByIssueNumber = pullRequestsByIssueNumber(result.PullRequests)
 	} else {
-		m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, result.Repo))
+		m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, issueRepo))
 	}
 	if result.ViewerSubject.Login != "" {
 		m.viewerLogin = result.ViewerSubject.Login
 	}
-	m.issuesError = issueDiscoveryErrorFromWorkItems(result.Items, result.Repo)
+	m.issuesError = issueDiscoveryErrorFromWorkItems(result.Items, issueRepo)
 	if selectedNumber > 0 && m.selectIssueNumber(selectedNumber) {
 		return
 	}
