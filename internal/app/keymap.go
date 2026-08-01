@@ -1,6 +1,7 @@
 package app
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -239,6 +240,57 @@ func DefaultKeyMap() workbenchKeyMap {
 			key.WithHelp("q", "quit"),
 		),
 	}
+}
+
+func keyMapFromBindings(bindings map[string][]string) workbenchKeyMap {
+	keyMap := DefaultKeyMap()
+	byAction := map[actionID]*key.Binding{
+		actionMoveDown:              &keyMap.MoveDown,
+		actionMoveUp:                &keyMap.MoveUp,
+		actionJumpTop:               &keyMap.JumpTop,
+		actionJumpBottom:            &keyMap.JumpBottom,
+		actionFocusNextPane:         &keyMap.FocusNextPane,
+		actionFocusPreviousPane:     &keyMap.FocusPreviousPane,
+		actionFocusPane1:            &keyMap.FocusPane1,
+		actionFocusPane2:            &keyMap.FocusPane2,
+		actionFocusPane3:            &keyMap.FocusPane3,
+		actionToggleHelp:            &keyMap.ToggleHelp,
+		actionRefresh:               &keyMap.Refresh,
+		actionShowActions:           &keyMap.ShowActions,
+		actionShowWorkbench:         &keyMap.ShowWorkbench,
+		actionOpenPullRequest:       &keyMap.OpenPullRequest,
+		actionOpenSelected:          &keyMap.OpenSelected,
+		actionOpenIssue:             &keyMap.OpenIssue,
+		actionCopyURL:               &keyMap.CopyURL,
+		actionCopyWorktreePath:      &keyMap.CopyWorktreePath,
+		actionCopyPullRequestNumber: &keyMap.CopyPullRequestNumber,
+		actionCopyPullRequestHead:   &keyMap.CopyPullRequestHead,
+		actionShowPullRequests:      &keyMap.ShowPullRequests,
+		actionSearchPullRequests:    &keyMap.SearchPullRequests,
+		actionFilterPullRequests:    &keyMap.FilterPullRequests,
+		actionOpenWorkflowRun:       &keyMap.OpenWorkflowRun,
+		actionCopyWorkflowRunID:     &keyMap.CopyWorkflowRunID,
+		actionFetchWorkflowRunLogs:  &keyMap.FetchWorkflowRunLogs,
+		actionFilterStatus:          &keyMap.FilterStatus,
+		actionFilterConclusion:      &keyMap.FilterConclusion,
+		actionFilterBranch:          &keyMap.FilterBranch,
+		actionFilterWorkflow:        &keyMap.FilterWorkflow,
+		actionFilterEvent:           &keyMap.FilterEvent,
+		actionFilterActor:           &keyMap.FilterActor,
+		actionClearFilters:          &keyMap.ClearFilters,
+		actionQuit:                  &keyMap.Quit,
+	}
+
+	for action, configuredKeys := range bindings {
+		binding, ok := byAction[actionID(action)]
+		if !ok || len(configuredKeys) == 0 || slices.Equal(binding.Keys(), configuredKeys) {
+			continue
+		}
+		help := binding.Help()
+		binding.SetKeys(configuredKeys...)
+		binding.SetHelp(strings.Join(configuredKeys, "/"), help.Desc)
+	}
+	return keyMap
 }
 
 func (k workbenchKeyMap) actionBindings(view appView, mode appMode) []actionBinding {

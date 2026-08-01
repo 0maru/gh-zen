@@ -278,7 +278,7 @@ func Defaults() Config {
 			"copy_pr_number":      {"Y"},
 			"copy_pr_head":        {"H"},
 			"show_pull_requests":  {"]"},
-			"show_workbench":      {"["},
+			"show_workbench":      {"w", "["},
 			"search_prs":          {"/"},
 			"filter_prs":          {"f"},
 			"quit":                {"q", "esc", "ctrl+c"},

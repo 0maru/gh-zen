@@ -717,6 +717,36 @@ func TestInit_StartsInitialWorkbenchLoadWithoutSelectedRepository(t *testing.T) 
 	}
 }
 
+func TestInitialRepositoryDiscoveryStartsPullRequestLoadForActiveView(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			(workbench.RepoRef{}).FullName(): {
+				Repositories: []workbench.RepositorySummary{{Repo: repo, Path: "/repos/gh-zen"}},
+			},
+		},
+	}
+	service := &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+		repo.FullName(): {{Number: 24, Title: "Discovered PR", State: "open"}},
+	}}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), "", WorkbenchData{
+		Reloader:        reloader,
+		PullRequestsAPI: service,
+		InitialLoading:  true,
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	reloadMsg := requireWorkbenchReloadMsg(t, start.Init())
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd != nil {
+		t.Fatalf("expected no PR load before repository discovery, got %T", cmd)
+	}
+	got, cmd = got.(model).Update(reloadMsg)
+	msg := requirePullRequestLoadMsg(t, cmd)
+	if msg.request.repo != repo || len(service.calls) != 1 || service.calls[0] != repo.FullName() {
+		t.Fatalf("expected discovered repo PR load, got request=%+v calls=%+v", msg.request, service.calls)
+	}
+}
+
 func TestUpdate_RefreshKeepsPartialDataVisibleWhileLoading(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	item := workbench.WorkItem{
@@ -1162,6 +1192,38 @@ func TestUpdate_KeyOverrideChangesActionAndHelp(t *testing.T) {
 	}
 }
 
+func TestNewModelUsesConfiguredPullRequestActionKeys(t *testing.T) {
+	cfg := cfgpkg.Defaults()
+	cfg.Keys["copy_pr_number"] = []string{"N"}
+	cfg.Keys["copy_pr_head"] = []string{"B"}
+	cfg.Keys["show_pull_requests"] = []string{"P"}
+	cfg.Keys["show_workbench"] = []string{"W"}
+
+	start := newModelWithRuntimeData(cfg, "0maru/gh-zen", WorkbenchData{
+		Repos:        []workbench.RepoRef{{Owner: "0maru", Name: "gh-zen"}},
+		PullRequests: pullrequests.FakePullRequests(),
+	}, fakeDelayedPreviewLoader(0))
+
+	for _, tc := range []struct {
+		name string
+		got  []string
+		want []string
+	}{
+		{name: "copy number", got: start.keys.CopyPullRequestNumber.Keys(), want: []string{"N"}},
+		{name: "copy head", got: start.keys.CopyPullRequestHead.Keys(), want: []string{"B"}},
+		{name: "show pull requests", got: start.keys.ShowPullRequests.Keys(), want: []string{"P"}},
+		{name: "show workbench", got: start.keys.ShowWorkbench.Keys(), want: []string{"W"}},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Fatalf("expected configured %s keys %v, got %v", tc.name, tc.want, tc.got)
+		}
+	}
+	start.activeView = appViewPullRequests
+	if action, ok := start.matchedAction(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}}); !ok || action != actionCopyPullRequestNumber {
+		t.Fatalf("expected configured N key to invoke copy PR number, got %q ok=%v", action, ok)
+	}
+}
+
 func TestUpdate_ActionKeysAreBound(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1543,6 +1605,37 @@ func TestUpdate_ShowPullRequestsStartsSeededPreviewWhileListLoads(t *testing.T) 
 	}
 }
 
+func TestUpdate_ShowPullRequestsClearsFilterHidingJumpTarget(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	target := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repo,
+		PullRequest: &workbench.PullRequestRef{
+			Number:      42,
+			Title:       "Target PR",
+			State:       "open",
+			AuthorLogin: "alice",
+			URL:         "https://github.com/0maru/gh-zen/pull/42",
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{target},
+	}, fakeDelayedPreviewLoader(0))
+	start.focusedPane = paneWorkItems
+	start.pullRequestFilter = pullrequests.PullRequestFilter{Author: "bob", State: pullrequests.StateMerged}
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	mm := got.(model)
+	pr, ok := mm.selectedPullRequest()
+	if !ok || pr.Number != 42 {
+		t.Fatalf("expected jump target PR #42 to be visible and selected, got %+v ok=%v", pr, ok)
+	}
+	if mm.pullRequestFilter.Active() {
+		t.Fatalf("expected filters hiding the jump target to clear, got %+v", mm.pullRequestFilter)
+	}
+}
+
 func TestHandlePullRequestLoadClearsPendingSelectionOnFailureOrDiscard(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 
@@ -1600,6 +1693,7 @@ func TestBeginPullRequestLoadClearsStalePreviewOnRepoChange(t *testing.T) {
 	start.selectedRepo = 1
 	start.pullRequestRepo = repoA
 	start.pullRequests = pullrequests.FakePullRequests()
+	start.pendingPullRequest = 24
 	start.pullRequestPreview = pullRequestPreviewState{
 		status:                previewLoaded,
 		focusedPullRequestKey: "pr:24",
@@ -1611,6 +1705,9 @@ func TestBeginPullRequestLoadClearsStalePreviewOnRepoChange(t *testing.T) {
 	}
 	if len(start.pullRequests) != 0 || start.selectedPR != 0 {
 		t.Fatalf("expected stale PR list to clear, got selected=%d prs=%+v", start.selectedPR, start.pullRequests)
+	}
+	if start.pendingPullRequest != 0 {
+		t.Fatalf("expected stale pending PR selection to clear, got %d", start.pendingPullRequest)
 	}
 	if start.pullRequestPreview.status != previewEmpty {
 		t.Fatalf("expected stale PR preview to clear, got %v", start.pullRequestPreview.status)

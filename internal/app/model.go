@@ -252,7 +252,7 @@ func newModelWithRuntimeDataLoaders(cfg cfgpkg.Config, startupRepo string, data 
 		actionsLoader:           actionsLoader,
 		actionRunner:            systemActionRunner{},
 		styles:                  DefaultStyles(),
-		keys:                    DefaultKeyMap(),
+		keys:                    keyMapFromBindings(cfg.Keys),
 		help:                    newHelpModel(),
 	}
 	m.applyStartupView(cfg.Startup.View)
@@ -934,6 +934,9 @@ func (m *model) showPullRequests() tea.Cmd {
 		if item.PullRequest != nil {
 			m.pendingPullRequest = item.PullRequest.Number
 			m.ensurePullRequestFromWorkItem(item)
+			if seeded := pullRequestFromWorkItem(item); !m.pullRequestFilter.Matches(seeded) {
+				m.pullRequestFilter = pullrequests.PullRequestFilter{}
+			}
 		}
 	}
 	m.activeView = appViewPullRequests
@@ -1201,6 +1204,9 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	} else {
 		m.statusMessage = ""
 	}
+	if m.activeView == appViewPullRequests {
+		return m.startPullRequestLoad("Loading pull requests...")
+	}
 	return m.startPreviewLoadForCurrentItem()
 }
 
@@ -1217,6 +1223,7 @@ func (m *model) beginPullRequestLoad(status string) bool {
 			if m.pullRequestRepo != (workbench.RepoRef{}) && m.pullRequestRepo != repo {
 				m.pullRequests = nil
 				m.selectedPR = 0
+				m.pendingPullRequest = 0
 				m.pullRequestPreview = pullRequestPreviewState{status: previewEmpty}
 			}
 			m.pullRequestRepo = repo
@@ -1231,6 +1238,7 @@ func (m *model) beginPullRequestLoad(status string) bool {
 	if m.pullRequestRepo != (workbench.RepoRef{}) && m.pullRequestRepo != repo {
 		m.pullRequests = nil
 		m.selectedPR = 0
+		m.pendingPullRequest = 0
 		m.pullRequestPreview = pullRequestPreviewState{status: previewEmpty}
 	}
 	m.nextPRLoadRequestID++

@@ -217,6 +217,28 @@ func TestCLIService_RepositoryPullRequestsClassifiesWaitingChecksAsPending(t *te
 	}
 }
 
+func TestCLIService_RepositoryPullRequestsPaginatesCheckContexts(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[
+			{"number":9,"title":"Many checks","state":"OPEN","updatedAt":"2026-05-01T10:00:00Z","commits":{"nodes":[{"commit":{"oid":"abc123","statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}],"pageInfo":{"hasNextPage":true,"endCursor":"checks-1"}}}}}]}}
+		],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "oid=abc123", "-f", "after=checks-1", "-f", "query="+repositoryPullRequestCheckContextsQuery): []byte(`{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"deploy","status":"COMPLETED","conclusion":"FAILURE"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected check contexts to paginate, got %v", err)
+	}
+	if len(got) != 1 || got[0].Checks.State != "failing" || got[0].Checks.Passing != 1 || got[0].Checks.Failing != 1 {
+		t.Fatalf("expected all check context pages in summary, got %+v", got)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected list and check-context page calls, got %#v", runner.calls)
+	}
+}
+
 func TestCLIService_DetailParsesGraphQLOutput(t *testing.T) {
 	repo := "0maru/gh-zen"
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{

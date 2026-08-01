@@ -138,8 +138,13 @@ query($owner:String!, $name:String!, $after:String) {
         commits(last:1) {
           nodes {
             commit {
+              oid
               statusCheckRollup {
                 contexts(first:100) {
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -221,8 +226,13 @@ query($owner:String!, $name:String!, $number:Int!) {
       commits(last:1) {
         nodes {
           commit {
+            oid
             statusCheckRollup {
               contexts(first:100) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
                 nodes {
                   __typename
                   ... on CheckRun {
@@ -235,6 +245,36 @@ query($owner:String!, $name:String!, $number:Int!) {
                     state
                   }
                 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+	}`
+
+	repositoryPullRequestCheckContextsQuery = `
+query($owner:String!, $name:String!, $oid:GitObjectID!, $after:String!) {
+  repository(owner:$owner, name:$name) {
+    object(oid:$oid) {
+      ... on Commit {
+        statusCheckRollup {
+          contexts(first:100, after:$after) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              __typename
+              ... on CheckRun {
+                name
+                status
+                conclusion
+              }
+              ... on StatusContext {
+                context
+                state
               }
             }
           }
@@ -412,6 +452,9 @@ func (s CLIService) Detail(ctx context.Context, repo string, number int) (pullre
 	if payload.Data.Repository.PullRequest == nil {
 		return pullrequests.PullRequest{}, fmt.Errorf("pull request #%d not found", number)
 	}
+	if err := s.loadRemainingPullRequestCheckContexts(ctx, owner, name, payload.Data.Repository.PullRequest); err != nil {
+		return pullrequests.PullRequest{}, err
+	}
 	return pullRequestFromGraphQL(*payload.Data.Repository.PullRequest), nil
 }
 
@@ -451,8 +494,12 @@ func (s CLIService) RepositoryPullRequests(ctx context.Context, repo string) ([]
 		if err := json.Unmarshal(output, &payload); err != nil {
 			return prs, fmt.Errorf("parse gh repository pull requests output: %w", err)
 		}
-		for _, node := range payload.Data.Repository.PullRequests.Nodes {
-			prs = append(prs, pullRequestWithViewerPerspective(pullRequestFromGraphQL(node), payload.Data.Viewer.Login))
+		for i := range payload.Data.Repository.PullRequests.Nodes {
+			node := &payload.Data.Repository.PullRequests.Nodes[i]
+			if err := s.loadRemainingPullRequestCheckContexts(ctx, owner, name, node); err != nil {
+				return prs, err
+			}
+			prs = append(prs, pullRequestWithViewerPerspective(pullRequestFromGraphQL(*node), payload.Data.Viewer.Login))
 		}
 		if !payload.Data.Repository.PullRequests.PageInfo.HasNextPage {
 			pullrequests.SortByUpdatedDesc(prs)
@@ -464,6 +511,54 @@ func (s CLIService) RepositoryPullRequests(ctx context.Context, repo string) ([]
 			return prs, nil
 		}
 	}
+}
+
+func (s CLIService) loadRemainingPullRequestCheckContexts(ctx context.Context, owner string, name string, node *ghPullRequestBrowserNode) error {
+	for i := range node.Commits.Nodes {
+		commit := &node.Commits.Nodes[i].Commit
+		if commit.StatusCheckRollup == nil {
+			continue
+		}
+		contexts := &commit.StatusCheckRollup.Contexts
+		for contexts.PageInfo.HasNextPage {
+			if commit.OID == "" || contexts.PageInfo.EndCursor == "" {
+				return fmt.Errorf("paginate pull request #%d check contexts: missing commit oid or cursor", node.Number)
+			}
+			args := []string{
+				"api", "graphql",
+				"-f", "owner=" + owner,
+				"-f", "name=" + name,
+				"-f", "oid=" + commit.OID,
+				"-f", "after=" + contexts.PageInfo.EndCursor,
+				"-f", "query=" + repositoryPullRequestCheckContextsQuery,
+			}
+			output, err := s.runner().Run(ctx, args...)
+			if err != nil {
+				return fmt.Errorf("paginate pull request #%d check contexts: %w", node.Number, err)
+			}
+			var payload struct {
+				Data struct {
+					Repository struct {
+						Object *struct {
+							StatusCheckRollup *struct {
+								Contexts ghCheckContexts `json:"contexts"`
+							} `json:"statusCheckRollup"`
+						} `json:"object"`
+					} `json:"repository"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(output, &payload); err != nil {
+				return fmt.Errorf("parse pull request #%d check contexts: %w", node.Number, err)
+			}
+			if payload.Data.Repository.Object == nil || payload.Data.Repository.Object.StatusCheckRollup == nil {
+				return fmt.Errorf("paginate pull request #%d check contexts: commit not found", node.Number)
+			}
+			page := payload.Data.Repository.Object.StatusCheckRollup.Contexts
+			contexts.Nodes = append(contexts.Nodes, page.Nodes...)
+			contexts.PageInfo = page.PageInfo
+		}
+	}
+	return nil
 }
 
 // Issues loads issue summaries through gh.
@@ -796,14 +891,21 @@ type ghPullRequestBrowserNode struct {
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
+				OID               string `json:"oid"`
 				StatusCheckRollup *struct {
-					Contexts struct {
-						Nodes []ghCheckContext `json:"nodes"`
-					} `json:"contexts"`
+					Contexts ghCheckContexts `json:"contexts"`
 				} `json:"statusCheckRollup"`
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"commits"`
+}
+
+type ghCheckContexts struct {
+	Nodes    []ghCheckContext `json:"nodes"`
+	PageInfo struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
 }
 
 type ghCheckContext struct {
@@ -938,10 +1040,9 @@ func pullRequestLinkedIssues(closingIssues []ghIssue, body string) []pullrequest
 
 func pullRequestCheckSummary(nodes []struct {
 	Commit struct {
+		OID               string `json:"oid"`
 		StatusCheckRollup *struct {
-			Contexts struct {
-				Nodes []ghCheckContext `json:"nodes"`
-			} `json:"contexts"`
+			Contexts ghCheckContexts `json:"contexts"`
 		} `json:"statusCheckRollup"`
 	} `json:"commit"`
 }) pullrequests.CheckSummary {
