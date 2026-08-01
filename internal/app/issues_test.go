@@ -561,8 +561,11 @@ func TestUpdate_IssueViewReloadRefreshesPreviewOnReturn(t *testing.T) {
 	reloader := &fakeWorkbenchReloader{
 		results: map[string]workbench.RuntimeLoadResult{
 			repo.FullName(): {
-				Repo:  repo,
-				Items: []workbench.WorkItem{reloaded},
+				Repo:               repo,
+				Items:              []workbench.WorkItem{reloaded},
+				PullRequestsLoaded: true,
+				IssuesRepo:         repo,
+				IssuesLoaded:       true,
 			},
 		},
 	}
@@ -676,10 +679,12 @@ func TestUpdate_IssueRefreshAppliesAfterReturningToWorkbench(t *testing.T) {
 			repoB.FullName(): {
 				Repo: repoB,
 				Repositories: []workbench.RepositorySummary{
-					{Repo: repoA, Path: "/repos/gh-zen"},
 					{Repo: repoB, Path: "/repos/dotfiles"},
 				},
-				Items: []workbench.WorkItem{repoAItem, repoBReloaded},
+				Items:              []workbench.WorkItem{repoBReloaded},
+				PullRequestsLoaded: true,
+				IssuesRepo:         repoB,
+				IssuesLoaded:       true,
 			},
 		},
 	}
@@ -898,6 +903,182 @@ func TestUpdate_IssueRefreshFailureKeepsLinkedPullRequests(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	localItem := workbench.WorkItem{
+		ID:          "branch:issue-browser",
+		Repo:        repo,
+		Branch:      &workbench.BranchRef{Name: "issue-browser"},
+		PullRequest: &workbench.PullRequestRef{Number: 10, Title: "Existing PR", State: "open"},
+		Issue:       &workbench.IssueRef{Number: 75, Title: "Existing issue", State: "open"},
+		Checks:      workbench.CheckSummary{State: workbench.CheckFailing, Failing: 1},
+	}
+	pullRequestOnlyItem := workbench.WorkItem{
+		ID:          "pull-request:0maru/gh-zen:#11",
+		Repo:        repo,
+		PullRequest: &workbench.PullRequestRef{Number: 11, Title: "Remote PR", State: "open"},
+		Checks:      workbench.CheckSummary{State: workbench.CheckPassing},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		RepositorySummaries: []workbench.RepositorySummary{{Repo: repo, Path: "/repos/gh-zen"}},
+		WorkItems:           []workbench.WorkItem{localItem, pullRequestOnlyItem},
+	}, fakeDelayedPreviewLoader(0))
+	request := workbenchReloadRequest{requestID: 1, repo: repo, status: "Loading issues...", issueScoped: true}
+	start.screen = screenIssues
+	start.issueRepo = repo
+	start.workbenchLoading = true
+	start.activeReloadRequest = request
+
+	got, _ := start.Update(workbenchReloadMsg{
+		request: request,
+		result: workbench.RuntimeLoadResult{
+			Repo: repo,
+			Repositories: []workbench.RepositorySummary{{
+				Repo: repo,
+				Path: "/repos/gh-zen",
+			}},
+			Items: []workbench.WorkItem{
+				{ID: localItem.ID, Repo: repo, Branch: localItem.Branch},
+				{
+					ID:    "pull-request-discovery-error:" + repo.FullName(),
+					Repo:  repo,
+					Local: &workbench.LocalStatus{Summary: "pull request discovery failed"},
+				},
+			},
+			IssuesRepo:   repo,
+			IssuesLoaded: true,
+			Issues: []workbench.IssueRef{{
+				Number: 75,
+				Title:  "Refreshed issue",
+				State:  "open",
+			}},
+		},
+	})
+	mm := got.(model)
+
+	var reloadedLocal workbench.WorkItem
+	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
+		if item.ID != localItem.ID {
+			return false
+		}
+		reloadedLocal = item
+		return true
+	}) {
+		t.Fatalf("expected local item to remain, got %+v", mm.workItems)
+	}
+	if reloadedLocal.PullRequest == nil || reloadedLocal.PullRequest.Number != 10 {
+		t.Fatalf("expected existing PR enrichment to remain, got %+v", reloadedLocal)
+	}
+	if reloadedLocal.Checks.State != workbench.CheckFailing {
+		t.Fatalf("expected existing check result to remain, got %+v", reloadedLocal.Checks)
+	}
+	if reloadedLocal.Issue == nil || reloadedLocal.Issue.Title != "Refreshed issue" {
+		t.Fatalf("expected retained PR link to use refreshed issue metadata, got %+v", reloadedLocal.Issue)
+	}
+	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
+		return item.ID == pullRequestOnlyItem.ID && item.PullRequest != nil && item.PullRequest.Number == 11
+	}) {
+		t.Fatalf("expected PR-only item to remain, got %+v", mm.workItems)
+	}
+	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
+		return strings.HasPrefix(item.ID, "pull-request-discovery-error:")
+	}) {
+		t.Fatalf("expected current discovery error item to remain, got %+v", mm.workItems)
+	}
+	summary, ok := mm.repoSummary(repo)
+	if !ok || summary.OpenPullRequestCount != 2 || summary.OpenIssueCount != 1 || summary.FailingCheckCount != 1 {
+		t.Fatalf("expected summary from merged work items, got %+v ok=%v", summary, ok)
+	}
+}
+
+func TestUpdate_IssueRefreshReplacesRepositoryCaseInsensitively(t *testing.T) {
+	canonicalRepo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
+	requestRepo := workbench.RepoRef{Owner: "owner", Name: "repo"}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), canonicalRepo.FullName(), WorkbenchData{
+		RepositorySummaries: []workbench.RepositorySummary{{Repo: canonicalRepo, Path: "/old"}},
+		WorkItems: []workbench.WorkItem{{
+			ID:     "branch:old",
+			Repo:   canonicalRepo,
+			Branch: &workbench.BranchRef{Name: "old"},
+		}},
+	}, fakeDelayedPreviewLoader(0))
+	request := workbenchReloadRequest{requestID: 1, repo: requestRepo, status: "Loading issues...", issueScoped: true}
+	start.screen = screenIssues
+	start.issueRepo = requestRepo
+	start.workbenchLoading = true
+	start.activeReloadRequest = request
+
+	got, _ := start.Update(workbenchReloadMsg{
+		request: request,
+		result: workbench.RuntimeLoadResult{
+			Repo: requestRepo,
+			Repositories: []workbench.RepositorySummary{{
+				Repo: requestRepo,
+				Path: "/new",
+			}},
+			Items: []workbench.WorkItem{{
+				ID:     "branch:new",
+				Repo:   requestRepo,
+				Branch: &workbench.BranchRef{Name: "new"},
+			}},
+			PullRequestsLoaded: true,
+			IssuesRepo:         requestRepo,
+			IssuesLoaded:       true,
+		},
+	})
+	mm := got.(model)
+
+	if len(mm.workItems) != 1 || mm.workItems[0].ID != "branch:new" || mm.workItems[0].Repo != canonicalRepo {
+		t.Fatalf("expected one canonical-cased replacement item, got %+v", mm.workItems)
+	}
+	if summary, ok := mm.repoSummary(canonicalRepo); !ok || summary.Path != "/new" {
+		t.Fatalf("expected canonical summary to be replaced, got %+v ok=%v", summary, ok)
+	}
+}
+
+func TestUpdate_LeavingIssueViewRestoresFullReloadStaleCheck(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "repo-a"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "repo-b"}
+	repoC := workbench.RepoRef{Owner: "0maru", Name: "repo-c"}
+	original := workbench.WorkItem{ID: "branch:original", Repo: repoC}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB, repoC},
+		WorkItems: []workbench.WorkItem{original},
+	}, fakeDelayedPreviewLoader(0))
+	request := workbenchReloadRequest{requestID: 1, repo: repoA, status: "Reloading workbench data..."}
+	start.screen = screenIssues
+	start.issueRepo = repoB
+	start.issueReloadPending = true
+	start.pendingIssueRepo = repoB
+	start.workbenchLoading = true
+	start.activeReloadRequest = request
+
+	start.backToWorkbench()
+	start.selectedRepo = 2
+	if start.issueReloadPending || hasRepoRef(start.pendingIssueRepo) {
+		t.Fatalf("expected leaving issues to clear pending reload state, got pending=%v repo=%+v", start.issueReloadPending, start.pendingIssueRepo)
+	}
+
+	got, cmd := start.Update(workbenchReloadMsg{
+		request: request,
+		result: workbench.RuntimeLoadResult{
+			Repo:         repoA,
+			Repositories: []workbench.RepositorySummary{{Repo: repoA}},
+			Items:        []workbench.WorkItem{{ID: "branch:stale", Repo: repoA}},
+		},
+	})
+	if cmd != nil {
+		t.Fatalf("expected stale full reload to be discarded without a command, got %T", cmd)
+	}
+	mm := got.(model)
+	if repo, ok := mm.selectedRepoRef(); !ok || repo != repoC {
+		t.Fatalf("expected current repo C selection to remain, got %+v ok=%v", repo, ok)
+	}
+	if len(mm.workItems) != 1 || mm.workItems[0].ID != original.ID {
+		t.Fatalf("expected stale response not to replace work items, got %+v", mm.workItems)
+	}
+}
+
 func TestUpdate_IssueRefreshCheckFailureDoesNotReportIssueFailure(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	start := newModel()
@@ -1003,10 +1184,19 @@ func TestIssuePreviewCanScrollToBodyAndURL(t *testing.T) {
 func TestUpdate_IssueRefreshReplacesOnlyTargetRepositorySummary(t *testing.T) {
 	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	refreshedItems := []workbench.WorkItem{
+		{ID: "issue:1", Repo: repoA, Issue: &workbench.IssueRef{Number: 1, State: "open"}},
+		{ID: "issue:2", Repo: repoA, Issue: &workbench.IssueRef{Number: 2, State: "open"}},
+		{ID: "issue:3", Repo: repoA, Issue: &workbench.IssueRef{Number: 3, State: "open"}},
+	}
 	issueReloader := &fakeIssueReloader{results: map[string]workbench.RuntimeLoadResult{
 		repoA.FullName(): {
-			Repo:         repoA,
-			Repositories: []workbench.RepositorySummary{{Repo: repoA, Path: "/new/a", OpenIssueCount: 3}},
+			Repo:               repoA,
+			Repositories:       []workbench.RepositorySummary{{Repo: repoA, Path: "/new/a"}},
+			Items:              refreshedItems,
+			PullRequestsLoaded: true,
+			IssuesRepo:         repoA,
+			IssuesLoaded:       true,
 		},
 	}}
 	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{

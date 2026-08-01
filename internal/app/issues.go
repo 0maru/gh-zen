@@ -131,7 +131,7 @@ func (m *model) startIssueViewReload() tea.Cmd {
 }
 
 func (m *model) startPendingIssueReload() tea.Cmd {
-	repo := m.pendingIssueRepo
+	repo := m.canonicalRepoRef(m.pendingIssueRepo)
 	m.issueReloadPending = false
 	m.pendingIssueRepo = workbench.RepoRef{}
 	if m.screen != screenIssues || !hasRepoRef(repo) {
@@ -144,6 +144,8 @@ func (m *model) startPendingIssueReload() tea.Cmd {
 func (m *model) backToWorkbench() tea.Cmd {
 	m.screen = screenWorkbench
 	m.issueSearchEditing = false
+	m.issueReloadPending = false
+	m.pendingIssueRepo = workbench.RepoRef{}
 	if m.workbenchReturn.valid {
 		m.selectedRepo = m.workbenchReturn.selectedRepo
 		m.selectedView = m.workbenchReturn.selectedView

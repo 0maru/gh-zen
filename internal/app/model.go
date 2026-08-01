@@ -907,7 +907,9 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	if msg.request != m.activeReloadRequest {
 		return nil
 	}
-	if !msg.request.issueScoped && !m.issueReloadPending && m.reloadRequestIsStale(msg.request) {
+	if !msg.request.issueScoped &&
+		!(m.screen == screenIssues && m.issueReloadPending) &&
+		m.reloadRequestIsStale(msg.request) {
 		m.workbenchLoading = false
 		if m.screen == screenIssues {
 			m.issuesLoading = false
@@ -931,9 +933,9 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		}
 	}
 	if msg.request.issueScoped {
-		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+		m.workItems = mergeIssueScopedWorkItems(m.workItems, msg.request.repo, msg.result)
 		for _, summary := range msg.result.Repositories {
-			m.replaceRepositorySummary(summary)
+			m.replaceIssueScopedRepositorySummary(summary)
 		}
 	} else if len(msg.result.Repositories) > 0 {
 		m.replaceWorkbenchData(msg.result, selectedRepo)
@@ -1255,10 +1257,24 @@ func filterWorkItems(items []workbench.WorkItem, keep func(workbench.WorkItem) b
 }
 
 func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, replacement []workbench.WorkItem) []workbench.WorkItem {
+	canonicalRepo := repo
+	for _, item := range items {
+		if sameRepoRef(item.Repo, repo) {
+			canonicalRepo = item.Repo
+			break
+		}
+	}
+	replacement = cloneWorkItems(replacement)
+	for i := range replacement {
+		if sameRepoRef(replacement[i].Repo, repo) {
+			replacement[i].Repo = canonicalRepo
+		}
+	}
+
 	out := make([]workbench.WorkItem, 0, len(items)+len(replacement))
 	replaced := false
 	for _, item := range items {
-		if item.Repo == repo {
+		if sameRepoRef(item.Repo, repo) {
 			if !replaced {
 				out = append(out, replacement...)
 				replaced = true
@@ -1271,6 +1287,57 @@ func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, re
 		out = append(out, replacement...)
 	}
 	return out
+}
+
+func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, result workbench.RuntimeLoadResult) []workbench.WorkItem {
+	replacement := cloneWorkItems(result.Items)
+	byID := make(map[string]int, len(replacement))
+	for i, item := range replacement {
+		byID[item.ID] = i
+	}
+
+	for _, previous := range items {
+		if !sameRepoRef(previous.Repo, repo) {
+			continue
+		}
+		index, found := byID[previous.ID]
+		if found {
+			if !result.PullRequestsLoaded && previous.PullRequest != nil {
+				replacement[index].PullRequest = previous.PullRequest
+				replacement[index].Checks = previous.Checks
+				replacement[index].Issue = refreshedIssueRef(previous.Issue, result)
+			}
+			if !result.IssuesLoaded && previous.Issue != nil {
+				replacement[index].Issue = previous.Issue
+			}
+			continue
+		}
+		if !result.PullRequestsLoaded && previous.PullRequest != nil {
+			byID[previous.ID] = len(replacement)
+			replacement = append(replacement, previous)
+		}
+	}
+
+	return replaceRepoWorkItems(items, repo, replacement)
+}
+
+func refreshedIssueRef(previous *workbench.IssueRef, result workbench.RuntimeLoadResult) *workbench.IssueRef {
+	if previous == nil || !result.IssuesLoaded {
+		return previous
+	}
+	for _, issue := range result.Issues {
+		if issue.Number != previous.Number {
+			continue
+		}
+		issue.Certain = previous.Certain
+		issue.Source = previous.Source
+		return &issue
+	}
+	return previous
+}
+
+func sameRepoRef(left workbench.RepoRef, right workbench.RepoRef) bool {
+	return hasRepoRef(left) && hasRepoRef(right) && strings.EqualFold(left.FullName(), right.FullName())
 }
 
 func (m *model) replaceWorkbenchData(result workbench.RuntimeLoadResult, selectedRepo workbench.RepoRef) {
@@ -1293,6 +1360,32 @@ func (m *model) replaceRepositorySummary(summary workbench.RepositorySummary) {
 	summary.Remotes = append([]string(nil), summary.Remotes...)
 	m.repoSummaries = append(m.repoSummaries, summary)
 	m.repos = append(m.repos, summary.Repo)
+}
+
+func (m *model) replaceIssueScopedRepositorySummary(summary workbench.RepositorySummary) {
+	repo := m.canonicalRepoRef(summary.Repo)
+	summary = workbench.SummarizeRepository(
+		repo,
+		summary.Path,
+		summary.DefaultBranch,
+		summary.Remotes,
+		m.workItems,
+	)
+	m.replaceRepositorySummary(summary)
+}
+
+func (m model) canonicalRepoRef(repo workbench.RepoRef) workbench.RepoRef {
+	for _, candidate := range m.repos {
+		if sameRepoRef(candidate, repo) {
+			return candidate
+		}
+	}
+	for _, item := range m.workItems {
+		if sameRepoRef(item.Repo, repo) {
+			return item.Repo
+		}
+	}
+	return repo
 }
 
 func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
