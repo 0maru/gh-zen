@@ -150,11 +150,13 @@ func (r runtimeWorkbenchReloader) LoadIssues(ctx context.Context, repo workbench
 		if pathError.Local != nil && pathError.Local.Summary != "" {
 			issuesError = pathError.Local.Summary
 		}
+		items := []workbench.WorkItem{pathError}
 		return workbench.RuntimeLoadResult{
-			Repo:        repo,
-			Items:       []workbench.WorkItem{pathError},
-			IssuesRepo:  repo,
-			IssuesError: issuesError,
+			Repo:         repo,
+			Items:        items,
+			Repositories: []workbench.RepositorySummary{workbench.SummarizeRepository(repo, "", "", nil, items)},
+			IssuesRepo:   repo,
+			IssuesError:  issuesError,
 		}
 	}
 	result := (workbench.RuntimeLoader{

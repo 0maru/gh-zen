@@ -260,7 +260,10 @@ func (s CLIService) IssuesWithOptions(ctx context.Context, repo string, opts wor
 	}
 	commentCounts := map[int]int{}
 	if opts.IncludeCommentsCount {
-		commentCounts, _ = s.issueCommentCounts(ctx, repo)
+		commentCounts, err = s.issueCommentCounts(ctx, repo)
+		if err != nil {
+			return nil, fmt.Errorf("load issue comment counts: %w", err)
+		}
 	}
 	issues := make([]workbench.IssueRef, 0, len(payload))
 	for _, issue := range payload {

@@ -319,6 +319,13 @@ func TestRuntimeWorkbenchReloaderLoadIssuesReportsMissingCheckout(t *testing.T) 
 	if len(result.Items) != 1 || !strings.HasPrefix(result.Items[0].ID, "repository-path-error:") {
 		t.Fatalf("expected repository path error item, got %+v", result.Items)
 	}
+	if len(result.Repositories) != 1 || result.Repositories[0].Repo != repo {
+		t.Fatalf("expected missing checkout summary for %+v, got %+v", repo, result.Repositories)
+	}
+	summary := result.Repositories[0]
+	if summary.Path != "" || summary.ActiveWorktreeCount != 0 || summary.OpenPullRequestCount != 0 || summary.OpenIssueCount != 0 || summary.FailingCheckCount != 0 {
+		t.Fatalf("expected missing checkout summary to clear stale repository state, got %+v", summary)
+	}
 }
 
 func TestRuntimeWorkbenchReloaderPropagatesFirstRepoRawDataForZeroRepoStartup(t *testing.T) {

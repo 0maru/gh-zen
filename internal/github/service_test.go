@@ -234,6 +234,19 @@ func TestCLIService_IssuesWithOptionsDefersCommentCounts(t *testing.T) {
 	}
 }
 
+func TestCLIService_IssuesWithOptionsReportsCommentCountFailure(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields): []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[],"assignees":[],"milestone":null,"author":{"login":"alice"},"updatedAt":"2026-05-03T12:00:00Z"}]`),
+	}}
+	service := CLIService{Runner: runner}
+
+	_, err := service.IssuesWithOptions(context.Background(), repo, workbench.IssueListOptions{IncludeCommentsCount: true})
+	if err == nil || !strings.Contains(err.Error(), "load issue comment counts") {
+		t.Fatalf("expected comment count failure to be reported, got %v", err)
+	}
+}
+
 func TestCLIService_CheckSummaryParsesGHOutput(t *testing.T) {
 	runner := &fakeRunner{output: []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"FAILURE"},{"name":"build","state":"PENDING"}]`)}
 	service := CLIService{Runner: runner}
