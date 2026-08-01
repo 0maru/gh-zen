@@ -82,7 +82,7 @@ const (
 	pullRequestClosingIssuesQuery = `
 query($owner:String!, $name:String!, $after:String) {
   repository(owner:$owner, name:$name) {
-    pullRequests(first:100, after:$after, states:[OPEN, CLOSED, MERGED], orderBy:{field:UPDATED_AT, direction:DESC}) {
+    pullRequests(first:100, after:$after, states:[OPEN, CLOSED, MERGED], orderBy:{field:CREATED_AT, direction:DESC}) {
       nodes {
         number
         closingIssuesReferences(first:100) {

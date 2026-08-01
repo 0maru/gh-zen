@@ -200,6 +200,12 @@ func TestCLIService_PullRequestClosingIssuesStopsAtListLimit(t *testing.T) {
 	}
 }
 
+func TestCLIService_PullRequestClosingIssuesMatchesPullRequestListOrdering(t *testing.T) {
+	if !strings.Contains(pullRequestClosingIssuesQuery, "field:CREATED_AT") || strings.Contains(pullRequestClosingIssuesQuery, "field:UPDATED_AT") {
+		t.Fatalf("expected closing issue query to match gh pr list ordering, got %q", pullRequestClosingIssuesQuery)
+	}
+}
+
 func TestLinkedIssuesFromBodyRequiresClosingKeywordForEachIssue(t *testing.T) {
 	body := "Fixes #1 and see #2. Resolves: #3, closes #1. Mentions #4."
 
