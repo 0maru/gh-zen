@@ -1328,7 +1328,7 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 			}
 			continue
 		}
-		if !result.PullRequestsLoaded && previous.PullRequest != nil {
+		if !result.PullRequestsLoaded && previous.PullRequest != nil && !isLocalDiscoveryWorkItem(previous) {
 			byID[previous.ID] = len(replacement)
 			replacement = append(replacement, previous)
 		}

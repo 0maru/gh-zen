@@ -986,9 +986,15 @@ func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testin
 		PullRequest: &workbench.PullRequestRef{Number: 11, Title: "Remote PR", State: "open"},
 		Checks:      workbench.CheckSummary{State: workbench.CheckPassing},
 	}
+	deletedLocalItem := workbench.WorkItem{
+		ID:          "branch:deleted",
+		Repo:        repo,
+		Branch:      &workbench.BranchRef{Name: "deleted"},
+		PullRequest: &workbench.PullRequestRef{Number: 12, Title: "Deleted local branch PR", State: "open"},
+	}
 	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
 		RepositorySummaries: []workbench.RepositorySummary{{Repo: repo, Path: "/repos/gh-zen"}},
-		WorkItems:           []workbench.WorkItem{localItem, pullRequestOnlyItem},
+		WorkItems:           []workbench.WorkItem{localItem, pullRequestOnlyItem, deletedLocalItem},
 	}, fakeDelayedPreviewLoader(0))
 	request := workbenchReloadRequest{requestID: 1, repo: repo, status: "Loading issues...", issueScoped: true}
 	start.screen = screenIssues
@@ -1046,6 +1052,11 @@ func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testin
 		return item.ID == pullRequestOnlyItem.ID && item.PullRequest != nil && item.PullRequest.Number == 11
 	}) {
 		t.Fatalf("expected PR-only item to remain, got %+v", mm.workItems)
+	}
+	if hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
+		return item.ID == deletedLocalItem.ID
+	}) {
+		t.Fatalf("expected deleted local item not to be restored, got %+v", mm.workItems)
 	}
 	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
 		return strings.HasPrefix(item.ID, "pull-request-discovery-error:")
