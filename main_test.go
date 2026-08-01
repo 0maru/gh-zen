@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ type fakeMainGitHub struct {
 	issuesByRepo map[string][]workbench.IssueRef
 	checks       map[string]workbench.CheckSummary
 	subjects     workbench.ReviewSubjects
+	subjectErr   error
 	calls        *[]string
 }
 
@@ -44,7 +46,7 @@ func (f fakeMainGitHub) CheckSummary(_ context.Context, repo string, ref string)
 }
 
 func (f fakeMainGitHub) ViewerReviewSubjects(context.Context) (workbench.ReviewSubjects, error) {
-	return f.subjects, nil
+	return f.subjects, f.subjectErr
 }
 
 func TestRepoRefFromFullName(t *testing.T) {
@@ -228,6 +230,31 @@ func TestRuntimeWorkbenchReloaderPropagatesSelectedRepoRawData(t *testing.T) {
 	}
 	if result.ViewerSubject.Login != "0maru" {
 		t.Fatalf("expected viewer subject to propagate, got %+v", result.ViewerSubject)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderPropagatesViewerSubjectError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses a temporary Git repository")
+	}
+
+	root := t.TempDir()
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	initRuntimeRepo(t, filepath.Join(root, repo.Owner, repo.Name), "https://github.com/0maru/gh-zen.git")
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			prsByRepo:    map[string][]workbench.PullRequestRef{repo.FullName(): {}},
+			issuesByRepo: map[string][]workbench.IssueRef{repo.FullName(): {}},
+			subjectErr:   errors.New("viewer unavailable"),
+		},
+	}
+
+	result := reloader.Load(context.Background(), repo)
+	if !strings.Contains(result.ViewerSubjectError, "viewer unavailable") {
+		t.Fatalf("expected viewer subject failure to propagate, got %q", result.ViewerSubjectError)
 	}
 }
 

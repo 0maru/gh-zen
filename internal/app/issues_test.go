@@ -203,14 +203,15 @@ func TestUpdate_IssueViewRefreshUsesIssueRepo(t *testing.T) {
 	start.selectedItem = 1
 	start.focusedWorkItemID = repoBItem.ID
 
-	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	msg := requireWorkbenchReloadMsg(t, cmd)
 
 	if msg.request.repo != repoB {
 		t.Fatalf("expected issue refresh request for %+v, got %+v", repoB, msg.request.repo)
 	}
-	if len(reloader.calls) != 1 || reloader.calls[0] != repoB {
+	if len(reloader.calls) != 2 || reloader.calls[0] != repoB || reloader.calls[1] != repoB {
 		t.Fatalf("expected reload call for %+v, got %+v", repoB, reloader.calls)
 	}
 }
@@ -343,6 +344,70 @@ func TestUpdate_IssueEntryWaitsForActiveWorkbenchReload(t *testing.T) {
 	requireWorkbenchReloadMsg(t, cmd)
 	if len(issueReloader.calls) != 1 || issueReloader.calls[0] != repo {
 		t.Fatalf("expected one delayed repo-scoped reload for %+v, got %+v", repo, issueReloader.calls)
+	}
+}
+
+func TestUpdate_IssueRefreshWaitsForActiveWorkbenchReload(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:          []workbench.RepoRef{repo},
+		Reloader:       &fakeWorkbenchReloader{},
+		IssueReloader:  &fakeIssueReloader{},
+		InitialLoading: true,
+	}, fakeDelayedPreviewLoader(0))
+	initialRequest := start.activeReloadRequest
+	start.screen = screenIssues
+	start.issueRepo = repo
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd != nil {
+		t.Fatalf("expected issue refresh to keep the active workbench reload, got a new command")
+	}
+	mm := got.(model)
+	if mm.activeReloadRequest != initialRequest || !mm.issueReloadPending || mm.pendingIssueRepo != repo {
+		t.Fatalf("expected issue refresh to wait for the active reload, got active=%+v pending=%v repo=%+v", mm.activeReloadRequest, mm.issueReloadPending, mm.pendingIssueRepo)
+	}
+}
+
+func TestUpdate_IssueRefreshWithFullReloaderDoesNotDuplicateOtherRepositories(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "repo-a"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "repo-b"}
+	oldA := workbench.WorkItem{ID: "branch:old-a", Repo: repoA, Branch: &workbench.BranchRef{Name: "old-a"}}
+	oldB := workbench.WorkItem{ID: "branch:old-b", Repo: repoB, Branch: &workbench.BranchRef{Name: "old-b"}}
+	newA := workbench.WorkItem{ID: "branch:new-a", Repo: repoA, Branch: &workbench.BranchRef{Name: "new-a"}}
+	newB := workbench.WorkItem{ID: "branch:new-b", Repo: repoB, Branch: &workbench.BranchRef{Name: "new-b"}}
+	reloader := &fakeWorkbenchReloader{results: map[string]workbench.RuntimeLoadResult{
+		repoA.FullName(): {Repo: repoA, Items: []workbench.WorkItem{newA, newB}},
+	}}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{oldA, oldB},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.screen = screenIssues
+	start.issueRepo = repoA
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	msg := requireWorkbenchReloadMsg(t, cmd)
+	if !msg.request.issueScoped || !msg.request.fullResult {
+		t.Fatalf("expected issue lifecycle with full-result semantics, got %+v", msg.request)
+	}
+	got, _ = got.(model).Update(msg)
+	mm := got.(model)
+
+	if hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool { return item.ID == oldA.ID || item.ID == newB.ID }) {
+		t.Fatalf("expected only repo A items from the full-reloader result to replace repo A, got %+v", mm.workItems)
+	}
+	for _, id := range []string{newA.ID, oldB.ID} {
+		count := 0
+		for _, item := range mm.workItems {
+			if item.ID == id {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("expected exactly one %q item, got %d in %+v", id, count, mm.workItems)
+		}
 	}
 }
 
@@ -531,8 +596,9 @@ func TestUpdate_IssueViewRefreshUpdatesReturnSelection(t *testing.T) {
 	start.selectedItem = 1
 	start.focusedWorkItemID = second.ID
 
-	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	if cmd == nil {
 		t.Fatalf("expected issue refresh command")
 	}
@@ -587,8 +653,9 @@ func TestUpdate_IssueViewReloadRefreshesPreviewOnReturn(t *testing.T) {
 		},
 	}
 
-	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
 	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
@@ -642,8 +709,9 @@ func TestUpdate_IssueViewRefreshPreservesReturnRepo(t *testing.T) {
 	start.selectedItem = 1
 	start.focusedWorkItemID = repoBItem.ID
 
-	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
 	got, _ = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	mm := got.(model)
@@ -674,7 +742,7 @@ func TestUpdate_IssueRefreshAppliesAfterReturningToWorkbench(t *testing.T) {
 	}
 	repoBReloaded := repoBItem
 	repoBReloaded.Issue = &workbench.IssueRef{Number: 23, Title: "Reloaded repo B issue", State: "open"}
-	reloader := &fakeWorkbenchReloader{
+	issueReloader := &fakeIssueReloader{
 		results: map[string]workbench.RuntimeLoadResult{
 			repoB.FullName(): {
 				Repo: repoB,
@@ -689,16 +757,15 @@ func TestUpdate_IssueRefreshAppliesAfterReturningToWorkbench(t *testing.T) {
 		},
 	}
 	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
-		Repos:     []workbench.RepoRef{repoA, repoB},
-		WorkItems: []workbench.WorkItem{repoAItem, repoBItem},
-		Reloader:  reloader,
+		Repos:         []workbench.RepoRef{repoA, repoB},
+		WorkItems:     []workbench.WorkItem{repoAItem, repoBItem},
+		IssueReloader: issueReloader,
 	}, fakeDelayedPreviewLoader(0))
 	start.setRepoPaneIndex(len(start.repos))
 	start.selectedItem = 1
 	start.focusedWorkItemID = repoBItem.ID
 
-	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-	got, cmd := got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 	msg := requireWorkbenchReloadMsg(t, cmd)
 	got, _ = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	got, _ = got.(model).Update(msg)
@@ -1061,6 +1128,58 @@ func TestUpdate_IssueRefreshCheckFailureKeepsOnlyFailedCheckState(t *testing.T) 
 	summary, ok := mm.repoSummary(repo)
 	if !ok || summary.FailingCheckCount != 1 {
 		t.Fatalf("expected summary to retain one failed check, got %+v ok=%v", summary, ok)
+	}
+}
+
+func TestUpdate_IssueRefreshViewerFailureKeepsReviewPerspective(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	previous := workbench.WorkItem{
+		ID:     "branch:feature",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "feature"},
+		PullRequest: &workbench.PullRequestRef{
+			Number:                10,
+			Title:                 "Old title",
+			HeadBranch:            "feature",
+			ViewerReviewRequested: true,
+			ViewerAuthored:        true,
+			WaitingOnReview:       true,
+		},
+	}
+	refreshed := previous
+	refreshed.PullRequest = &workbench.PullRequestRef{Number: 10, Title: "New title", HeadBranch: "feature"}
+
+	got := mergeIssueScopedWorkItems([]workbench.WorkItem{previous}, repo, workbench.RuntimeLoadResult{
+		Repo:               repo,
+		Items:              []workbench.WorkItem{refreshed},
+		PullRequestsLoaded: true,
+		ViewerSubjectError: "viewer unavailable",
+	})
+	if len(got) != 1 || got[0].PullRequest == nil {
+		t.Fatalf("expected one refreshed pull request item, got %+v", got)
+	}
+	pr := got[0].PullRequest
+	if pr.Title != "New title" || !pr.ViewerReviewRequested || !pr.ViewerAuthored || !pr.WaitingOnReview {
+		t.Fatalf("expected refreshed PR data with preserved review perspective, got %+v", pr)
+	}
+}
+
+func TestSyncWorkbenchReturnAfterReloadMatchesRepositoryCaseInsensitively(t *testing.T) {
+	start := newModel()
+	start.repos = []workbench.RepoRef{
+		{Owner: "Other", Name: "Repo"},
+		{Owner: "Owner", Name: "Repo"},
+	}
+	start.selectedRepo = 0
+	start.workbenchReturn = workbenchReturnState{
+		valid:           true,
+		selectedRepoRef: workbench.RepoRef{Owner: "owner", Name: "repo"},
+	}
+
+	start.syncWorkbenchReturnAfterReload()
+
+	if start.workbenchReturn.selectedRepo != 1 {
+		t.Fatalf("expected case-insensitive return repo index 1, got %+v", start.workbenchReturn)
 	}
 }
 

@@ -24,6 +24,7 @@ type RuntimeLoadResult struct {
 	IssuesError        string
 	FailedCheckRefs    []string
 	ViewerSubject      ReviewSubjects
+	ViewerSubjectError string
 }
 
 // RuntimeLoader composes local Git discovery with GitHub workbench enrichment.
@@ -53,6 +54,7 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 	subjects, err := reviewSubjects(ctx, l.GitHub)
 	if err != nil {
 		pullRequestErrors = append(pullRequestErrors, err)
+		result.ViewerSubjectError = err.Error()
 	}
 	result.ViewerSubject = subjects
 

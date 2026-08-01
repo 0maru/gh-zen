@@ -170,6 +170,37 @@ func TestRuntimeLoader_ReturnsViewerSubjectWhenPullRequestsFail(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoader_RecordsViewerSubjectFailure(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	result := RuntimeLoader{
+		Repo:     repo,
+		RepoPath: "/repo",
+		Local: fakeLocalDiscovery{
+			branches: []localrepo.Branch{{Name: "feature"}},
+		},
+		GitHub: fakeRuntimeGitHub{
+			subjectErr: errors.New("viewer unavailable"),
+			prs: []PullRequestRef{{
+				Number:     10,
+				State:      "open",
+				HeadOwner:  "0maru",
+				HeadBranch: "feature",
+			}},
+			issues: []IssueRef{},
+		},
+	}.Load(context.Background())
+
+	if !result.PullRequestsLoaded {
+		t.Fatalf("expected pull requests to remain loaded, got %+v", result)
+	}
+	if !strings.Contains(result.ViewerSubjectError, "viewer unavailable") {
+		t.Fatalf("expected viewer subject failure to be recorded, got %q", result.ViewerSubjectError)
+	}
+	if !hasRuntimeErrorItem(result.Items, "pull request discovery failed", "viewer unavailable") {
+		t.Fatalf("expected viewer subject error item, got %+v", result.Items)
+	}
+}
+
 func TestRuntimeLoader_AddsPullRequestBackedItems(t *testing.T) {
 	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
 	loader := RuntimeLoader{

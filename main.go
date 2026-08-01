@@ -112,6 +112,7 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 		IssuesError:        selectedRawResult.IssuesError,
 		FailedCheckRefs:    append([]string(nil), selectedRawResult.FailedCheckRefs...),
 		ViewerSubject:      selectedRawResult.ViewerSubject,
+		ViewerSubjectError: selectedRawResult.ViewerSubjectError,
 	}
 }
 

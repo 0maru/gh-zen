@@ -320,6 +320,7 @@ type workbenchReloadRequest struct {
 	repo        workbench.RepoRef
 	status      string
 	issueScoped bool
+	fullResult  bool
 }
 
 type workbenchReloadMsg struct {
@@ -845,6 +846,9 @@ func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
 }
 
 func (m *model) refreshWorkbenchData() tea.Cmd {
+	if m.screen == screenIssues {
+		return m.startIssueViewReload()
+	}
 	return m.startWorkbenchReload("Reloading workbench data...")
 }
 
@@ -873,6 +877,7 @@ func (m *model) beginWorkbenchReload(status string) bool {
 		repo:        repo,
 		status:      status,
 		issueScoped: issueScoped,
+		fullResult:  issueScoped && m.issueReloader == nil,
 	}
 	m.activeReloadRequest = request
 	m.workbenchLoading = true
@@ -932,7 +937,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 			selectedRepo = repo
 		}
 	}
-	if msg.request.issueScoped {
+	if msg.request.issueScoped && !msg.request.fullResult {
 		m.workItems = mergeIssueScopedWorkItems(m.workItems, msg.request.repo, msg.result)
 		for _, summary := range msg.result.Repositories {
 			m.replaceIssueScopedRepositorySummary(summary)
@@ -940,7 +945,10 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	} else if len(msg.result.Repositories) > 0 {
 		m.replaceWorkbenchData(msg.result, selectedRepo)
 	} else {
-		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+		replacement := filterWorkItems(msg.result.Items, func(item workbench.WorkItem) bool {
+			return sameRepoRef(item.Repo, msg.request.repo)
+		})
+		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, replacement)
 	}
 	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
 	if m.screen == screenIssues && m.workbenchReturn.valid {
@@ -966,9 +974,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		if pendingIssueReload {
 			return m.startPendingIssueReload()
 		}
-		if msg.request.issueScoped {
-			m.clearFocusedWorkItem()
-		}
+		m.clearFocusedWorkItem()
 		return nil
 	}
 	return m.startPreviewLoadForCurrentItem()
@@ -1306,8 +1312,13 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 				replacement[index].PullRequest = previous.PullRequest
 				replacement[index].Checks = previous.Checks
 				replacement[index].Issue = refreshedIssueRef(previous.Issue, result)
-			} else if checkRefFailed(replacement[index], result.FailedCheckRefs) {
-				replacement[index].Checks = previous.Checks
+			} else {
+				if result.ViewerSubjectError != "" && previous.PullRequest != nil && replacement[index].PullRequest != nil {
+					preserveViewerReviewPerspective(replacement[index].PullRequest, previous.PullRequest)
+				}
+				if checkRefFailed(replacement[index], result.FailedCheckRefs) {
+					replacement[index].Checks = previous.Checks
+				}
 			}
 			if !result.IssuesLoaded && previous.Issue != nil {
 				replacement[index].Issue = previous.Issue
@@ -1321,6 +1332,12 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 	}
 
 	return replaceRepoWorkItems(items, repo, replacement)
+}
+
+func preserveViewerReviewPerspective(current *workbench.PullRequestRef, previous *workbench.PullRequestRef) {
+	current.ViewerReviewRequested = previous.ViewerReviewRequested
+	current.ViewerAuthored = previous.ViewerAuthored
+	current.WaitingOnReview = previous.WaitingOnReview
 }
 
 func checkRefFailed(item workbench.WorkItem, failedRefs []string) bool {
@@ -1423,11 +1440,11 @@ func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
 }
 
 func (m model) repoIndex(repo workbench.RepoRef) (int, bool) {
-	if repo == (workbench.RepoRef{}) {
+	if !hasRepoRef(repo) {
 		return 0, false
 	}
 	for i, candidate := range m.repos {
-		if candidate == repo {
+		if sameRepoRef(candidate, repo) {
 			return i, true
 		}
 	}
