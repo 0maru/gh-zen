@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -46,6 +47,12 @@ func (r *fakeRunnerByCommand) Run(_ context.Context, args ...string) ([]byte, er
 		return nil, errors.New("unexpected gh command: " + key)
 	}
 	return output, nil
+}
+
+func closingIssuePullRequestPage(nodeCount int, hasNext bool, endCursor string) []byte {
+	node := `{"number":1,"closingIssuesReferences":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}`
+	nodes := strings.TrimSuffix(strings.Repeat(node+",", nodeCount), ",")
+	return []byte(`{"data":{"repository":{"pullRequests":{"nodes":[` + nodes + `],"pageInfo":{"hasNextPage":` + strconv.FormatBool(hasNext) + `,"endCursor":"` + endCursor + `"}}}}}`)
 }
 
 func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
@@ -156,6 +163,43 @@ func TestCLIService_PullRequestsUsesGraphQLClosingIssuesAsAuthoritative(t *testi
 	}
 }
 
+func TestCLIService_PullRequestsPaginatesClosingIssuesForEachPullRequest(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", prListFields):                                                               []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","reviewRequests":[],"latestReviews":[],"body":""}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery):                                   []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":12,"closingIssuesReferences":{"nodes":[{"number":1,"title":"First","state":"OPEN","url":"https://example.test/issues/1"}],"pageInfo":{"hasNextPage":true,"endCursor":"issue-page-2"}}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-F", "number=12", "-f", "after=issue-page-2", "-f", "query="+pullRequestClosingIssuePageQuery): []byte(`{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":101,"title":"Later","state":"CLOSED","url":"https://example.test/issues/101"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}`),
+	}}
+
+	got, err := (CLIService{Runner: runner}).PullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected closing issues to paginate, got %v", err)
+	}
+	if len(got) != 1 || len(got[0].LinkedIssues) != 2 || got[0].LinkedIssues[1].Number != 101 {
+		t.Fatalf("expected closing issue from the later page, got %+v", got)
+	}
+}
+
+func TestCLIService_PullRequestClosingIssuesStopsAtListLimit(t *testing.T) {
+	repo := "0maru/gh-zen"
+	outputs := map[string][]byte{}
+	after := ""
+	for page := 0; page < listLimitCount/100; page++ {
+		next := strconv.Itoa(page + 1)
+		outputs[commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after="+after, "-f", "query="+pullRequestClosingIssuesQuery)] = closingIssuePullRequestPage(100, true, next)
+		after = next
+	}
+	runner := &fakeRunnerByCommand{outputs: outputs}
+
+	_, err := (CLIService{Runner: runner}).pullRequestClosingIssues(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected closing issue pagination to stop cleanly, got %v", err)
+	}
+	if len(runner.calls) != listLimitCount/100 {
+		t.Fatalf("expected %d GraphQL pages for the PR list limit, got %d", listLimitCount/100, len(runner.calls))
+	}
+}
+
 func TestLinkedIssuesFromBodyRequiresClosingKeywordForEachIssue(t *testing.T) {
 	body := "Fixes #1 and see #2. Resolves: #3, closes #1. Mentions #4."
 
@@ -250,16 +294,19 @@ func TestCLIService_IssuesWithOptionsDefersCommentCounts(t *testing.T) {
 	}
 }
 
-func TestCLIService_IssuesWithOptionsReportsCommentCountFailure(t *testing.T) {
+func TestCLIService_IssuesWithOptionsPreservesIssuesAndReportsCommentCountFailure(t *testing.T) {
 	repo := "0maru/gh-zen"
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
 		commandKey("issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields): []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[],"assignees":[],"milestone":null,"author":{"login":"alice"},"updatedAt":"2026-05-03T12:00:00Z"}]`),
 	}}
 	service := CLIService{Runner: runner}
 
-	_, err := service.IssuesWithOptions(context.Background(), repo, workbench.IssueListOptions{IncludeCommentsCount: true})
+	got, err := service.IssuesWithOptions(context.Background(), repo, workbench.IssueListOptions{IncludeCommentsCount: true})
 	if err == nil || !strings.Contains(err.Error(), "load issue comment counts") {
 		t.Fatalf("expected comment count failure to be reported, got %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 9 || got[0].CommentsCount != 0 {
+		t.Fatalf("expected the successfully loaded issue with an unknown comment count, got %+v", got)
 	}
 }
 

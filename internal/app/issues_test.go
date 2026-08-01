@@ -1529,6 +1529,29 @@ func TestUpdate_IssueRefreshReplacesRepositoryCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueDataKeepsPartialIssueMetadataError(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	m := newModel()
+	m.issueRepo = repo
+
+	m.updateIssueDataFromRuntimeResult(workbench.RuntimeLoadResult{
+		Repo:          repo,
+		IssuesRepo:    repo,
+		Issues:        []workbench.IssueRef{{Number: 75, Repository: repo.FullName(), Title: "Issue browser", Certain: true}},
+		IssuesLoaded:  true,
+		IssuesError:   "load issue comment counts: rate limited",
+		PullRequests:  []workbench.PullRequestRef{},
+		ViewerSubject: workbench.ReviewSubjects{},
+	})
+
+	if len(m.issues) != 1 || m.issues[0].Number != 75 {
+		t.Fatalf("expected partial issue data to remain visible, got %+v", m.issues)
+	}
+	if !strings.Contains(m.issuesError, "comment counts") {
+		t.Fatalf("expected the partial metadata error to remain visible, got %q", m.issuesError)
+	}
+}
+
 func TestUpdate_LeavingIssueViewRestoresFullReloadStaleCheck(t *testing.T) {
 	repoA := workbench.RepoRef{Owner: "0maru", Name: "repo-a"}
 	repoB := workbench.RepoRef{Owner: "0maru", Name: "repo-b"}

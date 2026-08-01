@@ -206,9 +206,8 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 	if result.ViewerSubject.Login != "" {
 		m.viewerLogin = result.ViewerSubject.Login
 	}
-	m.issuesError = ""
+	m.issuesError = result.IssuesError
 	if !result.IssuesLoaded {
-		m.issuesError = result.IssuesError
 		if m.issuesError == "" {
 			m.issuesError = issueDiscoveryErrorFromWorkItems(result.Items, issueRepo)
 		}

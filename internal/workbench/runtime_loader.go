@@ -83,7 +83,8 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 	if err != nil {
 		discoveryErrors = append(discoveryErrors, err)
 		result.IssuesError = err.Error()
-	} else {
+	}
+	if issues != nil {
 		result.IssuesRepo = l.Repo
 		result.Issues = append([]IssueRef(nil), issues...)
 		result.IssuesLoaded = true

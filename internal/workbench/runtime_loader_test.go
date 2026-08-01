@@ -318,6 +318,30 @@ func TestRuntimeLoader_PreservesLocalItemsWhenGitHubFails(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoader_PreservesPartialIssuesWhenMetadataFails(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	github := &configurableIssueRuntimeGitHub{fakeRuntimeGitHub: fakeRuntimeGitHub{
+		issues:   []IssueRef{{Number: 75, Repository: repo.FullName(), Title: "Issue browser", Certain: true}},
+		issueErr: errors.New("comment counts failed"),
+	}}
+	loader := RuntimeLoader{
+		Repo:                      repo,
+		RepoPath:                  "/repo",
+		Local:                     fakeLocalDiscovery{},
+		GitHub:                    github,
+		IncludeIssueCommentsCount: true,
+	}
+
+	result := loader.Load(context.Background())
+
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
+		t.Fatalf("expected partial issues to remain loaded, got %+v", result)
+	}
+	if !strings.Contains(result.IssuesError, "comment counts failed") {
+		t.Fatalf("expected the metadata failure to be reported separately, got %q", result.IssuesError)
+	}
+}
+
 func TestRuntimeLoader_ReturnsLocalDiscoveryErrorItem(t *testing.T) {
 	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
 	loader := RuntimeLoader{
