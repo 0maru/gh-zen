@@ -35,6 +35,7 @@ const (
 	frameBottomRightGlyph   = "┘"
 	previewPaneMinWidth     = 28
 	fullLayoutMinWidth      = repoPaneWidth + workItemPaneWidth + previewPaneMinWidth + paneBorderWidth*3 + paneGapWidth*2
+	prFullLayoutMinWidth    = repoPaneWidth + pullRequestPaneMinWidth + previewPaneMinWidth + paneBorderWidth*3 + paneGapWidth*2
 )
 
 // paneFocus tracks the pane that owns pane-scoped key handling.
@@ -1337,7 +1338,7 @@ func (m model) activePane() paneFocus {
 }
 
 func (m model) isCompact() bool {
-	return m.effectiveWidth() < fullLayoutMinWidth
+	return m.effectiveWidth() < m.fullLayoutMinWidth()
 }
 
 func (m model) effectiveWidth() int {
@@ -1345,6 +1346,13 @@ func (m model) effectiveWidth() int {
 		return defaultWidth
 	}
 	return m.width
+}
+
+func (m model) fullLayoutMinWidth() int {
+	if m.activeView == appViewPullRequests {
+		return prFullLayoutMinWidth
+	}
+	return fullLayoutMinWidth
 }
 
 func nextPane(current paneFocus, order []paneFocus) paneFocus {
@@ -1792,7 +1800,7 @@ func matchFilterPattern(pattern string, value string, match func(pattern string,
 func (m model) View() string {
 	width := m.effectiveWidth()
 
-	if width < fullLayoutMinWidth {
+	if width < m.fullLayoutMinWidth() {
 		return m.renderCompact(width)
 	}
 	return m.renderFull(width)

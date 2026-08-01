@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	cfgpkg "github.com/0maru/gh-zen/internal/config"
 	"github.com/0maru/gh-zen/internal/pullrequests"
@@ -1627,6 +1628,40 @@ func TestPullRequestFullPaneWidthShowsRowMetadata(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected PR row to contain %q, got:\n%s", want, got)
 		}
+	}
+}
+
+func TestPullRequestViewUsesPullRequestFullLayoutBreakpoint(t *testing.T) {
+	start := testPRModel()
+	start.activeView = appViewPullRequests
+
+	for _, width := range []int{100, 120, 132, prFullLayoutMinWidth - 1} {
+		m := start
+		m.width = width
+		if !m.isCompact() {
+			t.Fatalf("expected PR view to stay compact at width %d", width)
+		}
+		got := ansi.Strip(m.View())
+		if strings.Contains(got, "Repositories[1]") {
+			t.Fatalf("expected compact PR view to hide repository pane at width %d, got:\n%s", width, got)
+		}
+		if !strings.Contains(got, "PullRequests[1]") {
+			t.Fatalf("expected compact PR view to show PR list as first pane at width %d, got:\n%s", width, got)
+		}
+	}
+
+	full := start
+	full.width = prFullLayoutMinWidth
+	if full.isCompact() {
+		t.Fatalf("expected PR view to use full layout at width %d", prFullLayoutMinWidth)
+	}
+	got := ansi.Strip(full.View())
+	if !strings.Contains(got, "Repositories[1]") || !strings.Contains(got, "PullRequests[2]") {
+		t.Fatalf("expected full PR view panes at width %d, got:\n%s", prFullLayoutMinWidth, got)
+	}
+	_, listWidth, previewWidth := full.fullPaneWidths(prFullLayoutMinWidth)
+	if listWidth < pullRequestPaneMinWidth || previewWidth < previewPaneMinWidth {
+		t.Fatalf("expected PR full layout minimums, got list=%d preview=%d", listWidth, previewWidth)
 	}
 }
 
