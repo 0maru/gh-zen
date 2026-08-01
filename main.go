@@ -126,6 +126,9 @@ func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app
 		ActionsLoader:  app.NewGitHubActionsLoader(github.CLIService{}),
 		InitialLoading: reloader != nil,
 	}
+	if issueReloader, ok := reloader.(app.IssueReloader); ok {
+		data.IssueReloader = issueReloader
+	}
 	repo, ok := repoRefFromFullName(startupRepo.Repo)
 	if !ok {
 		return data
@@ -133,6 +136,26 @@ func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app
 
 	data.Repos = []workbench.RepoRef{repo}
 	return data
+}
+
+func (r runtimeWorkbenchReloader) LoadIssues(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+	checkout := r.checkoutForRepository(ctx, repo)
+	if checkout.path == "" {
+		return workbench.RuntimeLoadResult{
+			Repo:  repo,
+			Items: []workbench.WorkItem{workbench.RepositoryPathErrorItem(repo, checkout.diagnostics)},
+		}
+	}
+	result := (workbench.RuntimeLoader{
+		Repo:     checkout.repo,
+		RepoPath: checkout.path,
+		Local:    r.local,
+		GitHub:   r.githubDiscovery(),
+	}).Load(ctx)
+	if len(checkout.diagnostics) > 0 {
+		result.Items = append(result.Items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
+	}
+	return result
 }
 
 type repositoryCheckout struct {

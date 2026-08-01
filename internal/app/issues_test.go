@@ -258,6 +258,41 @@ func TestUpdate_IssueViewLoadsRawIssuesForSelectedRepo(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueViewUsesRepoScopedReloader(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	workbenchReloader := &fakeWorkbenchReloader{}
+	issueReloader := &fakeIssueReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {
+				Repo:         repo,
+				IssuesRepo:   repo,
+				IssuesLoaded: true,
+				Issues:       []workbench.IssueRef{{Number: 75, Title: "Issue browsing", State: "open"}},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:         []workbench.RepoRef{repo},
+		Reloader:      workbenchReloader,
+		IssueReloader: issueReloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	msg := requireWorkbenchReloadMsg(t, cmd)
+	got, _ = got.(model).Update(msg)
+	mm := got.(model)
+
+	if len(workbenchReloader.calls) != 0 {
+		t.Fatalf("expected issue entry not to scan the full workbench, got %+v", workbenchReloader.calls)
+	}
+	if len(issueReloader.calls) != 1 || issueReloader.calls[0] != repo {
+		t.Fatalf("expected one repo-scoped issue reload for %+v, got %+v", repo, issueReloader.calls)
+	}
+	if issues := mm.visibleIssues(); len(issues) != 1 || issues[0].Number != 75 {
+		t.Fatalf("expected repo-scoped issues to be applied, got %+v", issues)
+	}
+}
+
 func TestUpdate_IssueViewKeepsRawIssueSourceRepo(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
 	reloader := &fakeWorkbenchReloader{
@@ -642,5 +677,76 @@ func TestUpdate_IssueRefreshUpdatesIssueData(t *testing.T) {
 	}
 	if prs := mm.prsByIssueNumber[2]; len(prs) != 1 || prs[0].Number != 24 {
 		t.Fatalf("expected linked PR index from reload, got %+v", mm.prsByIssueNumber)
+	}
+}
+
+func TestUpdate_IssueRefreshFailureKeepsRawIssues(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:  []workbench.RepoRef{repo},
+		Issues: []workbench.IssueRef{{Number: 1, Title: "Previously loaded", State: "open"}},
+	}, fakeDelayedPreviewLoader(0))
+	start.screen = screenIssues
+	start.issueRepo = repo
+
+	start.updateIssueDataFromRuntimeResult(workbench.RuntimeLoadResult{
+		Repo: repo,
+		Items: []workbench.WorkItem{
+			{
+				ID:    "linked-issue",
+				Repo:  repo,
+				Issue: &workbench.IssueRef{Number: 2, Title: "Linked issue", State: "open"},
+			},
+			{
+				ID:     "issue-check-discovery-error:" + repo.FullName(),
+				Repo:   repo,
+				Local:  &workbench.LocalStatus{Summary: "issue and check discovery failed: network unavailable"},
+				Checks: workbench.CheckSummary{State: workbench.CheckUnknown},
+			},
+		},
+	})
+
+	if len(start.issues) != 2 || start.issues[0].Number != 1 || start.issues[1].Number != 2 {
+		t.Fatalf("expected the prior raw issue and new linked issue to remain, got %+v", start.issues)
+	}
+	if !strings.Contains(start.issuesError, "network unavailable") {
+		t.Fatalf("expected issue refresh error state, got %q", start.issuesError)
+	}
+}
+
+func TestIssueLinesKeepSelectedIssueInsideViewport(t *testing.T) {
+	start := newModel()
+	start.issues = make([]workbench.IssueRef, 20)
+	for i := range start.issues {
+		start.issues[i] = workbench.IssueRef{Number: i + 1, Title: "Issue", State: "open"}
+	}
+	start.selectedIssue = 15
+
+	lines := start.issueLines(80, 6, true)
+	if len(lines) > 6 {
+		t.Fatalf("expected at most six issue lines, got %d: %#v", len(lines), lines)
+	}
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "> #16") {
+		t.Fatalf("expected selected issue to remain in the viewport, got %q", got)
+	}
+}
+
+func TestRenderIssueFullFitsTerminalHeight(t *testing.T) {
+	start := newModel()
+	start.screen = screenIssues
+	start.width = fullLayoutMinWidth
+	start.height = 12
+	start.issues = make([]workbench.IssueRef, 20)
+	for i := range start.issues {
+		start.issues[i] = workbench.IssueRef{Number: i + 1, Title: "Issue", State: "open"}
+	}
+	start.selectedIssue = 19
+
+	rendered := strings.TrimSuffix(start.renderIssueFull(start.width), "\n")
+	if lines := strings.Count(rendered, "\n") + 1; lines > start.height {
+		t.Fatalf("expected issue view to fit height %d, got %d lines", start.height, lines)
+	}
+	if !strings.Contains(rendered, "#20") {
+		t.Fatalf("expected selected issue to remain visible, got %q", rendered)
 	}
 }

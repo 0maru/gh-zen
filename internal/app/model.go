@@ -150,6 +150,7 @@ type model struct {
 	nextPreviewRequestID int
 	previewLoader        previewLoader
 	workbenchReloader    WorkbenchReloader
+	issueReloader        IssueReloader
 	nextReloadRequestID  int
 	activeReloadRequest  workbenchReloadRequest
 	workbenchFilter      cfgpkg.WorkbenchFilter
@@ -171,6 +172,7 @@ type WorkbenchData struct {
 	Issues              []workbench.IssueRef
 	ViewerSubject       workbench.ReviewSubjects
 	Reloader            WorkbenchReloader
+	IssueReloader       IssueReloader
 	ActionsLoader       ActionsLoader
 	InitialLoading      bool
 	Demo                bool
@@ -190,6 +192,11 @@ type workbenchReturnState struct {
 // as the selection anchor.
 type WorkbenchReloader interface {
 	Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult
+}
+
+// IssueReloader refreshes runtime data for one repository without scanning all configured repositories.
+type IssueReloader interface {
+	LoadIssues(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult
 }
 
 type repoViewFilter int
@@ -278,6 +285,7 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 		workbenchSource:   source,
 		previewLoader:     loader,
 		workbenchReloader: data.Reloader,
+		issueReloader:     data.IssueReloader,
 		workbenchFilter:   cfg.Workbench.Filter,
 		actionsLoader:     actionsLoader,
 		actionRunner:      systemActionRunner{},
@@ -845,7 +853,8 @@ func (m *model) startWorkbenchReload(status string) tea.Cmd {
 }
 
 func (m *model) beginWorkbenchReload(status string) bool {
-	if m.workbenchReloader == nil {
+	issueScoped := m.screen == screenIssues && hasRepoRef(m.issueRepo)
+	if m.workbenchReloader == nil && (!issueScoped || m.issueReloader == nil) {
 		return false
 	}
 	repo, ok := m.reloadRepoRef()
@@ -860,7 +869,7 @@ func (m *model) beginWorkbenchReload(status string) bool {
 		requestID:   m.nextReloadRequestID,
 		repo:        repo,
 		status:      status,
-		issueScoped: m.screen == screenIssues && hasRepoRef(m.issueRepo),
+		issueScoped: issueScoped,
 	}
 	m.activeReloadRequest = request
 	m.workbenchLoading = true
@@ -878,6 +887,12 @@ func (m model) canReloadWithoutSelectedRepo() bool {
 
 func (m model) workbenchReloadCommand(request workbenchReloadRequest) tea.Cmd {
 	return func() tea.Msg {
+		if request.issueScoped && m.issueReloader != nil {
+			return workbenchReloadMsg{
+				request: request,
+				result:  m.issueReloader.LoadIssues(context.Background(), request.repo),
+			}
+		}
 		return workbenchReloadMsg{
 			request: request,
 			result:  m.workbenchReloader.Load(context.Background(), request.repo),

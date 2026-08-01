@@ -86,6 +86,19 @@ type fakeWorkbenchReloader struct {
 	deadlineSet []bool
 }
 
+type fakeIssueReloader struct {
+	results map[string]workbench.RuntimeLoadResult
+	calls   []workbench.RepoRef
+}
+
+func (r *fakeIssueReloader) LoadIssues(_ context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+	r.calls = append(r.calls, repo)
+	if result, ok := r.results[repo.FullName()]; ok {
+		return result
+	}
+	return workbench.RuntimeLoadResult{Repo: repo}
+}
+
 func (r *fakeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
 	r.calls = append(r.calls, repo)
 	_, hasDeadline := ctx.Deadline()

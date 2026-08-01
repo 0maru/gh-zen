@@ -47,25 +47,26 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 	}
 
 	repoName := l.Repo.FullName()
+	var pullRequestErrors []error
+	subjects, err := reviewSubjects(ctx, l.GitHub)
+	if err != nil {
+		pullRequestErrors = append(pullRequestErrors, err)
+	}
+	result.ViewerSubject = subjects
+
 	prs, err := l.GitHub.PullRequests(ctx, repoName)
 	if err != nil {
-		items = append(cloneWorkItems(items), pullRequestDiscoveryErrorItem(l.Repo, err))
+		pullRequestErrors = append(pullRequestErrors, err)
 	} else {
-		var discoveryErrors []error
-		subjects, err := reviewSubjects(ctx, l.GitHub)
-		if err != nil {
-			discoveryErrors = append(discoveryErrors, err)
-		}
 		if !subjects.Empty() {
 			prs = ApplyReviewPerspective(prs, subjects)
 		}
 		result.PullRequests = append([]PullRequestRef(nil), prs...)
 		result.PullRequestsLoaded = true
-		result.ViewerSubject = subjects
 		items = LinkPullRequestsForRepo(l.Repo, items, prs)
-		if len(discoveryErrors) > 0 {
-			items = append(items, pullRequestDiscoveryErrorItem(l.Repo, errors.Join(discoveryErrors...)))
-		}
+	}
+	if len(pullRequestErrors) > 0 {
+		items = append(cloneWorkItems(items), pullRequestDiscoveryErrorItem(l.Repo, errors.Join(pullRequestErrors...)))
 	}
 
 	var discoveryErrors []error

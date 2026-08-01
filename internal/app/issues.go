@@ -113,7 +113,7 @@ func (m *model) enterIssueView() tea.Cmd {
 }
 
 func (m *model) startIssueViewReload() tea.Cmd {
-	if m.workbenchReloader == nil || !hasRepoRef(m.issueRepo) {
+	if (m.issueReloader == nil && m.workbenchReloader == nil) || !hasRepoRef(m.issueRepo) {
 		return nil
 	}
 	return m.startWorkbenchReload("Loading issues...")
@@ -153,10 +153,13 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 	if !hasRepoRef(issueRepo) {
 		issueRepo = result.Repo
 	}
+	sameIssueRepo := strings.EqualFold(m.issueRepo.FullName(), issueRepo.FullName())
 	m.issueRepo = issueRepo
 	workItemIssues := issuesFromWorkItems(result.Items, issueRepo)
 	if result.IssuesLoaded {
 		m.issues = mergeIssueRefs(result.Issues, workItemIssues)
+	} else if sameIssueRepo {
+		m.issues = mergeIssueRefs(m.issues, workItemIssues)
 	} else {
 		m.issues = workItemIssues
 	}
@@ -396,10 +399,16 @@ func (m model) renderIssueFull(width int) string {
 	rightWidth := width - leftWidth - paneBorderWidth*2 - paneGapWidth
 	focus := m.activePane()
 
-	left := m.issueLines(paneTextWidth(leftWidth), focus == paneWorkItems)
-	right := m.issuePreviewLines(paneTextWidth(rightWidth))
 	out := m.headerLines("gh-zen  issues: "+m.issueRepo.FullName(), width)
-	bodyHeight := m.frameBodyHeight(max(len(left), len(right)), len(out))
+	bodyHeight := 0
+	if m.height > 0 {
+		bodyHeight = max(m.height-len(out)-frameBorderLines, 1)
+	}
+	left := m.issueLines(paneTextWidth(leftWidth), bodyHeight, focus == paneWorkItems)
+	right := m.issuePreviewLines(paneTextWidth(rightWidth))
+	if bodyHeight == 0 {
+		bodyHeight = max(len(left), len(right))
+	}
 
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
@@ -416,15 +425,18 @@ func (m model) renderIssueCompact(width int) string {
 	focus := m.activePane()
 	out := m.headerLines("gh-zen issues: "+m.issueRepo.FullName(), width)
 
-	issueLines := m.issueLines(paneTextWidth(contentWidth), focus == paneWorkItems)
 	previewLines := m.issuePreviewLines(paneTextWidth(contentWidth))
-	issueHeight := len(issueLines)
-	previewHeight := len(previewLines)
+	issueHeight := 0
+	previewHeight := 0
 	if m.height > 0 {
-		availableContentHeight := m.height - len(out) - frameBorderLines*2
-		if availableContentHeight > issueHeight+previewHeight {
-			previewHeight += availableContentHeight - issueHeight - previewHeight
-		}
+		availableContentHeight := max(m.height-len(out)-frameBorderLines*2, 2)
+		issueHeight = max(availableContentHeight/2, 1)
+		previewHeight = max(availableContentHeight-issueHeight, 1)
+	}
+	issueLines := m.issueLines(paneTextWidth(contentWidth), issueHeight, focus == paneWorkItems)
+	if m.height <= 0 {
+		issueHeight = len(issueLines)
+		previewHeight = len(previewLines)
 	}
 
 	out = append(out,
@@ -434,15 +446,23 @@ func (m model) renderIssueCompact(width int) string {
 	return strings.Join(out, "\n") + "\n"
 }
 
-func (m model) issueLines(width int, focused bool) []string {
+func (m model) issueLines(width int, maxLines int, focused bool) []string {
 	lines := []string{truncate(m.issueFilterLine(), width)}
 	if m.issueSearchEditing {
 		lines = append(lines, truncate("Search: "+m.issueFilter.Search+"_", width))
 	}
+	if m.issuesError != "" {
+		lines = append(lines, truncate("Issue loading failed: "+m.issuesError, width))
+	}
 	issues := m.visibleIssues()
 	if len(issues) == 0 {
-		return append(lines, m.emptyIssueLine())
+		lines = append(lines, m.emptyIssueLine())
+		if maxLines > 0 && len(lines) > maxLines {
+			return lines[:maxLines]
+		}
+		return lines
 	}
+	blocks := make([][]string, 0, len(issues))
 	for i, issue := range issues {
 		marker := selectionMarker(i == m.selectedIssue, focused)
 		row := fmt.Sprintf("%s %-7s %-7s %4s %-12s %s",
@@ -453,10 +473,54 @@ func (m model) issueLines(width int, focused bool) []string {
 			emptyFallback(issue.AuthorLogin, "-"),
 			issue.Title,
 		)
-		lines = append(lines, truncate(row, width))
+		block := []string{truncate(row, width)}
 		if meta := issueListMeta(issue); meta != "" {
-			lines = append(lines, truncate("  "+meta, width))
+			block = append(block, truncate("  "+meta, width))
 		}
+		blocks = append(blocks, block)
+	}
+	if maxLines <= 0 {
+		return appendIssueBlocks(lines, blocks)
+	}
+	if len(lines) >= maxLines {
+		return lines[:maxLines]
+	}
+	return appendIssueBlocks(lines, issueBlockViewport(blocks, m.selectedIssue, maxLines-len(lines)))
+}
+
+func issueBlockViewport(blocks [][]string, selected int, maxLines int) [][]string {
+	if len(blocks) == 0 || maxLines <= 0 {
+		return nil
+	}
+	selected = clamp(selected, 0, len(blocks)-1)
+	if len(blocks[selected]) >= maxLines {
+		return [][]string{blocks[selected][:maxLines]}
+	}
+	start := selected
+	end := selected + 1
+	used := len(blocks[selected])
+	for {
+		changed := false
+		if start > 0 && used+len(blocks[start-1]) <= maxLines {
+			start--
+			used += len(blocks[start])
+			changed = true
+		}
+		if end < len(blocks) && used+len(blocks[end]) <= maxLines {
+			used += len(blocks[end])
+			end++
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+	return blocks[start:end]
+}
+
+func appendIssueBlocks(lines []string, blocks [][]string) []string {
+	for _, block := range blocks {
+		lines = append(lines, block...)
 	}
 	return lines
 }

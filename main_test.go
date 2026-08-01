@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,13 +19,20 @@ type fakeMainGitHub struct {
 	issuesByRepo map[string][]workbench.IssueRef
 	checks       map[string]workbench.CheckSummary
 	subjects     workbench.ReviewSubjects
+	calls        *[]string
 }
 
 func (f fakeMainGitHub) PullRequests(_ context.Context, repo string) ([]workbench.PullRequestRef, error) {
+	if f.calls != nil {
+		*f.calls = append(*f.calls, "pull_requests:"+repo)
+	}
 	return append([]workbench.PullRequestRef(nil), f.prsByRepo[repo]...), nil
 }
 
 func (f fakeMainGitHub) Issues(_ context.Context, repo string) ([]workbench.IssueRef, error) {
+	if f.calls != nil {
+		*f.calls = append(*f.calls, "issues:"+repo)
+	}
 	return append([]workbench.IssueRef(nil), f.issuesByRepo[repo]...), nil
 }
 
@@ -220,6 +228,48 @@ func TestRuntimeWorkbenchReloaderPropagatesSelectedRepoRawData(t *testing.T) {
 	}
 	if result.ViewerSubject.Login != "0maru" {
 		t.Fatalf("expected viewer subject to propagate, got %+v", result.ViewerSubject)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderLoadsIssuesForOnlyRequestedRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	ghZenRepo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	dotfilesRepo := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	initRuntimeRepo(t, filepath.Join(root, ghZenRepo.Owner, ghZenRepo.Name), "https://github.com/0maru/gh-zen.git")
+	initRuntimeRepo(t, filepath.Join(root, dotfilesRepo.Owner, dotfilesRepo.Name), "https://github.com/0maru/dotfiles.git")
+
+	calls := []string{}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			issuesByRepo: map[string][]workbench.IssueRef{
+				dotfilesRepo.FullName(): {{Number: 75, Title: "Issue browsing", State: "open"}},
+			},
+			calls: &calls,
+		},
+	}
+
+	result := reloader.LoadIssues(context.Background(), dotfilesRepo)
+
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
+		t.Fatalf("expected requested repo issues, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if len(result.Repositories) != 0 {
+		t.Fatalf("expected repo-scoped reload not to replace repository summaries, got %+v", result.Repositories)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, ghZenRepo.FullName()) {
+			t.Fatalf("expected no GitHub calls for unrelated repo, got %+v", calls)
+		}
+	}
+	if !slices.Contains(calls, "pull_requests:"+dotfilesRepo.FullName()) || !slices.Contains(calls, "issues:"+dotfilesRepo.FullName()) {
+		t.Fatalf("expected requested repo GitHub calls, got %+v", calls)
 	}
 }
 
