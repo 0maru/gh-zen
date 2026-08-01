@@ -22,6 +22,7 @@ type RuntimeLoadResult struct {
 	Issues             []IssueRef
 	IssuesLoaded       bool
 	IssuesError        string
+	FailedCheckRefs    []string
 	ViewerSubject      ReviewSubjects
 }
 
@@ -93,6 +94,7 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 		checks, err := l.GitHub.CheckSummary(ctx, repoName, ref)
 		if err != nil {
 			discoveryErrors = append(discoveryErrors, err)
+			result.FailedCheckRefs = append(result.FailedCheckRefs, ref)
 			if items[i].Checks.State == "" {
 				items[i].Checks = CheckSummary{State: CheckUnknown}
 			}

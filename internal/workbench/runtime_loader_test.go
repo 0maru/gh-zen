@@ -322,6 +322,9 @@ func TestRuntimeLoader_ContinuesWhenSingleCheckFails(t *testing.T) {
 	if second.Checks.State != CheckPassing || second.Checks.Passing != 2 {
 		t.Fatalf("expected later PR checks to be linked, got %+v", second.Checks)
 	}
+	if len(result.FailedCheckRefs) != 1 || result.FailedCheckRefs[0] != "first" {
+		t.Fatalf("expected failed check ref to be recorded, got %+v", result.FailedCheckRefs)
+	}
 	if !hasRuntimeErrorItem(result.Items, "issue and check discovery failed", "first checks failed") {
 		t.Fatalf("expected check discovery error item, got %+v", result.Items)
 	}

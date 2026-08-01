@@ -1306,6 +1306,8 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 				replacement[index].PullRequest = previous.PullRequest
 				replacement[index].Checks = previous.Checks
 				replacement[index].Issue = refreshedIssueRef(previous.Issue, result)
+			} else if checkRefFailed(replacement[index], result.FailedCheckRefs) {
+				replacement[index].Checks = previous.Checks
 			}
 			if !result.IssuesLoaded && previous.Issue != nil {
 				replacement[index].Issue = previous.Issue
@@ -1319,6 +1321,22 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 	}
 
 	return replaceRepoWorkItems(items, repo, replacement)
+}
+
+func checkRefFailed(item workbench.WorkItem, failedRefs []string) bool {
+	if item.PullRequest == nil {
+		return false
+	}
+	ref := item.PullRequest.HeadBranch
+	if strings.HasPrefix(item.ID, "pull-request:") && item.PullRequest.Number > 0 {
+		ref = fmt.Sprintf("%d", item.PullRequest.Number)
+	}
+	for _, failedRef := range failedRefs {
+		if failedRef == ref {
+			return true
+		}
+	}
+	return false
 }
 
 func refreshedIssueRef(previous *workbench.IssueRef, result workbench.RuntimeLoadResult) *workbench.IssueRef {

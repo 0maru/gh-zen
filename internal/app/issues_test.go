@@ -991,6 +991,79 @@ func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testin
 	}
 }
 
+func TestUpdate_IssueRefreshCheckFailureKeepsOnlyFailedCheckState(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	failedItem := workbench.WorkItem{
+		ID:          "branch:first",
+		Repo:        repo,
+		Branch:      &workbench.BranchRef{Name: "first"},
+		PullRequest: &workbench.PullRequestRef{Number: 10, HeadBranch: "first"},
+		Checks:      workbench.CheckSummary{State: workbench.CheckFailing, Failing: 1},
+	}
+	loadedItem := workbench.WorkItem{
+		ID:          "branch:second",
+		Repo:        repo,
+		Branch:      &workbench.BranchRef{Name: "second"},
+		PullRequest: &workbench.PullRequestRef{Number: 11, HeadBranch: "second"},
+		Checks:      workbench.CheckSummary{State: workbench.CheckFailing, Failing: 1},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		RepositorySummaries: []workbench.RepositorySummary{{Repo: repo}},
+		WorkItems:           []workbench.WorkItem{failedItem, loadedItem},
+	}, fakeDelayedPreviewLoader(0))
+	request := workbenchReloadRequest{requestID: 1, repo: repo, status: "Loading issues...", issueScoped: true}
+	start.screen = screenIssues
+	start.issueRepo = repo
+	start.workbenchLoading = true
+	start.activeReloadRequest = request
+
+	got, _ := start.Update(workbenchReloadMsg{
+		request: request,
+		result: workbench.RuntimeLoadResult{
+			Repo:               repo,
+			Repositories:       []workbench.RepositorySummary{{Repo: repo}},
+			PullRequestsLoaded: true,
+			IssuesRepo:         repo,
+			IssuesLoaded:       true,
+			FailedCheckRefs:    []string{"first"},
+			Items: []workbench.WorkItem{
+				{
+					ID:          failedItem.ID,
+					Repo:        repo,
+					Branch:      failedItem.Branch,
+					PullRequest: failedItem.PullRequest,
+					Checks:      workbench.CheckSummary{State: workbench.CheckUnknown},
+				},
+				{
+					ID:          loadedItem.ID,
+					Repo:        repo,
+					Branch:      loadedItem.Branch,
+					PullRequest: loadedItem.PullRequest,
+					Checks:      workbench.CheckSummary{State: workbench.CheckUnknown},
+				},
+			},
+		},
+	})
+	mm := got.(model)
+
+	for _, item := range mm.workItems {
+		switch item.ID {
+		case failedItem.ID:
+			if item.Checks.State != workbench.CheckFailing || item.Checks.Failing != 1 {
+				t.Fatalf("expected failed check load to preserve previous state, got %+v", item.Checks)
+			}
+		case loadedItem.ID:
+			if item.Checks.State != workbench.CheckUnknown {
+				t.Fatalf("expected successful unknown check load to replace previous state, got %+v", item.Checks)
+			}
+		}
+	}
+	summary, ok := mm.repoSummary(repo)
+	if !ok || summary.FailingCheckCount != 1 {
+		t.Fatalf("expected summary to retain one failed check, got %+v ok=%v", summary, ok)
+	}
+}
+
 func TestUpdate_IssueRefreshReplacesRepositoryCaseInsensitively(t *testing.T) {
 	canonicalRepo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
 	requestRepo := workbench.RepoRef{Owner: "owner", Name: "repo"}
