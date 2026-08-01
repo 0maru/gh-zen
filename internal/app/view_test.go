@@ -150,6 +150,25 @@ func TestView_FullHelpShowsContextualActions(t *testing.T) {
 	}
 }
 
+func TestView_IssuePreviewHelpShowsScrollKeys(t *testing.T) {
+	m := newModel()
+	m.screen = screenIssues
+	m.focusedPane = panePreview
+	m.issueRepo = workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	m.issues = []workbench.IssueRef{{Number: 75, Title: "Issue browser", State: "open"}}
+
+	got := ansi.Strip(m.View())
+	if !strings.Contains(got, "Preview keys: j/k move  g/G jump") {
+		t.Fatalf("expected issue preview keymap to show scroll keys, got:\n%s", got)
+	}
+
+	m.help.ShowAll = true
+	got = ansi.Strip(m.View())
+	if !strings.Contains(got, "j down") || !strings.Contains(got, "G bottom") {
+		t.Fatalf("expected issue preview full help to show scroll keys, got:\n%s", got)
+	}
+}
+
 func TestView_FullLayoutSeparatesPanes(t *testing.T) {
 	got := newModel().View()
 	lines := strings.Split(got, "\n")

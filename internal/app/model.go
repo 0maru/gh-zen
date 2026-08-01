@@ -1313,7 +1313,7 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 		if found {
 			samePR := previous.PullRequest != nil && replacement[index].PullRequest != nil &&
 				samePullRequest(*previous.PullRequest, *replacement[index].PullRequest)
-			if !result.PullRequestsLoaded && previous.PullRequest != nil {
+			if !result.PullRequestsLoaded && previous.PullRequest != nil && sameWorkItemBranch(previous, replacement[index]) {
 				replacement[index].PullRequest = previous.PullRequest
 				replacement[index].Checks = previous.Checks
 				replacement[index].Issue = refreshedIssueRef(previous.Issue, result)
@@ -1396,6 +1396,10 @@ func samePullRequest(left workbench.PullRequestRef, right workbench.PullRequestR
 
 func sameIssueRef(left *workbench.IssueRef, right *workbench.IssueRef) bool {
 	return left != nil && right != nil && left.Number > 0 && left.Number == right.Number
+}
+
+func sameWorkItemBranch(left workbench.WorkItem, right workbench.WorkItem) bool {
+	return left.Branch != nil && right.Branch != nil && left.Branch.Name != "" && left.Branch.Name == right.Branch.Name
 }
 
 func preserveViewerReviewPerspective(current *workbench.PullRequestRef, previous *workbench.PullRequestRef) {

@@ -1338,6 +1338,48 @@ func TestMergeIssueScopedWorkItemsDoesNotPreserveStateAcrossPullRequests(t *test
 	}
 }
 
+func TestMergeIssueScopedWorkItemsDoesNotPreserveStateAcrossBranches(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	previous := workbench.WorkItem{
+		ID:       "worktree:/repos/gh-zen-feature",
+		Repo:     repo,
+		Branch:   &workbench.BranchRef{Name: "feature-a"},
+		Worktree: &workbench.WorktreeRef{Path: "/repos/gh-zen-feature"},
+		PullRequest: &workbench.PullRequestRef{
+			Number:     10,
+			HeadBranch: "feature-a",
+		},
+		Issue:  &workbench.IssueRef{Number: 75, Title: "Old issue"},
+		Checks: workbench.CheckSummary{State: workbench.CheckFailing, Failing: 1},
+	}
+	current := workbench.WorkItem{
+		ID:       previous.ID,
+		Repo:     repo,
+		Branch:   &workbench.BranchRef{Name: "feature-b"},
+		Worktree: previous.Worktree,
+		Issue:    &workbench.IssueRef{Number: 76, Title: "New issue"},
+	}
+
+	got := mergeIssueScopedWorkItems([]workbench.WorkItem{previous}, repo, workbench.RuntimeLoadResult{
+		Repo:               repo,
+		Items:              []workbench.WorkItem{current},
+		PullRequestsLoaded: false,
+		IssuesLoaded:       false,
+	})
+	if len(got) != 1 {
+		t.Fatalf("expected one current branch item, got %+v", got)
+	}
+	if got[0].PullRequest != nil {
+		t.Fatalf("expected old branch pull request not to be restored, got %+v", got[0].PullRequest)
+	}
+	if got[0].Checks.State == workbench.CheckFailing || got[0].Checks.Failing != 0 {
+		t.Fatalf("expected old branch checks not to be restored, got %+v", got[0].Checks)
+	}
+	if got[0].Issue == nil || got[0].Issue.Number != 76 || got[0].Issue.Title != "New issue" {
+		t.Fatalf("expected current branch issue association, got %+v", got[0].Issue)
+	}
+}
+
 func TestSyncWorkbenchReturnAfterReloadMatchesRepositoryCaseInsensitively(t *testing.T) {
 	start := newModel()
 	start.repos = []workbench.RepoRef{

@@ -376,7 +376,7 @@ func (k workbenchKeyMap) issueContextualHelp(focus paneFocus, visiblePanes []pan
 	short := []key.Binding{paneNumbers, paneKeys, k.ToggleHelp, k.BackToWorkbench}
 	full := [][]key.Binding{panes, actions, filters, system}
 
-	if focus == paneWorkItems {
+	if focus == paneWorkItems || focus == panePreview {
 		move := combinedBinding("move", k.MoveDown, k.MoveUp)
 		jump := combinedBinding("jump", k.JumpTop, k.JumpBottom)
 		short = append([]key.Binding{move, jump}, short...)
