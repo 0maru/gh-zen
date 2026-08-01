@@ -959,9 +959,11 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	}
 	pendingIssueReload := m.issueReloadPending
 	pendingIssueRepo := m.pendingIssueRepo
-	updateVisibleIssues := !pendingIssueReload ||
-		!msg.request.issueScoped ||
-		strings.EqualFold(msg.request.repo.FullName(), pendingIssueRepo.FullName())
+	resultIssueRepo := msg.result.IssuesRepo
+	if !hasRepoRef(resultIssueRepo) {
+		resultIssueRepo = msg.result.Repo
+	}
+	updateVisibleIssues := !pendingIssueReload || sameRepoRef(resultIssueRepo, pendingIssueRepo)
 	if updateVisibleIssues {
 		m.updateIssueDataFromRuntimeResult(msg.result)
 	}
@@ -1333,6 +1335,7 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 			continue
 		}
 		if !result.PullRequestsLoaded && previous.PullRequest != nil && !isLocalDiscoveryWorkItem(previous) {
+			previous.Issue = refreshedIssueRef(previous.Issue, result)
 			byID[previous.ID] = len(replacement)
 			replacement = append(replacement, previous)
 		}

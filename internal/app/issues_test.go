@@ -508,6 +508,7 @@ func TestUpdate_IssueEntryStartsPendingReloadAfterDifferentRepoWorkbenchResponse
 	start.issueRepo = repoB
 	start.issueReloadPending = true
 	start.pendingIssueRepo = repoB
+	start.pendingIssueNumber = 75
 	start.issuesLoading = true
 
 	got, cmd := start.Update(workbenchReloadMsg{
@@ -531,7 +532,18 @@ func TestUpdate_IssueEntryStartsPendingReloadAfterDifferentRepoWorkbenchResponse
 	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool { return item.ID == "repo-a-refreshed-item" }) {
 		t.Fatalf("expected the full workbench response to be applied before the pending reload, got %+v", mm.workItems)
 	}
-	requireWorkbenchReloadMsg(t, cmd)
+	if mm.pendingIssueNumber != 75 {
+		t.Fatalf("expected target issue to remain pending, got %d", mm.pendingIssueNumber)
+	}
+	got, _ = mm.Update(requireWorkbenchReloadMsg(t, cmd))
+	mm = got.(model)
+	issue, ok := mm.selectedIssueRef()
+	if !ok || issue.Number != 75 {
+		t.Fatalf("expected pending target issue #75 to be selected, got %+v ok=%v", issue, ok)
+	}
+	if mm.pendingIssueNumber != 0 {
+		t.Fatalf("expected pending target to clear after selection, got %d", mm.pendingIssueNumber)
+	}
 	if len(issueReloader.calls) != 1 || issueReloader.calls[0] != repoB {
 		t.Fatalf("expected pending reload for %+v, got %+v", repoB, issueReloader.calls)
 	}
@@ -1059,6 +1071,7 @@ func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testin
 		ID:          "pull-request:0maru/gh-zen:#11",
 		Repo:        repo,
 		PullRequest: &workbench.PullRequestRef{Number: 11, Title: "Remote PR", State: "open"},
+		Issue:       &workbench.IssueRef{Number: 76, Title: "Old remote issue", State: "open"},
 		Checks:      workbench.CheckSummary{State: workbench.CheckPassing},
 	}
 	deletedLocalItem := workbench.WorkItem{
@@ -1099,6 +1112,10 @@ func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testin
 				Number: 75,
 				Title:  "Refreshed issue",
 				State:  "open",
+			}, {
+				Number: 76,
+				Title:  "Refreshed remote issue",
+				State:  "closed",
 			}},
 		},
 	})
@@ -1124,7 +1141,10 @@ func TestUpdate_IssueRefreshPullRequestFailureKeepsWorkbenchEnrichment(t *testin
 		t.Fatalf("expected retained PR link to use refreshed issue metadata, got %+v", reloadedLocal.Issue)
 	}
 	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool {
-		return item.ID == pullRequestOnlyItem.ID && item.PullRequest != nil && item.PullRequest.Number == 11
+		return item.ID == pullRequestOnlyItem.ID &&
+			item.PullRequest != nil && item.PullRequest.Number == 11 &&
+			item.Issue != nil && item.Issue.Number == 76 &&
+			item.Issue.Title == "Refreshed remote issue" && item.Issue.State == "closed"
 	}) {
 		t.Fatalf("expected PR-only item to remain, got %+v", mm.workItems)
 	}
