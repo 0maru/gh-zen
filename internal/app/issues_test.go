@@ -701,6 +701,46 @@ func TestUpdate_IssueViewRefreshUpdatesReturnSelection(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueViewFullReloadPreservesReturnSelectionAcrossRepoCasing(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "owner", Name: "repo"}
+	canonicalRepo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
+	first := workbench.WorkItem{ID: "branch:first", Repo: repo, Branch: &workbench.BranchRef{Name: "first"}}
+	second := workbench.WorkItem{ID: "branch:second", Repo: repo, Branch: &workbench.BranchRef{Name: "second"}}
+	reloadedFirst := first
+	reloadedFirst.Repo = canonicalRepo
+	reloadedSecond := second
+	reloadedSecond.Repo = canonicalRepo
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {
+				Repo:         canonicalRepo,
+				Repositories: []workbench.RepositorySummary{{Repo: canonicalRepo}},
+				Items:        []workbench.WorkItem{reloadedSecond, reloadedFirst},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{first, second},
+		Reloader:  reloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.selectedItem = 1
+	start.focusedWorkItemRepo = second.Repo
+	start.focusedWorkItemID = second.ID
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	got, _ = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	mm := got.(model)
+
+	if mm.selectedItem != 0 {
+		t.Fatalf("expected return selection to follow the case-insensitive repo and stable ID to index 0, got %d", mm.selectedItem)
+	}
+	if item, ok := mm.selectedWorkItem(); !ok || item.ID != second.ID || !sameRepoRef(item.Repo, canonicalRepo) {
+		t.Fatalf("expected selected work item %q in canonical repo, got %+v ok=%v", second.ID, item, ok)
+	}
+}
+
 func TestUpdate_IssueViewReloadRefreshesPreviewOnReturn(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	original := workbench.WorkItem{

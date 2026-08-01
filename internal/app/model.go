@@ -1543,7 +1543,7 @@ func (m *model) restoreSelectedWorkItem(repo workbench.RepoRef, workItemID strin
 	}
 	if workItemID != "" {
 		for i, item := range items {
-			if item.Repo == repo && item.ID == workItemID {
+			if sameRepoRef(item.Repo, repo) && item.ID == workItemID {
 				m.selectedItem = i
 				return
 			}
