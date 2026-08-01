@@ -199,6 +199,24 @@ func TestCLIService_RepositoryPullRequestsClassifiesTimedOutChecksAsFailing(t *t
 	}
 }
 
+func TestCLIService_RepositoryPullRequestsClassifiesWaitingChecksAsPending(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[
+			{"number":8,"title":"Waiting","state":"OPEN","updatedAt":"2026-05-01T10:00:00Z","commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"REQUESTED","conclusion":""},{"__typename":"StatusContext","context":"deploy","state":"EXPECTED"}]}}}}]}}
+		],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected repository pull requests to parse, got %v", err)
+	}
+	if got[0].Checks.State != "pending" || got[0].Checks.Pending != 2 {
+		t.Fatalf("expected requested and expected checks to be pending, got %+v", got[0].Checks)
+	}
+}
+
 func TestCLIService_DetailParsesGraphQLOutput(t *testing.T) {
 	repo := "0maru/gh-zen"
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{

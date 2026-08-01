@@ -1361,7 +1361,7 @@ func normalizedCheckState(value string) workbench.CheckState {
 	switch {
 	case strings.Contains(value, "fail"), strings.Contains(value, "error"), strings.Contains(value, "cancel"), strings.Contains(value, "timed out"), strings.Contains(value, "timeout"), strings.Contains(value, "action required"):
 		return workbench.CheckFailing
-	case strings.Contains(value, "pending"), strings.Contains(value, "queued"), strings.Contains(value, "progress"), strings.Contains(value, "waiting"):
+	case value == "requested", value == "expected", strings.Contains(value, "pending"), strings.Contains(value, "queued"), strings.Contains(value, "progress"), strings.Contains(value, "waiting"):
 		return workbench.CheckPending
 	case strings.Contains(value, "pass"), strings.Contains(value, "success"):
 		return workbench.CheckPassing

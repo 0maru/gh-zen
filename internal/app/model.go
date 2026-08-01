@@ -1816,6 +1816,9 @@ func (m model) renderFull(width int) string {
 	right := m.previewPaneLines(paneTextWidth(rightWidth))
 	out := m.headerLines(m.headerTitle(false), width)
 	bodyHeight := m.frameBodyHeight(max(len(left), max(len(middle), len(right))), len(out))
+	if m.activeView == appViewPullRequests && m.height > 0 {
+		bodyHeight = max(m.height-len(out)-frameBorderLines, 0)
+	}
 
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
@@ -1864,8 +1867,11 @@ func (m model) renderCompact(width int) string {
 	workHeight := len(workLines)
 	previewHeight := len(previewLines)
 	if m.height > 0 {
-		availableContentHeight := m.height - len(out) - frameBorderLines*2
-		if availableContentHeight > workHeight+previewHeight {
+		availableContentHeight := max(m.height-len(out)-frameBorderLines*2, 0)
+		if m.activeView == appViewPullRequests {
+			workHeight = min(workHeight, availableContentHeight)
+			previewHeight = max(availableContentHeight-workHeight, 0)
+		} else if availableContentHeight > workHeight+previewHeight {
 			previewHeight += availableContentHeight - workHeight - previewHeight
 		}
 	}
@@ -1961,9 +1967,10 @@ func (m model) pullRequestLines(width int, focused bool) []string {
 	if len(prs) == 0 {
 		return []string{m.emptyPullRequestLine()}
 	}
-	lines := []string{}
-	for i, pr := range prs {
-		marker := selectionMarker(i == m.selectedPR, focused)
+	start, end := pullRequestWindow(len(prs), m.selectedPR, m.pullRequestLineLimit())
+	lines := make([]string, 0, end-start)
+	for i, pr := range prs[start:end] {
+		marker := selectionMarker(start+i == m.selectedPR, focused)
 		row := fmt.Sprintf("%s %-5s %-10s %-18s %-10s %-16s %-18s %s",
 			marker,
 			pr.ShortNumberLabel(),
@@ -1977,6 +1984,27 @@ func (m model) pullRequestLines(width int, focused bool) []string {
 		lines = append(lines, truncate(row, width))
 	}
 	return lines
+}
+
+func (m model) pullRequestLineLimit() int {
+	if m.height <= 0 {
+		return 0
+	}
+	headerHeight := len(m.headerLines(m.headerTitle(m.isCompact()), m.effectiveWidth()))
+	if m.isCompact() {
+		available := max(m.height-headerHeight-frameBorderLines*2, 0)
+		return max(available/2, 1)
+	}
+	return max(m.height-headerHeight-frameBorderLines, 1)
+}
+
+func pullRequestWindow(total int, selected int, limit int) (int, int) {
+	if limit <= 0 || total <= limit {
+		return 0, total
+	}
+	selected = clamp(selected, 0, total-1)
+	start := clamp(selected-limit/2, 0, total-limit)
+	return start, start + limit
 }
 
 func (m model) emptyWorkItemLine() string {

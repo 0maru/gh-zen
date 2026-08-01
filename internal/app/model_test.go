@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1662,6 +1663,49 @@ func TestPullRequestViewUsesPullRequestFullLayoutBreakpoint(t *testing.T) {
 	_, listWidth, previewWidth := full.fullPaneWidths(prFullLayoutMinWidth)
 	if listWidth < pullRequestPaneMinWidth || previewWidth < previewPaneMinWidth {
 		t.Fatalf("expected PR full layout minimums, got list=%d preview=%d", listWidth, previewWidth)
+	}
+}
+
+func TestPullRequestRowsStayWithinTerminalAndFollowSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		width int
+	}{
+		{name: "compact", width: 120},
+		{name: "full", width: prFullLayoutMinWidth},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := testPRModel()
+			start.activeView = appViewPullRequests
+			start.width = tc.width
+			start.height = 18
+			start.pullRequests = make([]pullrequests.PullRequest, 30)
+			for i := range start.pullRequests {
+				start.pullRequests[i] = pullrequests.PullRequest{
+					Number:    i + 1,
+					Title:     fmt.Sprintf("Pull request %d", i+1),
+					State:     "open",
+					UpdatedAt: "2026-08-01T00:00:00Z",
+				}
+			}
+			start.selectedPR = 20
+
+			lines := start.pullRequestLines(120, true)
+			if len(lines) != start.pullRequestLineLimit() {
+				t.Fatalf("expected %d visible PR rows, got %d", start.pullRequestLineLimit(), len(lines))
+			}
+			if got := strings.Join(lines, "\n"); !strings.Contains(got, "> #21") {
+				t.Fatalf("expected selected PR to stay visible, got:\n%s", got)
+			}
+
+			got := ansi.Strip(start.View())
+			if lineCount := len(strings.Split(strings.TrimSuffix(got, "\n"), "\n")); lineCount != start.height {
+				t.Fatalf("expected PR view to use %d terminal rows, got %d:\n%s", start.height, lineCount, got)
+			}
+			if !strings.Contains(got, "#21") {
+				t.Fatalf("expected selected PR in rendered viewport, got:\n%s", got)
+			}
+		})
 	}
 }
 
