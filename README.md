@@ -19,9 +19,12 @@ GitHub data when authenticated `gh` access is available.
   local status is summarized as clean, dirty, detached, missing, or unknown.
 - GitHub enrichment: pull requests, linked issues, review state, and check
   summaries are linked to local work items through `gh`.
-- Read-only actions: open a linked pull request or issue, copy the best
-  available GitHub URL, copy the local worktree path, and refresh the workbench
-  data.
+- Read-only workbench actions: open a linked pull request or issue, copy the
+  best available GitHub URL, copy the local worktree path, and refresh the
+  workbench data.
+- GitHub Actions mode: browse workflow runs for the selected repository,
+  preview run and job details, fetch failed logs on demand, and open or copy
+  run context.
 
 ## Installation
 
@@ -76,6 +79,8 @@ current Git checkout. Once the workbench opens:
 2. Move through work items in the center pane.
 3. Read the combined local and GitHub context in the preview pane.
 4. Use read-only actions to open URLs, copy context, or refresh data.
+5. Press `a` to inspect GitHub Actions runs for the selected repository, then
+   press `w` to return to the workbench.
 
 ## Panes and Views
 
@@ -94,10 +99,20 @@ The left pane also includes these views:
 | `Waiting on review` | Pull requests waiting on review from another reviewer. |
 | `Failed checks` | Work items whose linked pull request has failing checks. |
 
+In Actions mode, the pane layout becomes:
+
+| Pane | Purpose |
+| --- | --- |
+| `Repositories` | Select the repository whose workflow runs should be loaded. |
+| `Runs` | Recent workflow runs for the selected repository, with in-memory filters. |
+| `Preview` | Run metadata, jobs, failure summary, and explicitly loaded failed logs. |
+
 ## Key Bindings
 
 The TUI currently uses these built-in defaults. Key remapping through
 configuration is not wired into the TUI yet.
+
+Common keys:
 
 | Action ID | Default keys | Behavior |
 | --- | --- | --- |
@@ -111,14 +126,40 @@ configuration is not wired into the TUI yet.
 | `focus_pane_2` | `2` | Focus the second visible pane. |
 | `focus_pane_3` | `3` | Focus the third visible pane. |
 | `toggle_help` | `?` | Toggle full contextual help. |
-| `refresh` | `r` | Reload workbench data for the selected repository. |
+| `refresh` | `r` | Reload data for the current mode. |
+| `quit` | `q`, `esc`, `ctrl+c` | Exit the TUI. |
+
+Workbench mode keys:
+
+| Action ID | Default keys | Behavior |
+| --- | --- | --- |
 | `show_actions` | `a` | Open the GitHub Actions view for the selected repository. |
-| `show_workbench` | `w` | Return to the repository workbench from another view. |
 | `open_pr` | `p` | Open the linked pull request URL. |
 | `open_issue` | `i` | Open the linked issue URL. |
 | `copy_url` | `y` | Copy the linked pull request URL, or the linked issue URL when no PR URL exists. |
 | `copy_worktree_path` | `Y` | Copy the local worktree path. |
-| `quit` | `q`, `esc`, `ctrl+c` | Exit the TUI. |
+
+Actions mode keys:
+
+| Action ID | Default keys | Behavior |
+| --- | --- | --- |
+| `show_workbench` | `w` | Return to the repository workbench. |
+| `open_workflow_run` | `o` | Open the selected workflow run URL. |
+| `copy_url` | `y` | Copy the selected workflow run URL. |
+| `copy_workflow_run_id` | `Y` | Copy the selected workflow run ID. |
+| `fetch_workflow_run_logs` | `L` | Fetch failed logs for the selected workflow run. |
+
+Actions mode filter keys:
+
+| Action ID | Default keys | Behavior |
+| --- | --- | --- |
+| `filter_status` | `s` | Cycle the status filter. |
+| `filter_conclusion` | `c` | Cycle the conclusion filter. |
+| `filter_branch` | `b` | Cycle the branch filter. |
+| `filter_workflow` | `n` | Cycle the workflow name filter. |
+| `filter_event` | `e` | Cycle the event filter. |
+| `filter_actor` | `u` | Cycle the actor filter. |
+| `clear_filters` | `x` | Clear all Actions filters. |
 
 ## Configuration
 
@@ -143,10 +184,6 @@ view = "workbench"
 [repos]
 roots = ["~/workspaces/github.com/0maru"]
 
-[repos.repositories."0maru/gh-zen"]
-default_branch = "main"
-worktree_root = "~/workspaces/github.com/0maru"
-
 [workbench.filter]
 worktree = "/home/alice/workspaces/github.com/0maru/gh-zen*"
 branch_pattern = "feat/*"
@@ -154,10 +191,9 @@ pull_request = "any"
 local_status = "any"
 ```
 
-`repos.roots` is used to discover local checkouts. The per-repository
-`worktree_root` key is accepted by the configuration model for repository-scoped
-settings, and `workbench.filter.worktree` narrows visible work items by absolute
-worktree path glob. The worktree filter does not expand `~`.
+`repos.roots` is used to discover local checkouts and expands `~`.
+`workbench.filter.worktree` narrows visible work items by absolute worktree path
+glob. The worktree filter does not expand `~`.
 
 ## Current Limitations
 
@@ -166,8 +202,9 @@ worktree path glob. The worktree filter does not expand `~`.
 - Full pull request detail browsing is not implemented. The workbench shows
   linked PR summary, review state, and check state rather than a complete PR
   page.
-- GitHub Actions browsing is not implemented. Check summaries can be shown for
-  linked pull requests, but workflow runs and logs are not browsable.
+- Actions mode is read-only and focused on recent workflow runs, run preview,
+  filters, opening run URLs, copying run context, and explicit failed-log
+  fetches. It does not manage workflow runs.
 - Mutating GitHub or Git operations are intentionally out of scope for the
   current action set.
 
@@ -177,6 +214,7 @@ worktree path glob. The worktree filter does not expand `~`.
 - [0006: Use Repository Workbench as the Primary Navigation Model](docs/adr/0006-use-repository-workbench-as-the-primary-navigation-model.md)
 - [0007: Use Layered Configuration With Terminal Profiles](docs/adr/0007-use-layered-configuration-with-terminal-profiles.md)
 - [0009: Use a Runtime Data Pipeline for the Repository Workbench](docs/adr/0009-use-a-runtime-data-pipeline-for-the-repository-workbench.md)
+- [GitHub Actions Smoke Validation](docs/validation/github-actions-smoke.md)
 - [GitHub Pull Request Linking Validation](docs/validation/github-pr-linking.md)
 - [Live Data Smoke Validation](docs/validation/live-data-smoke.md)
 
