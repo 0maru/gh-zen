@@ -57,7 +57,8 @@ gh zen
 - A local GitHub checkout for the repository you want to inspect.
 - An `origin` remote that points to `github.com` so `gh-zen` can resolve
   `owner/repo`.
-- Optional for Linux clipboard actions: `wl-copy` or `xclip`.
+- Optional on Linux: `xdg-open` for URL-opening actions, and `wl-copy` or
+  `xclip` for clipboard actions.
 
 `gh-zen` keeps local Git data visible when GitHub enrichment is unavailable. In
 that case the workbench may show a non-fatal discovery error item for missing
@@ -96,7 +97,7 @@ The left pane also includes these views:
 | --- | --- |
 | `Active worktrees` | Work items that have a local worktree. |
 | `Needs my review` | Pull requests where the authenticated viewer or one of their teams is requested for review. |
-| `Waiting on review` | Pull requests waiting on review from another reviewer. |
+| `Waiting on review` | Pull requests authored by the authenticated viewer and waiting on review from another reviewer. |
 | `Failed checks` | Work items whose linked pull request has failing checks. |
 
 In Actions mode, the pane layout becomes:
