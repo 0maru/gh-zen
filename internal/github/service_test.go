@@ -118,6 +118,19 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	}
 }
 
+func TestLinkedIssuesFromBodyRequiresClosingKeywordForEachIssue(t *testing.T) {
+	body := "Fixes #1 and see #2. Resolves: #3, closes #1. Mentions #4."
+
+	got := linkedIssuesFromBody(body)
+	want := []workbench.IssueRef{
+		{Number: 1, Certain: true},
+		{Number: 3, Certain: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected only explicit closing references %+v, got %+v", want, got)
+	}
+}
+
 func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
 	repo := "0maru/gh-zen"
 	runner := &fakeRunnerByCommand{outputs: map[string][]byte{

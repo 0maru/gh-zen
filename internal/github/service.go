@@ -122,8 +122,7 @@ query($owner:String!, $name:String!, $after:String) {
 )
 
 var (
-	closingIssueTextPattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[^\n\r.]*`)
-	issueNumberPattern      = regexp.MustCompile(`#(\d+)`)
+	closingIssueReferencePattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+#(\d+)\b`)
 )
 
 // Error describes a gh-backed service failure.
@@ -778,21 +777,19 @@ func issuesFromGraphQL(payload []ghIssue) []workbench.IssueRef {
 func linkedIssuesFromBody(body string) []workbench.IssueRef {
 	seen := map[int]bool{}
 	issues := []workbench.IssueRef{}
-	for _, text := range closingIssueTextPattern.FindAllString(body, -1) {
-		for _, match := range issueNumberPattern.FindAllStringSubmatch(text, -1) {
-			if len(match) < 2 {
-				continue
-			}
-			number, err := strconv.Atoi(match[1])
-			if err != nil || seen[number] {
-				continue
-			}
-			issues = append(issues, workbench.IssueRef{
-				Number:  number,
-				Certain: true,
-			})
-			seen[number] = true
+	for _, match := range closingIssueReferencePattern.FindAllStringSubmatch(body, -1) {
+		if len(match) < 2 {
+			continue
 		}
+		number, err := strconv.Atoi(match[1])
+		if err != nil || seen[number] {
+			continue
+		}
+		issues = append(issues, workbench.IssueRef{
+			Number:  number,
+			Certain: true,
+		})
+		seen[number] = true
 	}
 	return issues
 }
