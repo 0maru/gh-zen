@@ -3,9 +3,9 @@
 ## Context
 
 This specification turns the P2 terminal reading requirements into a shared
-guide for future issue, pull request, and Actions browsing work. It follows the
-terminal-first direction described by ADR 0010
-(`docs/adr/0010-use-terminal-first-github-browsing-as-the-product-direction.md`)
+guide for issue, pull request, and Actions browsing work. It follows the
+terminal-first direction described by
+[ADR 0010](https://github.com/0maru/gh-zen/blob/93bf19c0e2ee19c76081d8082e78ed72d833a745/docs/adr/0010-use-terminal-first-github-browsing-as-the-product-direction.md)
 and the existing repository boundaries from ADR 0009:
 
 - `internal/github` owns `gh` command execution, GitHub pagination mechanics,
@@ -15,11 +15,21 @@ and the existing repository boundaries from ADR 0009:
 - Domain packages such as `internal/workbench` own pure data shaping, filter,
   and sort logic.
 
-At the time of writing, the app has only the workbench panes
-(`paneWorkItems`, `paneRepositories`, and `panePreview`). Dedicated Issues,
-Pull Requests, and Actions list views are expected to arrive with ADR 0010
-phase 3 through phase 5. This issue does not add panes, app state, service
-interfaces, or GitHub API calls.
+ADR 0010 is currently carried by the pending pull request that introduces the
+first-class pull request browser, rather than by `origin/main`. The commit link
+above keeps the dependency verifiable without duplicating or revising the ADR
+in this change.
+
+The current baseline still uses the workbench panes (`paneWorkItems`,
+`paneRepositories`, and `panePreview`) for focus, but it already has a
+first-class Actions mode backed by `modeActions`, `actionsState`, and the
+Actions methods on `internal/github.Service`. Dedicated Issues and Pull
+Requests list views are not yet part of the baseline. This issue does not add
+panes, app state, service interfaces, or GitHub API calls.
+
+The phase 3, phase 4, and phase 5 labels below are rollout targets used by this
+specification and its source planning issue. They are not numbered sections in
+ADR 0010.
 
 ## Phase Targets
 
@@ -38,7 +48,8 @@ Phase 4, Pull Requests:
 
 Phase 5, Actions / logs:
 
-- Extend the same patterns to workflow runs and check/log status.
+- Extend the existing Actions mode with the same patterns for workflow runs and
+  check/log status; do not create a second Actions browser.
 - Add large log pagination, explicit log expansion, and partial failures from
   run or log loading.
 
@@ -92,13 +103,19 @@ move behind `gh api` calls when a command does not expose resumable cursors.
 The app must not know whether the token is a GraphQL cursor, REST page number,
 or empty end marker.
 
-Loaded chunks should stay in memory per repository and active query/sort key:
+Loaded chunks should stay in memory per remote dataset key:
 
-- Cache key: repository, view kind, lifecycle filter, text query, and sort mode.
+- Cache key: repository, view kind, lifecycle filter, and any ordering or query
+  input that is actually sent to GitHub.
 - Chunk content: items, fetched time, next cursor, and page-level error state.
 - Staleness: mark cached data stale after five minutes, after an explicit
-  refresh request, or after a query/filter/sort change that invalidates the
-  loaded order.
+  refresh request, or after a remote dataset key change.
+
+Accepted text search and local sort mode belong to view state layered on top of
+the cached pages. Changing either must filter or reorder loaded memory without
+invalidating pages or starting network work. If a later sort or search mode is
+implemented remotely, only that explicitly remote mode becomes part of the
+dataset key.
 
 Incremental fetches should trigger when the focused row enters the last 20% of
 the loaded list and `NextCursor` is non-empty. `G` should jump to the last
@@ -116,9 +133,11 @@ command. A failed next-page fetch must keep the already loaded rows visible.
 ### Future API Extension Points
 
 `internal/github.Service` currently exposes `Issues`, `PullRequests`, and
-`CheckSummary` methods without caller-controlled paging. Future work should add
-new read-only methods rather than changing rendering code to call `gh`
-directly. A future shape could be:
+`CheckSummary` methods without caller-controlled paging. It also exposes
+`WorkflowRuns` with a limit and `WorkflowRunLogs` with explicit log options,
+but neither method returns a resumable page token. Future work should extend
+these read-only boundaries rather than changing rendering code to call `gh`
+directly or adding another Actions service path. A future shape could be:
 
 ```go
 type ListPageRequest struct {
@@ -346,8 +365,9 @@ changed and the previous item identity cannot be found.
   expressed through the existing `Styles` fields, add semantic tokens in the
   same spirit as ADR 0008 during the view implementation issue.
 - Use small tests for sorting, filtering, truncation, request identity, stale
-  response discard, and state rendering. Use medium or large tests only for
-  real `gh` integration boundaries.
+  response discard, and state rendering. Use medium tests with large fake
+  issue, PR, Actions, and log payloads or fake command boundaries. Reserve
+  large tests for authenticated `gh` and other real external systems.
 
 ## Sub-Issue Plan
 
@@ -408,12 +428,16 @@ changed and the previous item identity cannot be found.
   results do not overwrite the new focus, and cursor position is preserved by
   stable item identity where possible.
 
-### 7. Add Actions run and log reading behavior
+### 7. Extend Actions run and log reading behavior
 
-- Dependency: phase 5, Actions / logs view.
-- Minimum scope: list workflow runs with bounded chunks, sort by status and
-  updated time, preview run status, and load log segments only through explicit
-  expansion.
-- Acceptance estimate: run lists paginate like issue/PR lists, logs are
-  truncated by line and byte caps, failed log loading is a partial preview error,
-  and full log retrieval never happens implicitly during cursor movement.
+- Dependency: phase 5, existing Actions / logs view (`modeActions` and
+  `actionsState`).
+- Minimum scope: add resumable chunks to the existing workflow run list, add
+  status and updated-time sorting, and evolve the existing explicit log fetch
+  into segmented expansion without replacing its request identity or stale
+  result handling.
+- Acceptance estimate: the existing Actions view keeps its current navigation
+  and on-demand log behavior, run lists paginate like issue/PR lists, logs are
+  truncated by line and byte caps, failed log loading is a partial preview
+  error, and full log retrieval never happens implicitly during cursor
+  movement.

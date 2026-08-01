@@ -12,5 +12,5 @@ consistent while issue, pull request, and Actions browsing are added.
 The cross-view design guidelines live in
 [P2 Terminal Reading Experience](specs/p2-terminal-reading-experience.md).
 They cover pagination, sorting, active-view search, preview truncation,
-empty/loading/error/stale states, and movement responsiveness for the ADR 0010
-phase 3 through phase 5 view work.
+empty/loading/error/stale states, and movement responsiveness for the phase 3
+through phase 5 rollout targets tracked by the source planning issue.
