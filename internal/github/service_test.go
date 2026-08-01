@@ -140,6 +140,22 @@ func TestCLIService_PullRequestsPreservesClosingIssueRepository(t *testing.T) {
 	}
 }
 
+func TestCLIService_PullRequestsUsesGraphQLClosingIssuesAsAuthoritative(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", prListFields):                             []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","author":{"login":"0maru"},"headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewRequests":[],"latestReviews":[],"body":"<!-- Fixes #10 -->"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":12,"closingIssuesReferences":{"nodes":[]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+
+	got, err := (CLIService{Runner: runner}).PullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected pull requests to parse, got %v", err)
+	}
+	if len(got) != 1 || len(got[0].LinkedIssues) != 0 {
+		t.Fatalf("expected hidden Markdown references to be excluded by GraphQL, got %+v", got)
+	}
+}
+
 func TestLinkedIssuesFromBodyRequiresClosingKeywordForEachIssue(t *testing.T) {
 	body := "Fixes #1 and see #2. Resolves: #3, closes #1. Mentions #4."
 

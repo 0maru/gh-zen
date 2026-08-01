@@ -206,7 +206,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("parse gh pr list output: %w", err)
 	}
-	closingIssuesByPR, _ := s.pullRequestClosingIssues(ctx, repo)
+	closingIssuesByPR, closingIssuesErr := s.pullRequestClosingIssues(ctx, repo)
 
 	prs := make([]workbench.PullRequestRef, 0, len(payload))
 	for _, pr := range payload {
@@ -221,7 +221,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			BaseBranch:     pr.BaseRefName,
 			IsDraft:        pr.IsDraft,
 			UpdatedAt:      pr.UpdatedAt,
-			LinkedIssues:   linkedIssues(closingIssuesByPR[pr.Number], repo, pr.Body),
+			LinkedIssues:   linkedIssues(closingIssuesByPR[pr.Number], repo, pr.Body, closingIssuesErr != nil),
 			ReviewState:    reviewState(pr.ReviewDecision),
 			ReviewRequests: reviewRequests(pr.ReviewRequests),
 			LatestReviews:  latestReviews(pr.LatestReviews),
@@ -760,8 +760,11 @@ func logLines(value string) []string {
 	return strings.Split(value, "\n")
 }
 
-func linkedIssues(closingIssues []workbench.IssueRef, repo string, body string) []workbench.IssueRef {
+func linkedIssues(closingIssues []workbench.IssueRef, repo string, body string, useBodyFallback bool) []workbench.IssueRef {
 	issues := append([]workbench.IssueRef(nil), closingIssues...)
+	if !useBodyFallback {
+		return issues
+	}
 	seen := map[string]bool{}
 	for _, issue := range issues {
 		if issue.Number > 0 {
