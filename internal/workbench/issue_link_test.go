@@ -130,6 +130,23 @@ func TestLinkIssues_PreservesUncertainPullRequestMetadataSource(t *testing.T) {
 	}
 }
 
+func TestLinkIssues_IgnoresPullRequestIssuesFromOtherRepositories(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	items := []WorkItem{{
+		ID:   "feature",
+		Repo: repo,
+		PullRequest: &PullRequestRef{LinkedIssues: []IssueRef{
+			{Number: 10, Repository: "other/repo", Title: "External issue", Certain: true},
+			{Number: 11, Repository: repo.FullName(), Title: "Local issue", Certain: true},
+		}},
+	}}
+
+	got := LinkIssues(items, []IssueRef{{Number: 11, Repository: repo.FullName(), Title: "Local issue details", Certain: true}})
+	if got[0].Issue == nil || got[0].Issue.Number != 11 || got[0].Issue.Title != "Local issue details" {
+		t.Fatalf("expected only the local-repository closing issue to be linked, got %+v", got[0].Issue)
+	}
+}
+
 func TestLinkIssues_EnrichesBranchHeuristicFromIssueList(t *testing.T) {
 	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
 	items := []WorkItem{{

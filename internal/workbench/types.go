@@ -34,6 +34,7 @@ type WorktreeRef struct {
 
 type IssueRef struct {
 	Number        int
+	Repository    string
 	Title         string
 	State         string
 	URL           string

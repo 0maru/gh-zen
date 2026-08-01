@@ -23,6 +23,16 @@ type fakeRuntimeGitHub struct {
 	checkErrs   map[string]error
 }
 
+type configurableIssueRuntimeGitHub struct {
+	fakeRuntimeGitHub
+	includeComments []bool
+}
+
+func (f *configurableIssueRuntimeGitHub) IssuesWithOptions(_ context.Context, _ string, opts IssueListOptions) ([]IssueRef, error) {
+	f.includeComments = append(f.includeComments, opts.IncludeCommentsCount)
+	return f.issues, f.issueErr
+}
+
 func (f fakeRuntimeGitHub) PullRequests(context.Context, string) ([]PullRequestRef, error) {
 	if f.prErr != nil {
 		return nil, f.prErr
@@ -124,6 +134,20 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	}
 	if item.Checks.State != CheckPassing || item.Checks.Passing != 2 {
 		t.Fatalf("expected passing checks, got %+v", item.Checks)
+	}
+}
+
+func TestRuntimeLoader_DefersIssueCommentsUnlessRequested(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	discovery := &configurableIssueRuntimeGitHub{fakeRuntimeGitHub: fakeRuntimeGitHub{
+		issues: []IssueRef{{Number: 75, Title: "Issue browsing", State: "open"}},
+	}}
+
+	RuntimeLoader{Repo: repo, RepoPath: "/repo", Local: fakeLocalDiscovery{}, GitHub: discovery}.Load(context.Background())
+	RuntimeLoader{Repo: repo, RepoPath: "/repo", Local: fakeLocalDiscovery{}, GitHub: discovery, IncludeIssueCommentsCount: true}.Load(context.Background())
+
+	if len(discovery.includeComments) != 2 || discovery.includeComments[0] || !discovery.includeComments[1] {
+		t.Fatalf("expected normal load to defer comments and issue-scoped load to include them, got %v", discovery.includeComments)
 	}
 }
 

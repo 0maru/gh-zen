@@ -91,6 +91,9 @@ query($owner:String!, $name:String!, $after:String) {
             title
             state
             url
+            repository {
+              nameWithOwner
+            }
           }
         }
       }
@@ -227,8 +230,13 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 	return prs, nil
 }
 
-// Issues loads issue summaries through gh.
+// Issues loads issue summaries and browser-only metadata through gh.
 func (s CLIService) Issues(ctx context.Context, repo string) ([]workbench.IssueRef, error) {
+	return s.IssuesWithOptions(ctx, repo, workbench.IssueListOptions{IncludeCommentsCount: true})
+}
+
+// IssuesWithOptions loads issue summaries while allowing workbench refreshes to defer comment counts.
+func (s CLIService) IssuesWithOptions(ctx context.Context, repo string, opts workbench.IssueListOptions) ([]workbench.IssueRef, error) {
 	output, err := s.runner().Run(ctx, "issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields)
 	if err != nil {
 		return nil, err
@@ -250,11 +258,15 @@ func (s CLIService) Issues(ctx context.Context, repo string) ([]workbench.IssueR
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("parse gh issue list output: %w", err)
 	}
-	commentCounts, _ := s.issueCommentCounts(ctx, repo)
+	commentCounts := map[int]int{}
+	if opts.IncludeCommentsCount {
+		commentCounts, _ = s.issueCommentCounts(ctx, repo)
+	}
 	issues := make([]workbench.IssueRef, 0, len(payload))
 	for _, issue := range payload {
 		issues = append(issues, workbench.IssueRef{
 			Number:        issue.Number,
+			Repository:    repo,
 			Title:         issue.Title,
 			State:         strings.ToLower(issue.State),
 			URL:           issue.URL,
@@ -484,7 +496,7 @@ func (s CLIService) pullRequestClosingIssues(ctx context.Context, repo string) (
 		}
 		for _, pr := range payload.Data.Repository.PullRequests.Nodes {
 			if pr.Number > 0 {
-				issuesByPR[pr.Number] = issuesFromGraphQL(pr.ClosingIssues.Nodes)
+				issuesByPR[pr.Number] = issuesFromGraphQL(pr.ClosingIssues.Nodes, repo)
 			}
 		}
 		if !payload.Data.Repository.PullRequests.PageInfo.HasNextPage {
@@ -564,10 +576,13 @@ type ghLabel struct {
 }
 
 type ghIssue struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
-	State  string `json:"state"`
-	URL    string `json:"url"`
+	Number     int    `json:"number"`
+	Title      string `json:"title"`
+	State      string `json:"state"`
+	URL        string `json:"url"`
+	Repository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
 }
 
 type ghReviewRequest struct {
@@ -744,34 +759,48 @@ func logLines(value string) []string {
 
 func linkedIssues(closingIssues []workbench.IssueRef, repo string, body string) []workbench.IssueRef {
 	issues := append([]workbench.IssueRef(nil), closingIssues...)
-	seen := map[int]bool{}
+	seen := map[string]bool{}
 	for _, issue := range issues {
 		if issue.Number > 0 {
-			seen[issue.Number] = true
+			seen[issueIdentity(issue, repo)] = true
 		}
 	}
 	for _, issue := range linkedIssuesFromBody(repo, body) {
-		if issue.Number == 0 || seen[issue.Number] {
+		identity := issueIdentity(issue, repo)
+		if issue.Number == 0 || seen[identity] {
 			continue
 		}
 		issues = append(issues, issue)
-		seen[issue.Number] = true
+		seen[identity] = true
 	}
 	return issues
 }
 
-func issuesFromGraphQL(payload []ghIssue) []workbench.IssueRef {
+func issuesFromGraphQL(payload []ghIssue, fallbackRepo string) []workbench.IssueRef {
 	issues := make([]workbench.IssueRef, 0, len(payload))
 	for _, issue := range payload {
+		repository := issue.Repository.NameWithOwner
+		if repository == "" {
+			repository = fallbackRepo
+		}
 		issues = append(issues, workbench.IssueRef{
-			Number:  issue.Number,
-			Title:   issue.Title,
-			State:   strings.ToLower(issue.State),
-			URL:     issue.URL,
-			Certain: true,
+			Number:     issue.Number,
+			Repository: repository,
+			Title:      issue.Title,
+			State:      strings.ToLower(issue.State),
+			URL:        issue.URL,
+			Certain:    true,
 		})
 	}
 	return issues
+}
+
+func issueIdentity(issue workbench.IssueRef, fallbackRepo string) string {
+	repository := issue.Repository
+	if repository == "" {
+		repository = fallbackRepo
+	}
+	return strings.ToLower(repository) + "#" + strconv.Itoa(issue.Number)
 }
 
 func linkedIssuesFromBody(repo string, body string) []workbench.IssueRef {
@@ -799,8 +828,9 @@ func linkedIssuesFromBody(repo string, body string) []workbench.IssueRef {
 			continue
 		}
 		issues = append(issues, workbench.IssueRef{
-			Number:  number,
-			Certain: true,
+			Number:     number,
+			Repository: repo,
+			Certain:    true,
 		})
 		seen[number] = true
 	}

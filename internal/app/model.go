@@ -140,6 +140,7 @@ type model struct {
 	issuesLoading        bool
 	issueReloadPending   bool
 	pendingIssueRepo     workbench.RepoRef
+	pendingIssueNumber   int
 	issuesError          string
 	prsByIssueNumber     map[int][]workbench.PullRequestRef
 	viewerLogin          string
@@ -283,7 +284,7 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 		issues:            cloneIssueRefs(data.Issues),
 		issueFilter:       defaultIssueFilterState(),
 		issuesLoading:     data.InitialLoading,
-		prsByIssueNumber:  pullRequestsByIssueNumber(data.PullRequests),
+		prsByIssueNumber:  map[int][]workbench.PullRequestRef{},
 		viewerLogin:       data.ViewerSubject.Login,
 		workbenchSource:   source,
 		previewLoader:     loader,
@@ -304,8 +305,9 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 	if repo, ok := m.selectedRepoRef(); ok {
 		m.issueRepo = repo
 		m.issues = mergeIssueRefs(m.issues, issuesFromWorkItems(m.workItems, repo))
+		m.prsByIssueNumber = pullRequestsByIssueNumber(data.PullRequests, repo)
 		if len(m.prsByIssueNumber) == 0 {
-			m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo))
+			m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo), repo)
 		}
 	}
 	if data.InitialLoading {

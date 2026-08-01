@@ -30,10 +30,11 @@ type RuntimeLoadResult struct {
 
 // RuntimeLoader composes local Git discovery with GitHub workbench enrichment.
 type RuntimeLoader struct {
-	Repo     RepoRef
-	RepoPath string
-	Local    LocalDiscovery
-	GitHub   GitHubWorkbenchDiscovery
+	Repo                      RepoRef
+	RepoPath                  string
+	Local                     LocalDiscovery
+	GitHub                    GitHubWorkbenchDiscovery
+	IncludeIssueCommentsCount bool
 }
 
 // Load returns workbench items for one repository without failing on partial GitHub discovery errors.
@@ -78,7 +79,7 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 	}
 
 	var discoveryErrors []error
-	issues, err := l.GitHub.Issues(ctx, repoName)
+	issues, err := loadIssues(ctx, l.GitHub, repoName, l.IncludeIssueCommentsCount)
 	if err != nil {
 		discoveryErrors = append(discoveryErrors, err)
 		result.IssuesError = err.Error()
@@ -116,4 +117,11 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 
 	result.Items = items
 	return result
+}
+
+func loadIssues(ctx context.Context, discovery GitHubWorkbenchDiscovery, repo string, includeComments bool) ([]IssueRef, error) {
+	if configurable, ok := discovery.(IssueListDiscovery); ok {
+		return configurable.IssuesWithOptions(ctx, repo, IssueListOptions{IncludeCommentsCount: includeComments})
+	}
+	return discovery.Issues(ctx, repo)
 }

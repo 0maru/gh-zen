@@ -111,7 +111,7 @@ func TestIssuePreviewLines_ShowsLinkedPRsAndComments(t *testing.T) {
 		LinkedIssues: []workbench.IssueRef{
 			{Number: 75},
 		},
-	}})
+	}}, m.issueRepo)
 
 	got := strings.Join(m.issuePreviewLines(120), "\n")
 	for _, want := range []string{
@@ -180,6 +180,71 @@ func TestUpdate_IssueViewUsesSelectedWorkItemRepo(t *testing.T) {
 	issue, ok := mm.selectedIssueRef()
 	if !ok || issue.Number != 22 {
 		t.Fatalf("expected selected issue #22 from repo B, got %+v ok=%v", issue, ok)
+	}
+}
+
+func TestUpdate_IssueViewSelectsUncertainTargetAfterReload(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	item := workbench.WorkItem{
+		ID:     "branch:release-75",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "release-75"},
+		Issue:  &workbench.IssueRef{Number: 75, Certain: false, Source: workbench.IssueLinkSourceBranch},
+	}
+	reloader := &fakeIssueReloader{results: map[string]workbench.RuntimeLoadResult{
+		repo.FullName(): {
+			Repo:         repo,
+			Items:        []workbench.WorkItem{item},
+			IssuesRepo:   repo,
+			IssuesLoaded: true,
+			Issues:       []workbench.IssueRef{{Number: 75, Repository: repo.FullName(), Title: "Verified issue", State: "open", Certain: true}},
+		},
+	}}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:         []workbench.RepoRef{repo},
+		WorkItems:     []workbench.WorkItem{item},
+		IssueReloader: reloader,
+	}, fakeDelayedPreviewLoader(0))
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if cmd == nil {
+		t.Fatalf("expected issue reload command")
+	}
+	mm := got.(model)
+	if mm.pendingIssueNumber != 75 {
+		t.Fatalf("expected target issue to remain pending, got %d", mm.pendingIssueNumber)
+	}
+
+	got, _ = mm.Update(requireWorkbenchReloadMsg(t, cmd))
+	mm = got.(model)
+	issue, ok := mm.selectedIssueRef()
+	if !ok || issue.Number != 75 || issue.Title != "Verified issue" {
+		t.Fatalf("expected reloaded target issue to be selected, got %+v ok=%v", issue, ok)
+	}
+	if mm.pendingIssueNumber != 0 {
+		t.Fatalf("expected pending target to clear after selection, got %d", mm.pendingIssueNumber)
+	}
+}
+
+func TestIssueIndexesExcludeOtherRepositoryClosingIssues(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	pr := workbench.PullRequestRef{
+		Number: 24,
+		LinkedIssues: []workbench.IssueRef{
+			{Number: 75, Repository: "other/repo", Title: "External issue", Certain: true},
+			{Number: 75, Repository: repo.FullName(), Title: "Local issue", Certain: true},
+			{Number: 76, Repository: "other/repo", Title: "External only", Certain: true},
+		},
+	}
+	items := []workbench.WorkItem{{Repo: repo, PullRequest: &pr}}
+
+	issues := issuesFromWorkItems(items, repo)
+	if len(issues) != 1 || issues[0].Number != 75 || issues[0].Title != "Local issue" {
+		t.Fatalf("expected only local-repository issues in the catalog, got %+v", issues)
+	}
+	index := pullRequestsByIssueNumber([]workbench.PullRequestRef{pr}, repo)
+	if len(index[75]) != 1 || len(index[76]) != 0 {
+		t.Fatalf("expected linked PR index to exclude other repositories, got %+v", index)
 	}
 }
 
@@ -958,7 +1023,7 @@ func TestUpdate_IssueRefreshFailureKeepsLinkedPullRequests(t *testing.T) {
 		Number:       10,
 		Title:        "Previously loaded PR",
 		LinkedIssues: []workbench.IssueRef{{Number: 1}},
-	}})
+	}}, repo)
 
 	start.updateIssueDataFromRuntimeResult(workbench.RuntimeLoadResult{
 		Repo: repo,

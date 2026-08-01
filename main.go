@@ -158,10 +158,11 @@ func (r runtimeWorkbenchReloader) LoadIssues(ctx context.Context, repo workbench
 		}
 	}
 	result := (workbench.RuntimeLoader{
-		Repo:     checkout.repo,
-		RepoPath: checkout.path,
-		Local:    r.local,
-		GitHub:   r.githubDiscovery(),
+		Repo:                      checkout.repo,
+		RepoPath:                  checkout.path,
+		Local:                     r.local,
+		GitHub:                    r.githubDiscovery(),
+		IncludeIssueCommentsCount: true,
 	}).Load(ctx)
 	if len(checkout.diagnostics) > 0 {
 		result.Items = append(result.Items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))

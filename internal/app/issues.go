@@ -82,6 +82,7 @@ func (m *model) enterIssueView() tea.Cmd {
 		returnRepo = selectedRepo
 	}
 	m.prepareIssueDataForRepo(repo)
+	m.pendingIssueNumber = targetIssueNumber
 	m.workbenchReturn = workbenchReturnState{
 		valid:           true,
 		selectedRepo:    m.selectedRepo,
@@ -102,6 +103,7 @@ func (m *model) enterIssueView() tea.Cmd {
 	if targetIssueNumber > 0 {
 		m.ensureIssueVisible(targetIssueNumber)
 		if m.selectIssueNumber(targetIssueNumber) {
+			m.pendingIssueNumber = 0
 			m.statusMessage = ""
 			return m.startIssueViewReload()
 		}
@@ -146,6 +148,7 @@ func (m *model) backToWorkbench() tea.Cmd {
 	m.issueSearchEditing = false
 	m.issueReloadPending = false
 	m.pendingIssueRepo = workbench.RepoRef{}
+	m.pendingIssueNumber = 0
 	if m.workbenchReturn.valid {
 		m.selectedRepo = m.workbenchReturn.selectedRepo
 		m.selectedView = m.workbenchReturn.selectedView
@@ -163,10 +166,11 @@ func (m *model) prepareIssueDataForRepo(repo workbench.RepoRef) {
 	}
 	m.issueRepo = repo
 	m.issues = issuesFromWorkItems(m.workItems, repo)
-	m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo))
+	m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo), repo)
 	m.issuesError = issueDiscoveryErrorFromWorkItems(m.workItems, repo)
 	m.selectedIssue = 0
 	m.issuePreviewOffset = 0
+	m.pendingIssueNumber = 0
 }
 
 func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadResult) {
@@ -190,14 +194,14 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 		m.issues = workItemIssues
 	}
 	if result.PullRequestsLoaded {
-		m.prsByIssueNumber = pullRequestsByIssueNumber(result.PullRequests)
+		m.prsByIssueNumber = pullRequestsByIssueNumber(result.PullRequests, issueRepo)
 	} else if sameIssueRepo {
 		m.prsByIssueNumber = mergePullRequestIndexes(
 			m.prsByIssueNumber,
-			pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, issueRepo)),
+			pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, issueRepo), issueRepo),
 		)
 	} else {
-		m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, issueRepo))
+		m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, issueRepo), issueRepo)
 	}
 	if result.ViewerSubject.Login != "" {
 		m.viewerLogin = result.ViewerSubject.Login
@@ -207,6 +211,14 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 		m.issuesError = result.IssuesError
 		if m.issuesError == "" {
 			m.issuesError = issueDiscoveryErrorFromWorkItems(result.Items, issueRepo)
+		}
+	}
+	if m.pendingIssueNumber > 0 {
+		m.ensureIssueVisible(m.pendingIssueNumber)
+		if m.selectIssueNumber(m.pendingIssueNumber) {
+			m.pendingIssueNumber = 0
+			m.statusMessage = ""
+			return
 		}
 	}
 	if selectedNumber > 0 && m.selectIssueNumber(selectedNumber) {
@@ -834,6 +846,9 @@ func issuesFromWorkItems(items []workbench.WorkItem, repo workbench.RepoRef) []w
 		if issue.Number == 0 {
 			return
 		}
+		if issue.Repository != "" && !strings.EqualFold(issue.Repository, repo.FullName()) {
+			return
+		}
 		if !issue.Certain && issue.Source == workbench.IssueLinkSourceBranch {
 			return
 		}
@@ -897,12 +912,15 @@ func pullRequestsFromWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 	return prs
 }
 
-func pullRequestsByIssueNumber(prs []workbench.PullRequestRef) map[int][]workbench.PullRequestRef {
+func pullRequestsByIssueNumber(prs []workbench.PullRequestRef, repo workbench.RepoRef) map[int][]workbench.PullRequestRef {
 	out := map[int][]workbench.PullRequestRef{}
 	for _, pr := range prs {
 		seenIssues := map[int]bool{}
 		for _, issue := range pr.LinkedIssues {
 			if issue.Number == 0 || seenIssues[issue.Number] {
+				continue
+			}
+			if hasRepoRef(repo) && issue.Repository != "" && !strings.EqualFold(issue.Repository, repo.FullName()) {
 				continue
 			}
 			out[issue.Number] = append(out[issue.Number], pr)
