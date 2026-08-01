@@ -134,6 +134,7 @@ type model struct {
 	issueRepo            workbench.RepoRef
 	issues               []workbench.IssueRef
 	selectedIssue        int
+	issuePreviewOffset   int
 	issueFilter          issueFilterState
 	issueSearchEditing   bool
 	issuesLoading        bool
@@ -1061,8 +1062,11 @@ func previousPane(current paneFocus, order []paneFocus) paneFocus {
 // moveFocusedSelection keeps j/k scoped to the active pane.
 func (m *model) moveFocusedSelection(delta int) {
 	if m.screen == screenIssues {
-		if m.activePane() == paneWorkItems {
+		switch m.activePane() {
+		case paneWorkItems:
 			m.moveIssueSelection(delta)
+		case panePreview:
+			m.moveIssuePreview(delta)
 		}
 		return
 	}
@@ -1081,8 +1085,11 @@ func (m *model) moveFocusedSelection(delta int) {
 // jumpFocusedSelection keeps g/G behavior aligned with the active pane.
 func (m *model) jumpFocusedSelection(toEnd bool) {
 	if m.screen == screenIssues {
-		if m.activePane() == paneWorkItems {
+		switch m.activePane() {
+		case paneWorkItems:
 			m.jumpIssueSelection(toEnd)
+		case panePreview:
+			m.jumpIssuePreview(toEnd)
 		}
 		return
 	}

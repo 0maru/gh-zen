@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	cfgpkg "github.com/0maru/gh-zen/internal/config"
 	"github.com/0maru/gh-zen/internal/workbench"
@@ -823,11 +824,78 @@ func TestIssuesFromWorkItemsExcludesUncertainBranchGuess(t *testing.T) {
 	issues := issuesFromWorkItems([]workbench.WorkItem{
 		{Repo: repo, Issue: &workbench.IssueRef{Number: 2026, Certain: false, Source: workbench.IssueLinkSourceBranch}},
 		{Repo: repo, Issue: &workbench.IssueRef{Number: 75, Certain: true, Source: workbench.IssueLinkSourceBranch}},
-		{Repo: repo, Issue: &workbench.IssueRef{Number: 76, Certain: false, Source: workbench.IssueLinkSourcePullRequest}},
+		{
+			Repo:  repo,
+			Issue: &workbench.IssueRef{Number: 76, Certain: false, Source: workbench.IssueLinkSourcePullRequest},
+			PullRequest: &workbench.PullRequestRef{LinkedIssues: []workbench.IssueRef{
+				{Number: 76, Title: "First linked issue"},
+				{Number: 77, Title: "Second linked issue"},
+			}},
+		},
 	}, repo)
 
-	if len(issues) != 2 || issues[0].Number != 75 || issues[1].Number != 76 {
+	if len(issues) != 3 || issues[0].Number != 75 || issues[1].Number != 76 || issues[2].Number != 77 {
 		t.Fatalf("expected only verified or PR-linked issues, got %+v", issues)
+	}
+}
+
+func TestIssueLinesKeepLongAuthorInsideFixedColumn(t *testing.T) {
+	start := newModel()
+	start.issues = []workbench.IssueRef{
+		{Number: 75, Title: "ASCII title", State: "open", AuthorLogin: "author-name-that-is-far-too-long"},
+		{Number: 76, Title: "Unicode title", State: "open", AuthorLogin: "長いユーザー名です"},
+	}
+
+	lines := start.issueLines(61, 0, true)
+	if len(lines) != 3 {
+		t.Fatalf("expected filter plus two issue rows, got %#v", lines)
+	}
+	titleColumns := make([]int, 2)
+	for i, title := range []string{"ASCII title", "Unicode title"} {
+		byteIndex := strings.Index(lines[i+1], title)
+		if byteIndex < 0 {
+			t.Fatalf("expected %q to remain visible, got %q", title, lines[i+1])
+		}
+		titleColumns[i] = lipgloss.Width(lines[i+1][:byteIndex])
+	}
+	if titleColumns[0] != titleColumns[1] {
+		t.Fatalf("expected author columns to keep titles aligned, got columns %v", titleColumns)
+	}
+}
+
+func TestIssuePreviewCanScrollToBodyAndURL(t *testing.T) {
+	start := newModel()
+	start.screen = screenIssues
+	start.focusedPane = panePreview
+	start.width = issueLayoutMinWidth
+	start.height = 10
+	start.issueRepo = workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	start.issues = []workbench.IssueRef{{
+		Number: 75,
+		Title:  "Issue with many linked pull requests",
+		State:  "open",
+		Body:   "The body remains reachable.",
+		URL:    "https://example.test/issues/75",
+	}}
+	prs := make([]workbench.PullRequestRef, 10)
+	for i := range prs {
+		prs[i] = workbench.PullRequestRef{Number: i + 1, Title: "Linked pull request"}
+	}
+	start.prsByIssueNumber = map[int][]workbench.PullRequestRef{75: prs}
+
+	if got := start.renderIssueFull(start.width); strings.Contains(got, "Body:") {
+		t.Fatalf("expected body to begin below the initial preview viewport, got %q", got)
+	}
+	start.moveFocusedSelection(1)
+	if start.issuePreviewOffset != 1 {
+		t.Fatalf("expected preview j/k movement to advance one line, got offset %d", start.issuePreviewOffset)
+	}
+	start.jumpFocusedSelection(true)
+	got := start.renderIssueFull(start.width)
+	for _, want := range []string{"Body:", "URL:"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected scrolled preview to contain %q, got %q", want, got)
+		}
 	}
 }
 

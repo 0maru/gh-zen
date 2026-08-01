@@ -94,6 +94,7 @@ func (m *model) enterIssueView() tea.Cmd {
 	m.screen = screenIssues
 	m.focusedPane = paneWorkItems
 	m.issueSearchEditing = false
+	m.issuePreviewOffset = 0
 	if m.workbenchLoading {
 		m.issuesLoading = true
 	}
@@ -149,9 +150,11 @@ func (m *model) prepareIssueDataForRepo(repo workbench.RepoRef) {
 	m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo))
 	m.issuesError = issueDiscoveryErrorFromWorkItems(m.workItems, repo)
 	m.selectedIssue = 0
+	m.issuePreviewOffset = 0
 }
 
 func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadResult) {
+	m.issuePreviewOffset = 0
 	selectedNumber := 0
 	if issue, ok := m.selectedIssueRef(); ok {
 		selectedNumber = issue.Number
@@ -270,6 +273,7 @@ func (m *model) selectIssueNumber(number int) bool {
 	for i, issue := range m.visibleIssues() {
 		if issue.Number == number {
 			m.selectedIssue = i
+			m.issuePreviewOffset = 0
 			return true
 		}
 	}
@@ -290,7 +294,11 @@ func (m *model) moveIssueSelection(delta int) {
 		m.selectedIssue = 0
 		return
 	}
-	m.selectedIssue = clamp(m.selectedIssue+delta, 0, len(issues)-1)
+	next := clamp(m.selectedIssue+delta, 0, len(issues)-1)
+	if next != m.selectedIssue {
+		m.selectedIssue = next
+		m.issuePreviewOffset = 0
+	}
 }
 
 func (m *model) jumpIssueSelection(toEnd bool) {
@@ -301,12 +309,14 @@ func (m *model) jumpIssueSelection(toEnd bool) {
 	}
 	if toEnd {
 		m.selectedIssue = len(issues) - 1
-		return
+	} else {
+		m.selectedIssue = 0
 	}
-	m.selectedIssue = 0
+	m.issuePreviewOffset = 0
 }
 
 func (m *model) clampIssueSelection() {
+	m.issuePreviewOffset = 0
 	issues := m.visibleIssues()
 	if len(issues) == 0 {
 		m.selectedIssue = 0
@@ -423,7 +433,7 @@ func (m model) renderIssueFull(width int) string {
 		bodyHeight = max(m.height-len(out)-frameBorderLines, 1)
 	}
 	left := m.issueLines(paneTextWidth(leftWidth), bodyHeight, focus == paneWorkItems)
-	right := m.issuePreviewLines(paneTextWidth(rightWidth))
+	right := m.issuePreviewViewportLines(paneTextWidth(rightWidth), bodyHeight)
 	if bodyHeight == 0 {
 		bodyHeight = max(len(left), len(right))
 	}
@@ -443,7 +453,6 @@ func (m model) renderIssueCompact(width int) string {
 	focus := m.activePane()
 	out := m.headerLines("gh-zen issues: "+m.issueRepo.FullName(), width)
 
-	previewLines := m.issuePreviewLines(paneTextWidth(contentWidth))
 	issueHeight := 0
 	previewHeight := 0
 	if m.height > 0 {
@@ -452,6 +461,7 @@ func (m model) renderIssueCompact(width int) string {
 		previewHeight = max(availableContentHeight-issueHeight, 1)
 	}
 	issueLines := m.issueLines(paneTextWidth(contentWidth), issueHeight, focus == paneWorkItems)
+	previewLines := m.issuePreviewViewportLines(paneTextWidth(contentWidth), previewHeight)
 	if m.height <= 0 {
 		issueHeight = len(issueLines)
 		previewHeight = len(previewLines)
@@ -483,12 +493,12 @@ func (m model) issueLines(width int, maxLines int, focused bool) []string {
 	blocks := make([][]string, 0, len(issues))
 	for i, issue := range issues {
 		marker := selectionMarker(i == m.selectedIssue, focused)
-		row := fmt.Sprintf("%s %-7s %-7s %4s %-12s %s",
+		row := fmt.Sprintf("%s %-7s %-7s %4s %s %s",
 			marker,
 			issueNumberLabel(issue.Number),
 			issueStateLabel(issue.State),
 			issueCommentShortLabel(issue.CommentsCount),
-			emptyFallback(issue.AuthorLogin, "-"),
+			pad(emptyFallback(issue.AuthorLogin, "-"), 12),
 			issue.Title,
 		)
 		block := []string{truncate(row, width)}
@@ -611,6 +621,52 @@ func (m model) issuePreviewLines(width int) []string {
 		lines = append(lines, truncate("URL: "+issue.URL, width))
 	}
 	return lines
+}
+
+func (m model) issuePreviewViewportLines(width int, maxLines int) []string {
+	lines := m.issuePreviewLines(width)
+	if maxLines <= 0 || len(lines) <= maxLines {
+		return lines
+	}
+	start := clamp(m.issuePreviewOffset, 0, len(lines)-maxLines)
+	return lines[start : start+maxLines]
+}
+
+func (m *model) moveIssuePreview(delta int) {
+	width, height := m.issuePreviewViewportSize()
+	lines := m.issuePreviewLines(width)
+	maxOffset := max(len(lines)-height, 0)
+	current := clamp(m.issuePreviewOffset, 0, maxOffset)
+	m.issuePreviewOffset = clamp(current+delta, 0, maxOffset)
+}
+
+func (m *model) jumpIssuePreview(toEnd bool) {
+	if !toEnd {
+		m.issuePreviewOffset = 0
+		return
+	}
+	width, height := m.issuePreviewViewportSize()
+	m.issuePreviewOffset = max(len(m.issuePreviewLines(width))-height, 0)
+}
+
+func (m model) issuePreviewViewportSize() (int, int) {
+	width := m.effectiveWidth()
+	if width < issueLayoutMinWidth {
+		contentWidth := max(width-paneBorderWidth, 0)
+		if m.height <= 0 {
+			return paneTextWidth(contentWidth), 1
+		}
+		headerHeight := len(m.headerLines("gh-zen issues: "+m.issueRepo.FullName(), width))
+		availableHeight := max(m.height-headerHeight-frameBorderLines*2, 2)
+		issueHeight := max(availableHeight/2, 1)
+		return paneTextWidth(contentWidth), max(availableHeight-issueHeight, 1)
+	}
+	rightWidth := width - issueListPaneWidth - paneBorderWidth*2 - paneGapWidth
+	if m.height <= 0 {
+		return paneTextWidth(rightWidth), 1
+	}
+	headerHeight := len(m.headerLines("gh-zen  issues: "+m.issueRepo.FullName(), width))
+	return paneTextWidth(rightWidth), max(m.height-headerHeight-frameBorderLines, 1)
 }
 
 func issueListMeta(issue workbench.IssueRef) string {
@@ -758,19 +814,31 @@ func hasCaseFolded(values []string, target string) bool {
 func issuesFromWorkItems(items []workbench.WorkItem, repo workbench.RepoRef) []workbench.IssueRef {
 	byNumber := map[int]workbench.IssueRef{}
 	ordered := []workbench.IssueRef{}
-	for _, item := range items {
-		if item.Repo != repo || item.Issue == nil || item.Issue.Number == 0 {
-			continue
+	appendIssue := func(issue workbench.IssueRef) {
+		if issue.Number == 0 {
+			return
 		}
-		if !item.Issue.Certain && item.Issue.Source == workbench.IssueLinkSourceBranch {
-			continue
+		if !issue.Certain && issue.Source == workbench.IssueLinkSourceBranch {
+			return
 		}
-		if _, ok := byNumber[item.Issue.Number]; ok {
-			continue
+		if _, ok := byNumber[issue.Number]; ok {
+			return
 		}
-		issue := *item.Issue
 		byNumber[issue.Number] = issue
 		ordered = append(ordered, issue)
+	}
+	for _, item := range items {
+		if item.Repo != repo {
+			continue
+		}
+		if item.Issue != nil {
+			appendIssue(*item.Issue)
+		}
+		if item.PullRequest != nil {
+			for _, issue := range item.PullRequest.LinkedIssues {
+				appendIssue(issue)
+			}
+		}
 	}
 	return ordered
 }
