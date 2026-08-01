@@ -21,6 +21,7 @@ type RuntimeLoadResult struct {
 	IssuesRepo         RepoRef
 	Issues             []IssueRef
 	IssuesLoaded       bool
+	IssuesError        string
 	ViewerSubject      ReviewSubjects
 }
 
@@ -73,6 +74,7 @@ func (l RuntimeLoader) Load(ctx context.Context) RuntimeLoadResult {
 	issues, err := l.GitHub.Issues(ctx, repoName)
 	if err != nil {
 		discoveryErrors = append(discoveryErrors, err)
+		result.IssuesError = err.Error()
 	} else {
 		result.IssuesRepo = l.Repo
 		result.Issues = append([]IssueRef(nil), issues...)

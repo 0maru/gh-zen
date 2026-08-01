@@ -260,8 +260,8 @@ func TestRuntimeWorkbenchReloaderLoadsIssuesForOnlyRequestedRepo(t *testing.T) {
 	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
 		t.Fatalf("expected requested repo issues, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
 	}
-	if len(result.Repositories) != 0 {
-		t.Fatalf("expected repo-scoped reload not to replace repository summaries, got %+v", result.Repositories)
+	if len(result.Repositories) != 1 || result.Repositories[0].Repo != dotfilesRepo {
+		t.Fatalf("expected one repo-scoped repository summary, got %+v", result.Repositories)
 	}
 	for _, call := range calls {
 		if strings.Contains(call, ghZenRepo.FullName()) {

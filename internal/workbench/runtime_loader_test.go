@@ -255,6 +255,9 @@ func TestRuntimeLoader_PreservesLocalItemsWhenGitHubFails(t *testing.T) {
 	if !hasRuntimeErrorItem(result.Items, "issue and check discovery failed", "network failed") {
 		t.Fatalf("expected issue and check discovery error item, got %+v", result.Items)
 	}
+	if !strings.Contains(result.IssuesError, "network failed") {
+		t.Fatalf("expected issue-specific error, got %q", result.IssuesError)
+	}
 }
 
 func TestRuntimeLoader_ReturnsLocalDiscoveryErrorItem(t *testing.T) {
@@ -321,6 +324,9 @@ func TestRuntimeLoader_ContinuesWhenSingleCheckFails(t *testing.T) {
 	}
 	if !hasRuntimeErrorItem(result.Items, "issue and check discovery failed", "first checks failed") {
 		t.Fatalf("expected check discovery error item, got %+v", result.Items)
+	}
+	if result.IssuesError != "" {
+		t.Fatalf("expected check failure not to set issue-specific error, got %q", result.IssuesError)
 	}
 }
 

@@ -293,6 +293,58 @@ func TestUpdate_IssueViewUsesRepoScopedReloader(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueEntryWaitsForActiveWorkbenchReload(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	workbenchReloader := &fakeWorkbenchReloader{}
+	issueReloader := &fakeIssueReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			repo.FullName(): {
+				Repo:         repo,
+				IssuesRepo:   repo,
+				IssuesLoaded: true,
+				Issues:       []workbench.IssueRef{{Number: 75, Title: "Issue browsing", State: "open"}},
+			},
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:          []workbench.RepoRef{repo},
+		Reloader:       workbenchReloader,
+		IssueReloader:  issueReloader,
+		InitialLoading: true,
+	}, fakeDelayedPreviewLoader(0))
+	initialRequest := start.activeReloadRequest
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if cmd != nil {
+		t.Fatalf("expected issue entry to keep the active workbench reload, got a new command")
+	}
+	mm := got.(model)
+	if mm.activeReloadRequest != initialRequest || !mm.issueReloadPending {
+		t.Fatalf("expected active reload to remain pending before issue reload, got active=%+v pending=%v", mm.activeReloadRequest, mm.issueReloadPending)
+	}
+
+	got, cmd = mm.Update(workbenchReloadMsg{
+		request: initialRequest,
+		result: workbench.RuntimeLoadResult{
+			Repo:         repo,
+			Repositories: []workbench.RepositorySummary{{Repo: repo}},
+			IssuesRepo:   repo,
+			IssuesLoaded: true,
+		},
+	})
+	if cmd == nil {
+		t.Fatalf("expected a repo-scoped issue reload after the workbench reload")
+	}
+	mm = got.(model)
+	if !mm.activeReloadRequest.issueScoped || mm.issueReloadPending {
+		t.Fatalf("expected chained issue reload, got active=%+v pending=%v", mm.activeReloadRequest, mm.issueReloadPending)
+	}
+	requireWorkbenchReloadMsg(t, cmd)
+	if len(issueReloader.calls) != 1 || issueReloader.calls[0] != repo {
+		t.Fatalf("expected one delayed repo-scoped reload for %+v, got %+v", repo, issueReloader.calls)
+	}
+}
+
 func TestUpdate_IssueViewKeepsRawIssueSourceRepo(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
 	reloader := &fakeWorkbenchReloader{
@@ -711,6 +763,104 @@ func TestUpdate_IssueRefreshFailureKeepsRawIssues(t *testing.T) {
 	}
 	if !strings.Contains(start.issuesError, "network unavailable") {
 		t.Fatalf("expected issue refresh error state, got %q", start.issuesError)
+	}
+}
+
+func TestUpdate_IssueRefreshFailureKeepsLinkedPullRequests(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	start := newModel()
+	start.issueRepo = repo
+	start.prsByIssueNumber = pullRequestsByIssueNumber([]workbench.PullRequestRef{{
+		Number:       10,
+		Title:        "Previously loaded PR",
+		LinkedIssues: []workbench.IssueRef{{Number: 1}},
+	}})
+
+	start.updateIssueDataFromRuntimeResult(workbench.RuntimeLoadResult{
+		Repo: repo,
+		Items: []workbench.WorkItem{{
+			Repo: repo,
+			PullRequest: &workbench.PullRequestRef{
+				Number:       11,
+				Title:        "Work item PR",
+				LinkedIssues: []workbench.IssueRef{{Number: 2}},
+			},
+		}},
+	})
+
+	if prs := start.prsByIssueNumber[1]; len(prs) != 1 || prs[0].Number != 10 {
+		t.Fatalf("expected previously loaded linked PR to remain, got %+v", start.prsByIssueNumber)
+	}
+	if prs := start.prsByIssueNumber[2]; len(prs) != 1 || prs[0].Number != 11 {
+		t.Fatalf("expected work item linked PR to be merged, got %+v", start.prsByIssueNumber)
+	}
+}
+
+func TestUpdate_IssueRefreshCheckFailureDoesNotReportIssueFailure(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	start := newModel()
+	start.issueRepo = repo
+
+	start.updateIssueDataFromRuntimeResult(workbench.RuntimeLoadResult{
+		Repo:         repo,
+		IssuesRepo:   repo,
+		IssuesLoaded: true,
+		Items: []workbench.WorkItem{{
+			ID:     "issue-check-discovery-error:" + repo.FullName(),
+			Repo:   repo,
+			Local:  &workbench.LocalStatus{Summary: "issue and check discovery failed: checks unavailable"},
+			Checks: workbench.CheckSummary{State: workbench.CheckUnknown},
+		}},
+	})
+
+	if start.issuesError != "" {
+		t.Fatalf("expected successful issue load not to report a check failure, got %q", start.issuesError)
+	}
+}
+
+func TestIssuesFromWorkItemsExcludesUncertainBranchGuess(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	issues := issuesFromWorkItems([]workbench.WorkItem{
+		{Repo: repo, Issue: &workbench.IssueRef{Number: 2026, Certain: false, Source: workbench.IssueLinkSourceBranch}},
+		{Repo: repo, Issue: &workbench.IssueRef{Number: 75, Certain: true, Source: workbench.IssueLinkSourceBranch}},
+		{Repo: repo, Issue: &workbench.IssueRef{Number: 76, Certain: false, Source: workbench.IssueLinkSourcePullRequest}},
+	}, repo)
+
+	if len(issues) != 2 || issues[0].Number != 75 || issues[1].Number != 76 {
+		t.Fatalf("expected only verified or PR-linked issues, got %+v", issues)
+	}
+}
+
+func TestUpdate_IssueRefreshReplacesOnlyTargetRepositorySummary(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	issueReloader := &fakeIssueReloader{results: map[string]workbench.RuntimeLoadResult{
+		repoA.FullName(): {
+			Repo:         repoA,
+			Repositories: []workbench.RepositorySummary{{Repo: repoA, Path: "/new/a", OpenIssueCount: 3}},
+		},
+	}}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		RepositorySummaries: []workbench.RepositorySummary{
+			{Repo: repoA, Path: "/old/a", OpenIssueCount: 1},
+			{Repo: repoB, Path: "/old/b", OpenIssueCount: 2},
+		},
+		IssueReloader: issueReloader,
+	}, fakeDelayedPreviewLoader(0))
+	start.screen = screenIssues
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got, _ = got.(model).Update(requireWorkbenchReloadMsg(t, cmd))
+	mm := got.(model)
+
+	if len(mm.repoSummaries) != 2 {
+		t.Fatalf("expected both repository summaries to remain, got %+v", mm.repoSummaries)
+	}
+	if summary, ok := mm.repoSummary(repoA); !ok || summary.Path != "/new/a" || summary.OpenIssueCount != 3 {
+		t.Fatalf("expected target summary to be refreshed, got %+v ok=%v", summary, ok)
+	}
+	if summary, ok := mm.repoSummary(repoB); !ok || summary.Path != "/old/b" || summary.OpenIssueCount != 2 {
+		t.Fatalf("expected unrelated summary to remain unchanged, got %+v ok=%v", summary, ok)
 	}
 }
 

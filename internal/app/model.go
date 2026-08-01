@@ -137,6 +137,7 @@ type model struct {
 	issueFilter          issueFilterState
 	issueSearchEditing   bool
 	issuesLoading        bool
+	issueReloadPending   bool
 	issuesError          string
 	prsByIssueNumber     map[int][]workbench.PullRequestRef
 	viewerLogin          string
@@ -927,7 +928,12 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 			selectedRepo = repo
 		}
 	}
-	if len(msg.result.Repositories) > 0 {
+	if msg.request.issueScoped {
+		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+		for _, summary := range msg.result.Repositories {
+			m.replaceRepositorySummary(summary)
+		}
+	} else if len(msg.result.Repositories) > 0 {
 		m.replaceWorkbenchData(msg.result, selectedRepo)
 	} else {
 		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
@@ -937,6 +943,8 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		m.syncWorkbenchReturnAfterReload()
 		m.workbenchReturn.selectedItem = m.selectedItem
 	}
+	pendingIssueReload := m.issueReloadPending && !msg.request.issueScoped
+	pendingIssueRepo := m.issueRepo
 	m.updateIssueDataFromRuntimeResult(msg.result)
 	m.workbenchLoading = false
 	m.issuesLoading = false
@@ -946,6 +954,11 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		m.statusMessage = ""
 	}
 	if m.screen == screenIssues {
+		if pendingIssueReload {
+			m.issueReloadPending = false
+			m.prepareIssueDataForRepo(pendingIssueRepo)
+			return m.startIssueViewReload()
+		}
 		if msg.request.issueScoped {
 			m.clearFocusedWorkItem()
 		}
@@ -1254,6 +1267,21 @@ func (m *model) replaceWorkbenchData(result workbench.RuntimeLoadResult, selecte
 	m.repos = repoRefsFromSummaries(m.repoSummaries)
 	m.workItems = cloneWorkItems(result.Items)
 	m.restoreSelectedRepo(selectedRepo)
+}
+
+func (m *model) replaceRepositorySummary(summary workbench.RepositorySummary) {
+	for i := range m.repoSummaries {
+		if !strings.EqualFold(m.repoSummaries[i].Repo.FullName(), summary.Repo.FullName()) {
+			continue
+		}
+		summary.Repo = m.repoSummaries[i].Repo
+		summary.Remotes = append([]string(nil), summary.Remotes...)
+		m.repoSummaries[i] = summary
+		return
+	}
+	summary.Remotes = append([]string(nil), summary.Remotes...)
+	m.repoSummaries = append(m.repoSummaries, summary)
+	m.repos = append(m.repos, summary.Repo)
 }
 
 func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {

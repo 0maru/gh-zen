@@ -116,6 +116,13 @@ func (m *model) startIssueViewReload() tea.Cmd {
 	if (m.issueReloader == nil && m.workbenchReloader == nil) || !hasRepoRef(m.issueRepo) {
 		return nil
 	}
+	if m.workbenchLoading && m.activeReloadRequest.requestID != 0 {
+		if !m.activeReloadRequest.issueScoped {
+			m.issueReloadPending = true
+		}
+		return nil
+	}
+	m.issueReloadPending = false
 	return m.startWorkbenchReload("Loading issues...")
 }
 
@@ -165,13 +172,24 @@ func (m *model) updateIssueDataFromRuntimeResult(result workbench.RuntimeLoadRes
 	}
 	if result.PullRequestsLoaded {
 		m.prsByIssueNumber = pullRequestsByIssueNumber(result.PullRequests)
+	} else if sameIssueRepo {
+		m.prsByIssueNumber = mergePullRequestIndexes(
+			m.prsByIssueNumber,
+			pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, issueRepo)),
+		)
 	} else {
 		m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(result.Items, issueRepo))
 	}
 	if result.ViewerSubject.Login != "" {
 		m.viewerLogin = result.ViewerSubject.Login
 	}
-	m.issuesError = issueDiscoveryErrorFromWorkItems(result.Items, issueRepo)
+	m.issuesError = ""
+	if !result.IssuesLoaded {
+		m.issuesError = result.IssuesError
+		if m.issuesError == "" {
+			m.issuesError = issueDiscoveryErrorFromWorkItems(result.Items, issueRepo)
+		}
+	}
 	if selectedNumber > 0 && m.selectIssueNumber(selectedNumber) {
 		return
 	}
@@ -744,6 +762,9 @@ func issuesFromWorkItems(items []workbench.WorkItem, repo workbench.RepoRef) []w
 		if item.Repo != repo || item.Issue == nil || item.Issue.Number == 0 {
 			continue
 		}
+		if !item.Issue.Certain && item.Issue.Source == workbench.IssueLinkSourceBranch {
+			continue
+		}
 		if _, ok := byNumber[item.Issue.Number]; ok {
 			continue
 		}
@@ -802,6 +823,31 @@ func pullRequestsByIssueNumber(prs []workbench.PullRequestRef) map[int][]workben
 			}
 			out[issue.Number] = append(out[issue.Number], pr)
 			seenIssues[issue.Number] = true
+		}
+	}
+	return out
+}
+
+func mergePullRequestIndexes(primary map[int][]workbench.PullRequestRef, extras map[int][]workbench.PullRequestRef) map[int][]workbench.PullRequestRef {
+	out := make(map[int][]workbench.PullRequestRef, len(primary)+len(extras))
+	for issueNumber, prs := range primary {
+		out[issueNumber] = append([]workbench.PullRequestRef(nil), prs...)
+	}
+	for issueNumber, prs := range extras {
+		seen := map[int]bool{}
+		for _, pr := range out[issueNumber] {
+			if pr.Number > 0 {
+				seen[pr.Number] = true
+			}
+		}
+		for _, pr := range prs {
+			if pr.Number > 0 && seen[pr.Number] {
+				continue
+			}
+			out[issueNumber] = append(out[issueNumber], pr)
+			if pr.Number > 0 {
+				seen[pr.Number] = true
+			}
 		}
 	}
 	return out

@@ -109,6 +109,7 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 		IssuesRepo:         selectedRawResult.IssuesRepo,
 		Issues:             selectedRawResult.Issues,
 		IssuesLoaded:       selectedRawResult.IssuesLoaded,
+		IssuesError:        selectedRawResult.IssuesError,
 		ViewerSubject:      selectedRawResult.ViewerSubject,
 	}
 }
@@ -155,6 +156,13 @@ func (r runtimeWorkbenchReloader) LoadIssues(ctx context.Context, repo workbench
 	if len(checkout.diagnostics) > 0 {
 		result.Items = append(result.Items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
 	}
+	result.Repositories = []workbench.RepositorySummary{workbench.SummarizeRepository(
+		checkout.repo,
+		checkout.path,
+		checkout.defaultBranch,
+		checkout.remotes,
+		result.Items,
+	)}
 	return result
 }
 
