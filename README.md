@@ -54,6 +54,8 @@ gh zen
 - `git` on `PATH`.
 - GitHub CLI (`gh`) on `PATH`; run `gh auth status` to confirm authentication
   when you want GitHub enrichment.
+- To install from source with `make install-extension`, Go 1.26.1 or newer and
+  `make` on `PATH`.
 - A local GitHub checkout for the repository you want to inspect.
 - An `origin` remote that points to `github.com` so `gh-zen` can resolve
   `owner/repo`.
@@ -73,8 +75,8 @@ cd ~/workspaces/github.com/0maru/gh-zen
 gh zen
 ```
 
-The startup repository is resolved from configuration, `GH_ZEN_REPO`, or the
-current Git checkout. Once the workbench opens:
+The startup repository is resolved from `GH_ZEN_REPO`, then `startup.repo` in
+configuration, and finally the current Git checkout. Once the workbench opens:
 
 1. Pick a repository or view in the left pane.
 2. Move through work items in the center pane.
