@@ -570,17 +570,17 @@ func appendIssueBlocks(lines []string, blocks [][]string) []string {
 }
 
 func (m model) issueFilterLine() string {
+	search := strings.TrimSpace(m.issueFilter.Search)
+	if search == "" {
+		search = "none"
+	}
 	parts := []string{
+		"search=" + search,
 		"state=" + m.issueFilter.State.String(),
 		"assignee=" + issueAssigneeFilterLabel(m.issueFilter.Assignee),
 		"label=" + issueOptionalFilterLabel(m.issueFilter.Label),
 		"milestone=" + issueOptionalFilterLabel(m.issueFilter.Milestone),
 	}
-	search := strings.TrimSpace(m.issueFilter.Search)
-	if search == "" {
-		search = "none"
-	}
-	parts = append(parts, "search="+search)
 	return "Filters: " + strings.Join(parts, " ")
 }
 

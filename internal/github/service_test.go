@@ -121,13 +121,31 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 func TestLinkedIssuesFromBodyRequiresClosingKeywordForEachIssue(t *testing.T) {
 	body := "Fixes #1 and see #2. Resolves: #3, closes #1. Mentions #4."
 
-	got := linkedIssuesFromBody(body)
+	got := linkedIssuesFromBody("0maru/gh-zen", body)
 	want := []workbench.IssueRef{
 		{Number: 1, Certain: true},
 		{Number: 3, Certain: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected only explicit closing references %+v, got %+v", want, got)
+	}
+}
+
+func TestLinkedIssuesFromBodyAcceptsQualifiedReferencesForSameRepository(t *testing.T) {
+	body := strings.Join([]string{
+		"Fixes 0maru/gh-zen#1.",
+		"Resolves https://github.com/0MARU/GH-ZEN/issues/2.",
+		"Closes other/repo#3.",
+		"Fixes https://github.com/other/repo/issues/4.",
+	}, " ")
+
+	got := linkedIssuesFromBody("0maru/gh-zen", body)
+	want := []workbench.IssueRef{
+		{Number: 1, Certain: true},
+		{Number: 2, Certain: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected only same-repository closing references %+v, got %+v", want, got)
 	}
 }
 

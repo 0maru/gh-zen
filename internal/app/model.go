@@ -1311,19 +1311,21 @@ func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRe
 		}
 		index, found := byID[previous.ID]
 		if found {
+			samePR := previous.PullRequest != nil && replacement[index].PullRequest != nil &&
+				samePullRequest(*previous.PullRequest, *replacement[index].PullRequest)
 			if !result.PullRequestsLoaded && previous.PullRequest != nil {
 				replacement[index].PullRequest = previous.PullRequest
 				replacement[index].Checks = previous.Checks
 				replacement[index].Issue = refreshedIssueRef(previous.Issue, result)
 			} else {
-				if result.ViewerSubjectError != "" && previous.PullRequest != nil && replacement[index].PullRequest != nil {
+				if result.ViewerSubjectError != "" && samePR {
 					preserveViewerReviewPerspective(replacement[index].PullRequest, previous.PullRequest)
 				}
-				if checkRefFailed(replacement[index], result.FailedCheckRefs) {
+				if samePR && checkRefFailed(replacement[index], result.FailedCheckRefs) {
 					replacement[index].Checks = previous.Checks
 				}
 			}
-			if !result.IssuesLoaded && previous.Issue != nil {
+			if !result.IssuesLoaded && sameIssueRef(previous.Issue, replacement[index].Issue) {
 				replacement[index].Issue = previous.Issue
 			}
 			continue
@@ -1390,6 +1392,10 @@ func samePullRequest(left workbench.PullRequestRef, right workbench.PullRequestR
 		return left.Number > 0 && left.Number == right.Number
 	}
 	return left.HeadBranch != "" && left.HeadBranch == right.HeadBranch && strings.EqualFold(left.HeadOwner, right.HeadOwner)
+}
+
+func sameIssueRef(left *workbench.IssueRef, right *workbench.IssueRef) bool {
+	return left != nil && right != nil && left.Number > 0 && left.Number == right.Number
 }
 
 func preserveViewerReviewPerspective(current *workbench.PullRequestRef, previous *workbench.PullRequestRef) {

@@ -122,7 +122,7 @@ query($owner:String!, $name:String!, $after:String) {
 )
 
 var (
-	closingIssueReferencePattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+#(\d+)\b`)
+	closingIssueReferencePattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+(?:#(\d+)\b|([[:alnum:]_.-]+)/([[:alnum:]_.-]+)#(\d+)\b|https://github\.com/([[:alnum:]_.-]+)/([[:alnum:]_.-]+)/issues/(\d+)\b)`)
 )
 
 // Error describes a gh-backed service failure.
@@ -218,7 +218,7 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			BaseBranch:     pr.BaseRefName,
 			IsDraft:        pr.IsDraft,
 			UpdatedAt:      pr.UpdatedAt,
-			LinkedIssues:   linkedIssues(closingIssuesByPR[pr.Number], pr.Body),
+			LinkedIssues:   linkedIssues(closingIssuesByPR[pr.Number], repo, pr.Body),
 			ReviewState:    reviewState(pr.ReviewDecision),
 			ReviewRequests: reviewRequests(pr.ReviewRequests),
 			LatestReviews:  latestReviews(pr.LatestReviews),
@@ -742,7 +742,7 @@ func logLines(value string) []string {
 	return strings.Split(value, "\n")
 }
 
-func linkedIssues(closingIssues []workbench.IssueRef, body string) []workbench.IssueRef {
+func linkedIssues(closingIssues []workbench.IssueRef, repo string, body string) []workbench.IssueRef {
 	issues := append([]workbench.IssueRef(nil), closingIssues...)
 	seen := map[int]bool{}
 	for _, issue := range issues {
@@ -750,7 +750,7 @@ func linkedIssues(closingIssues []workbench.IssueRef, body string) []workbench.I
 			seen[issue.Number] = true
 		}
 	}
-	for _, issue := range linkedIssuesFromBody(body) {
+	for _, issue := range linkedIssuesFromBody(repo, body) {
 		if issue.Number == 0 || seen[issue.Number] {
 			continue
 		}
@@ -774,14 +774,27 @@ func issuesFromGraphQL(payload []ghIssue) []workbench.IssueRef {
 	return issues
 }
 
-func linkedIssuesFromBody(body string) []workbench.IssueRef {
+func linkedIssuesFromBody(repo string, body string) []workbench.IssueRef {
 	seen := map[int]bool{}
 	issues := []workbench.IssueRef{}
 	for _, match := range closingIssueReferencePattern.FindAllStringSubmatch(body, -1) {
-		if len(match) < 2 {
+		if len(match) < 8 {
 			continue
 		}
-		number, err := strconv.Atoi(match[1])
+		numberText := match[1]
+		referenceRepo := repo
+		switch {
+		case match[4] != "":
+			referenceRepo = match[2] + "/" + match[3]
+			numberText = match[4]
+		case match[7] != "":
+			referenceRepo = match[5] + "/" + match[6]
+			numberText = match[7]
+		}
+		if !strings.EqualFold(referenceRepo, repo) {
+			continue
+		}
+		number, err := strconv.Atoi(numberText)
 		if err != nil || seen[number] {
 			continue
 		}

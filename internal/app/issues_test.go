@@ -77,6 +77,16 @@ func TestIssueFiltering_SearchesFullIssueBody(t *testing.T) {
 	}
 }
 
+func TestIssueFilterLineKeepsAppliedSearchVisibleAtNormalWidth(t *testing.T) {
+	start := newModel()
+	start.issueFilter.Search = "unicode query"
+
+	line := truncate(start.issueFilterLine(), 61)
+	if !strings.Contains(line, "search=unicode query") {
+		t.Fatalf("expected applied search to remain visible, got %q", line)
+	}
+}
+
 func TestIssuePreviewLines_ShowsLinkedPRsAndComments(t *testing.T) {
 	issue := workbench.IssueRef{
 		Number:        75,
@@ -1279,6 +1289,52 @@ func TestUpdate_IssueRefreshViewerFailureKeepsReviewPerspective(t *testing.T) {
 	pr := got[0].PullRequest
 	if pr.Title != "New title" || !pr.ViewerReviewRequested || !pr.ViewerAuthored || !pr.WaitingOnReview {
 		t.Fatalf("expected refreshed PR data with preserved review perspective, got %+v", pr)
+	}
+}
+
+func TestMergeIssueScopedWorkItemsDoesNotPreserveStateAcrossPullRequests(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	previous := workbench.WorkItem{
+		ID:     "branch:feature",
+		Repo:   repo,
+		Branch: &workbench.BranchRef{Name: "feature"},
+		PullRequest: &workbench.PullRequestRef{
+			Number:                10,
+			HeadBranch:            "feature",
+			ViewerReviewRequested: true,
+			ViewerAuthored:        true,
+			WaitingOnReview:       true,
+		},
+		Issue:  &workbench.IssueRef{Number: 75, Title: "Old issue"},
+		Checks: workbench.CheckSummary{State: workbench.CheckFailing, Failing: 1},
+	}
+	current := workbench.WorkItem{
+		ID:          previous.ID,
+		Repo:        repo,
+		Branch:      previous.Branch,
+		PullRequest: &workbench.PullRequestRef{Number: 11, HeadBranch: "feature"},
+		Issue:       &workbench.IssueRef{Number: 76},
+		Checks:      workbench.CheckSummary{State: workbench.CheckUnknown},
+	}
+
+	got := mergeIssueScopedWorkItems([]workbench.WorkItem{previous}, repo, workbench.RuntimeLoadResult{
+		Repo:               repo,
+		Items:              []workbench.WorkItem{current},
+		PullRequestsLoaded: true,
+		ViewerSubjectError: "viewer unavailable",
+		FailedCheckRefs:    []string{"feature"},
+	})
+	if len(got) != 1 || got[0].PullRequest == nil || got[0].PullRequest.Number != 11 {
+		t.Fatalf("expected replacement pull request, got %+v", got)
+	}
+	if got[0].PullRequest.ViewerReviewRequested || got[0].PullRequest.ViewerAuthored || got[0].PullRequest.WaitingOnReview {
+		t.Fatalf("expected new pull request review state, got %+v", got[0].PullRequest)
+	}
+	if got[0].Checks.State != workbench.CheckUnknown {
+		t.Fatalf("expected new pull request check state, got %+v", got[0].Checks)
+	}
+	if got[0].Issue == nil || got[0].Issue.Number != 76 || got[0].Issue.Title != "" {
+		t.Fatalf("expected new issue association, got %+v", got[0].Issue)
 	}
 }
 
