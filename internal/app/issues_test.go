@@ -346,6 +346,107 @@ func TestUpdate_IssueEntryWaitsForActiveWorkbenchReload(t *testing.T) {
 	}
 }
 
+func TestUpdate_IssueEntryStartsPendingReloadAfterDifferentRepoWorkbenchResponse(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "repo-a"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "repo-b"}
+	issueReloader := &fakeIssueReloader{results: map[string]workbench.RuntimeLoadResult{
+		repoB.FullName(): {
+			Repo:         repoB,
+			IssuesRepo:   repoB,
+			IssuesLoaded: true,
+			Issues:       []workbench.IssueRef{{Number: 75, Title: "Repo B issue", State: "open"}},
+		},
+	}}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:          []workbench.RepoRef{repoA, repoB},
+		Reloader:       &fakeWorkbenchReloader{},
+		IssueReloader:  issueReloader,
+		InitialLoading: true,
+	}, fakeDelayedPreviewLoader(0))
+	initialRequest := start.activeReloadRequest
+	start.screen = screenIssues
+	start.issueRepo = repoB
+	start.issueReloadPending = true
+	start.pendingIssueRepo = repoB
+	start.issuesLoading = true
+
+	got, cmd := start.Update(workbenchReloadMsg{
+		request: initialRequest,
+		result: workbench.RuntimeLoadResult{
+			Repo:         repoA,
+			Repositories: []workbench.RepositorySummary{{Repo: repoA}, {Repo: repoB}},
+			Items: []workbench.WorkItem{{
+				ID:   "repo-a-refreshed-item",
+				Repo: repoA,
+			}},
+		},
+	})
+	if cmd == nil {
+		t.Fatalf("expected pending repo B reload after stale repo A response")
+	}
+	mm := got.(model)
+	if !mm.activeReloadRequest.issueScoped || mm.activeReloadRequest.repo != repoB {
+		t.Fatalf("expected repo B scoped reload, got %+v", mm.activeReloadRequest)
+	}
+	if !hasWorkItem(mm.workItems, func(item workbench.WorkItem) bool { return item.ID == "repo-a-refreshed-item" }) {
+		t.Fatalf("expected the full workbench response to be applied before the pending reload, got %+v", mm.workItems)
+	}
+	requireWorkbenchReloadMsg(t, cmd)
+	if len(issueReloader.calls) != 1 || issueReloader.calls[0] != repoB {
+		t.Fatalf("expected pending reload for %+v, got %+v", repoB, issueReloader.calls)
+	}
+}
+
+func TestUpdate_IssueReentryQueuesDifferentRepoBehindScopedReload(t *testing.T) {
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "repo-b"}
+	repoC := workbench.RepoRef{Owner: "0maru", Name: "repo-c"}
+	issueReloader := &fakeIssueReloader{results: map[string]workbench.RuntimeLoadResult{
+		repoC.FullName(): {
+			Repo:         repoC,
+			IssuesRepo:   repoC,
+			IssuesLoaded: true,
+			Issues:       []workbench.IssueRef{{Number: 3, Title: "Repo C issue", State: "open"}},
+		},
+	}}
+	start := newModel()
+	start.screen = screenIssues
+	start.issueRepo = repoC
+	start.issues = []workbench.IssueRef{{Number: 3, Title: "Cached repo C issue", State: "open"}}
+	start.issueReloader = issueReloader
+	start.workbenchLoading = true
+	start.issuesLoading = true
+	start.nextReloadRequestID = 1
+	start.activeReloadRequest = workbenchReloadRequest{requestID: 1, repo: repoB, status: "Loading issues...", issueScoped: true}
+
+	if cmd := start.startIssueViewReload(); cmd != nil {
+		t.Fatalf("expected repo C reload to wait for active repo B reload")
+	}
+	if !start.issueReloadPending || start.pendingIssueRepo != repoC {
+		t.Fatalf("expected repo C to be recorded as pending, got pending=%v repo=%+v", start.issueReloadPending, start.pendingIssueRepo)
+	}
+
+	got, cmd := start.Update(workbenchReloadMsg{
+		request: workbenchReloadRequest{requestID: 1, repo: repoB, status: "Loading issues...", issueScoped: true},
+		result: workbench.RuntimeLoadResult{
+			Repo:         repoB,
+			IssuesRepo:   repoB,
+			IssuesLoaded: true,
+			Issues:       []workbench.IssueRef{{Number: 2, Title: "Repo B issue", State: "open"}},
+		},
+	})
+	if cmd == nil {
+		t.Fatalf("expected queued repo C reload after repo B completes")
+	}
+	mm := got.(model)
+	if mm.issueRepo != repoC || len(mm.issues) != 1 || mm.issues[0].Number != 3 {
+		t.Fatalf("expected visible repo C issue data to stay intact, got repo=%+v issues=%+v", mm.issueRepo, mm.issues)
+	}
+	if !mm.activeReloadRequest.issueScoped || mm.activeReloadRequest.repo != repoC {
+		t.Fatalf("expected active repo C reload, got %+v", mm.activeReloadRequest)
+	}
+	requireWorkbenchReloadMsg(t, cmd)
+}
+
 func TestUpdate_IssueViewKeepsRawIssueSourceRepo(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
 	reloader := &fakeWorkbenchReloader{

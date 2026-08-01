@@ -273,6 +273,27 @@ func TestRuntimeWorkbenchReloaderLoadsIssuesForOnlyRequestedRepo(t *testing.T) {
 	}
 }
 
+func TestRuntimeWorkbenchReloaderLoadIssuesReportsMissingCheckout(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "missing-repo"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{t.TempDir()}
+
+	result := (runtimeWorkbenchReloader{config: cfg}).LoadIssues(context.Background(), repo)
+
+	if result.IssuesLoaded {
+		t.Fatalf("expected issues not to be loaded, got %+v", result)
+	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected issue error source %+v, got %+v", repo, result.IssuesRepo)
+	}
+	if !strings.Contains(result.IssuesError, "no local checkout found") {
+		t.Fatalf("expected checkout diagnostic in issue error, got %q", result.IssuesError)
+	}
+	if len(result.Items) != 1 || !strings.HasPrefix(result.Items[0].ID, "repository-path-error:") {
+		t.Fatalf("expected repository path error item, got %+v", result.Items)
+	}
+}
+
 func TestRuntimeWorkbenchReloaderPropagatesFirstRepoRawDataForZeroRepoStartup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses temporary Git repositories")

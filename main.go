@@ -142,9 +142,16 @@ func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app
 func (r runtimeWorkbenchReloader) LoadIssues(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
 	checkout := r.checkoutForRepository(ctx, repo)
 	if checkout.path == "" {
+		pathError := workbench.RepositoryPathErrorItem(repo, checkout.diagnostics)
+		issuesError := "repository path resolution failed"
+		if pathError.Local != nil && pathError.Local.Summary != "" {
+			issuesError = pathError.Local.Summary
+		}
 		return workbench.RuntimeLoadResult{
-			Repo:  repo,
-			Items: []workbench.WorkItem{workbench.RepositoryPathErrorItem(repo, checkout.diagnostics)},
+			Repo:        repo,
+			Items:       []workbench.WorkItem{pathError},
+			IssuesRepo:  repo,
+			IssuesError: issuesError,
 		}
 	}
 	result := (workbench.RuntimeLoader{

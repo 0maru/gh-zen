@@ -139,6 +139,7 @@ type model struct {
 	issueSearchEditing   bool
 	issuesLoading        bool
 	issueReloadPending   bool
+	pendingIssueRepo     workbench.RepoRef
 	issuesError          string
 	prsByIssueNumber     map[int][]workbench.PullRequestRef
 	viewerLogin          string
@@ -906,7 +907,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	if msg.request != m.activeReloadRequest {
 		return nil
 	}
-	if !msg.request.issueScoped && m.reloadRequestIsStale(msg.request) {
+	if !msg.request.issueScoped && !m.issueReloadPending && m.reloadRequestIsStale(msg.request) {
 		m.workbenchLoading = false
 		if m.screen == screenIssues {
 			m.issuesLoading = false
@@ -944,9 +945,14 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		m.syncWorkbenchReturnAfterReload()
 		m.workbenchReturn.selectedItem = m.selectedItem
 	}
-	pendingIssueReload := m.issueReloadPending && !msg.request.issueScoped
-	pendingIssueRepo := m.issueRepo
-	m.updateIssueDataFromRuntimeResult(msg.result)
+	pendingIssueReload := m.issueReloadPending
+	pendingIssueRepo := m.pendingIssueRepo
+	updateVisibleIssues := !pendingIssueReload ||
+		!msg.request.issueScoped ||
+		strings.EqualFold(msg.request.repo.FullName(), pendingIssueRepo.FullName())
+	if updateVisibleIssues {
+		m.updateIssueDataFromRuntimeResult(msg.result)
+	}
 	m.workbenchLoading = false
 	m.issuesLoading = false
 	if hasWorkbenchErrorItems(msg.result.Items) {
@@ -956,9 +962,7 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	}
 	if m.screen == screenIssues {
 		if pendingIssueReload {
-			m.issueReloadPending = false
-			m.prepareIssueDataForRepo(pendingIssueRepo)
-			return m.startIssueViewReload()
+			return m.startPendingIssueReload()
 		}
 		if msg.request.issueScoped {
 			m.clearFocusedWorkItem()

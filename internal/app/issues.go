@@ -118,13 +118,27 @@ func (m *model) startIssueViewReload() tea.Cmd {
 		return nil
 	}
 	if m.workbenchLoading && m.activeReloadRequest.requestID != 0 {
-		if !m.activeReloadRequest.issueScoped {
+		if !m.activeReloadRequest.issueScoped ||
+			!strings.EqualFold(m.activeReloadRequest.repo.FullName(), m.issueRepo.FullName()) {
 			m.issueReloadPending = true
+			m.pendingIssueRepo = m.issueRepo
 		}
 		return nil
 	}
 	m.issueReloadPending = false
+	m.pendingIssueRepo = workbench.RepoRef{}
 	return m.startWorkbenchReload("Loading issues...")
+}
+
+func (m *model) startPendingIssueReload() tea.Cmd {
+	repo := m.pendingIssueRepo
+	m.issueReloadPending = false
+	m.pendingIssueRepo = workbench.RepoRef{}
+	if m.screen != screenIssues || !hasRepoRef(repo) {
+		return nil
+	}
+	m.prepareIssueDataForRepo(repo)
+	return m.startIssueViewReload()
 }
 
 func (m *model) backToWorkbench() tea.Cmd {
