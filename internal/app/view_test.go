@@ -118,7 +118,7 @@ func TestView_FullHelpShowsContextualActions(t *testing.T) {
 	m.help.ShowAll = true
 	got := ansi.Strip(m.View())
 
-	for _, want := range []string{"p open PR", "i open issue", "y copy URL", "Y copy path", "r refresh"} {
+	for _, want := range []string{"p open PR", "i issues", "o open", "y copy URL", "Y copy path", "r refresh"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected full help to include %q, got:\n%s", want, got)
 		}
@@ -132,7 +132,7 @@ func TestView_FullHelpShowsContextualActions(t *testing.T) {
 	if strings.Contains(got, "j down") || strings.Contains(got, "G bottom") {
 		t.Fatalf("expected preview full help to omit movement keys, got:\n%s", got)
 	}
-	if !strings.Contains(got, "p open PR") || !strings.Contains(got, "r refresh") {
+	if !strings.Contains(got, "p open PR") || !strings.Contains(got, "o open") || !strings.Contains(got, "r refresh") {
 		t.Fatalf("expected preview full help to keep actions, got:\n%s", got)
 	}
 
@@ -147,6 +147,25 @@ func TestView_FullHelpShowsContextualActions(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected actions full help to include %q, got:\n%s", want, got)
 		}
+	}
+}
+
+func TestView_IssuePreviewHelpShowsScrollKeys(t *testing.T) {
+	m := newModel()
+	m.screen = screenIssues
+	m.focusedPane = panePreview
+	m.issueRepo = workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	m.issues = []workbench.IssueRef{{Number: 75, Title: "Issue browser", State: "open"}}
+
+	got := ansi.Strip(m.View())
+	if !strings.Contains(got, "Preview keys: j/k move  g/G jump") {
+		t.Fatalf("expected issue preview keymap to show scroll keys, got:\n%s", got)
+	}
+
+	m.help.ShowAll = true
+	got = ansi.Strip(m.View())
+	if !strings.Contains(got, "j down") || !strings.Contains(got, "G bottom") {
+		t.Fatalf("expected issue preview full help to show scroll keys, got:\n%s", got)
 	}
 }
 

@@ -63,6 +63,8 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 
 	items := []workbench.WorkItem{}
 	summaries := make([]workbench.RepositorySummary, 0, len(checkouts))
+	rawResultRepo, hasRawResultRepo := r.requestedRepository(repo)
+	selectedRawResult := workbench.RuntimeLoadResult{}
 	for _, checkout := range checkouts {
 		if checkout.path == "" {
 			items = append(items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
@@ -75,6 +77,9 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 			Local:    local,
 			GitHub:   r.githubDiscovery(),
 		}).Load(ctx)
+		if shouldUseRawResult(checkout.repo, rawResultRepo, hasRawResultRepo, selectedRawResult) {
+			selectedRawResult = result
+		}
 		items = append(items, result.Items...)
 		if len(checkout.diagnostics) > 0 {
 			items = append(items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
@@ -96,10 +101,27 @@ func (r runtimeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoR
 	}
 
 	return workbench.RuntimeLoadResult{
-		Repo:         repo,
-		Repositories: summaries,
-		Items:        items,
+		Repo:                repo,
+		Repositories:        summaries,
+		Items:               items,
+		PullRequests:        selectedRawResult.PullRequests,
+		PullRequestsLoaded:  selectedRawResult.PullRequestsLoaded,
+		IssuesRepo:          selectedRawResult.IssuesRepo,
+		Issues:              selectedRawResult.Issues,
+		IssuesLoaded:        selectedRawResult.IssuesLoaded,
+		IssuesError:         selectedRawResult.IssuesError,
+		LocalDiscoveryError: selectedRawResult.LocalDiscoveryError,
+		FailedCheckRefs:     append([]string(nil), selectedRawResult.FailedCheckRefs...),
+		ViewerSubject:       selectedRawResult.ViewerSubject,
+		ViewerSubjectError:  selectedRawResult.ViewerSubjectError,
 	}
+}
+
+func shouldUseRawResult(checkoutRepo workbench.RepoRef, rawResultRepo workbench.RepoRef, hasRawResultRepo bool, current workbench.RuntimeLoadResult) bool {
+	if hasRawResultRepo {
+		return repoFullNameKey(checkoutRepo) == repoFullNameKey(rawResultRepo)
+	}
+	return current.Repo == (workbench.RepoRef{})
 }
 
 func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app.WorkbenchReloader) app.WorkbenchData {
@@ -108,6 +130,9 @@ func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app
 		ActionsLoader:  app.NewGitHubActionsLoader(github.CLIService{}),
 		InitialLoading: reloader != nil,
 	}
+	if issueReloader, ok := reloader.(app.IssueReloader); ok {
+		data.IssueReloader = issueReloader
+	}
 	repo, ok := repoRefFromFullName(startupRepo.Repo)
 	if !ok {
 		return data
@@ -115,6 +140,43 @@ func loadStartupWorkbenchData(startupRepo config.StartupRepository, reloader app
 
 	data.Repos = []workbench.RepoRef{repo}
 	return data
+}
+
+func (r runtimeWorkbenchReloader) LoadIssues(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+	checkout := r.checkoutForRepository(ctx, repo)
+	if checkout.path == "" {
+		pathError := workbench.RepositoryPathErrorItem(repo, checkout.diagnostics)
+		issuesError := "repository path resolution failed"
+		if pathError.Local != nil && pathError.Local.Summary != "" {
+			issuesError = pathError.Local.Summary
+		}
+		items := []workbench.WorkItem{pathError}
+		return workbench.RuntimeLoadResult{
+			Repo:         repo,
+			Items:        items,
+			Repositories: []workbench.RepositorySummary{workbench.SummarizeRepository(repo, "", "", nil, items)},
+			IssuesRepo:   repo,
+			IssuesError:  issuesError,
+		}
+	}
+	result := (workbench.RuntimeLoader{
+		Repo:                      checkout.repo,
+		RepoPath:                  checkout.path,
+		Local:                     r.local,
+		GitHub:                    r.githubDiscovery(),
+		IncludeIssueCommentsCount: true,
+	}).Load(ctx)
+	if len(checkout.diagnostics) > 0 {
+		result.Items = append(result.Items, workbench.RepositoryPathErrorItem(checkout.repo, checkout.diagnostics))
+	}
+	result.Repositories = []workbench.RepositorySummary{workbench.SummarizeRepository(
+		checkout.repo,
+		checkout.path,
+		checkout.defaultBranch,
+		checkout.remotes,
+		result.Items,
+	)}
+	return result
 }
 
 type repositoryCheckout struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -46,6 +47,12 @@ func (r *fakeRunnerByCommand) Run(_ context.Context, args ...string) ([]byte, er
 		return nil, errors.New("unexpected gh command: " + key)
 	}
 	return output, nil
+}
+
+func closingIssuePullRequestPage(nodeCount int, hasNext bool, endCursor string) []byte {
+	node := `{"number":1,"closingIssuesReferences":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}`
+	nodes := strings.TrimSuffix(strings.Repeat(node+",", nodeCount), ",")
+	return []byte(`{"data":{"repository":{"pullRequests":{"nodes":[` + nodes + `],"pageInfo":{"hasNextPage":` + strconv.FormatBool(hasNext) + `,"endCursor":"` + endCursor + `"}}}}}`)
 }
 
 func TestFakeService_ReturnsRepositorySummary(t *testing.T) {
@@ -93,7 +100,7 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		BaseBranch:  "main",
 		UpdatedAt:   "2026-05-03T12:00:00Z",
 		LinkedIssues: []workbench.IssueRef{
-			{Number: 9, Title: "Issue", State: "open", URL: "https://example.test/issues/9", Certain: true},
+			{Number: 9, Repository: repo, Title: "Issue", State: "open", URL: "https://example.test/issues/9", Certain: true},
 		},
 		ReviewState: "review required",
 		ReviewRequests: []workbench.ReviewRequestRef{
@@ -118,34 +125,194 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	}
 }
 
+func TestCLIService_PullRequestsPreservesClosingIssueRepository(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", prListFields):                             []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","author":{"login":"0maru"},"headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewRequests":[],"latestReviews":[],"body":"No fallback"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":12,"closingIssuesReferences":{"nodes":[{"number":9,"title":"Local","state":"OPEN","url":"https://example.test/0maru/gh-zen/issues/9","repository":{"nameWithOwner":"0maru/gh-zen"}},{"number":9,"title":"External","state":"OPEN","url":"https://example.test/other/repo/issues/9","repository":{"nameWithOwner":"other/repo"}}]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+
+	got, err := (CLIService{Runner: runner}).PullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected pull requests to parse, got %v", err)
+	}
+	if len(got) != 1 || len(got[0].LinkedIssues) != 2 {
+		t.Fatalf("expected both repository-qualified closing issues, got %+v", got)
+	}
+	if got[0].LinkedIssues[0].Repository != repo || got[0].LinkedIssues[1].Repository != "other/repo" {
+		t.Fatalf("expected closing issue repositories to be preserved, got %+v", got[0].LinkedIssues)
+	}
+	if !strings.Contains(pullRequestClosingIssuesQuery, "nameWithOwner") {
+		t.Fatalf("expected closing issue query to request repository identity, got %q", pullRequestClosingIssuesQuery)
+	}
+}
+
+func TestCLIService_PullRequestsUsesGraphQLClosingIssuesAsAuthoritative(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", prListFields):                             []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","author":{"login":"0maru"},"headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewRequests":[],"latestReviews":[],"body":"<!-- Fixes #10 -->"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":12,"closingIssuesReferences":{"nodes":[]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+
+	got, err := (CLIService{Runner: runner}).PullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected pull requests to parse, got %v", err)
+	}
+	if len(got) != 1 || len(got[0].LinkedIssues) != 0 {
+		t.Fatalf("expected hidden Markdown references to be excluded by GraphQL, got %+v", got)
+	}
+}
+
+func TestCLIService_PullRequestsPaginatesClosingIssuesForEachPullRequest(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("pr", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", prListFields):                                                               []byte(`[{"number":12,"title":"Add feature","state":"OPEN","url":"https://example.test/pr/12","headRefName":"feature","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","reviewRequests":[],"latestReviews":[],"body":""}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery):                                   []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":12,"closingIssuesReferences":{"nodes":[{"number":1,"title":"First","state":"OPEN","url":"https://example.test/issues/1"}],"pageInfo":{"hasNextPage":true,"endCursor":"issue-page-2"}}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-F", "number=12", "-f", "after=issue-page-2", "-f", "query="+pullRequestClosingIssuePageQuery): []byte(`{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":101,"title":"Later","state":"CLOSED","url":"https://example.test/issues/101"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}`),
+	}}
+
+	got, err := (CLIService{Runner: runner}).PullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected closing issues to paginate, got %v", err)
+	}
+	if len(got) != 1 || len(got[0].LinkedIssues) != 2 || got[0].LinkedIssues[1].Number != 101 {
+		t.Fatalf("expected closing issue from the later page, got %+v", got)
+	}
+}
+
+func TestCLIService_PullRequestClosingIssuesStopsAtListLimit(t *testing.T) {
+	repo := "0maru/gh-zen"
+	outputs := map[string][]byte{}
+	after := ""
+	for page := 0; page < listLimitCount/100; page++ {
+		next := strconv.Itoa(page + 1)
+		outputs[commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after="+after, "-f", "query="+pullRequestClosingIssuesQuery)] = closingIssuePullRequestPage(100, true, next)
+		after = next
+	}
+	runner := &fakeRunnerByCommand{outputs: outputs}
+
+	_, err := (CLIService{Runner: runner}).pullRequestClosingIssues(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected closing issue pagination to stop cleanly, got %v", err)
+	}
+	if len(runner.calls) != listLimitCount/100 {
+		t.Fatalf("expected %d GraphQL pages for the PR list limit, got %d", listLimitCount/100, len(runner.calls))
+	}
+}
+
+func TestCLIService_PullRequestClosingIssuesMatchesPullRequestListOrdering(t *testing.T) {
+	if !strings.Contains(pullRequestClosingIssuesQuery, "field:CREATED_AT") || strings.Contains(pullRequestClosingIssuesQuery, "field:UPDATED_AT") {
+		t.Fatalf("expected closing issue query to match gh pr list ordering, got %q", pullRequestClosingIssuesQuery)
+	}
+}
+
+func TestLinkedIssuesFromBodyRequiresClosingKeywordForEachIssue(t *testing.T) {
+	body := "Fixes #1 and see #2. Resolves: #3, closes #1. Mentions #4."
+
+	got := linkedIssuesFromBody("0maru/gh-zen", body)
+	want := []workbench.IssueRef{
+		{Number: 1, Repository: "0maru/gh-zen", Certain: true},
+		{Number: 3, Repository: "0maru/gh-zen", Certain: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected only explicit closing references %+v, got %+v", want, got)
+	}
+}
+
+func TestLinkedIssuesFromBodyAcceptsQualifiedReferencesForSameRepository(t *testing.T) {
+	body := strings.Join([]string{
+		"Fixes 0maru/gh-zen#1.",
+		"Resolves https://github.com/0MARU/GH-ZEN/issues/2.",
+		"Closes other/repo#3.",
+		"Fixes https://github.com/other/repo/issues/4.",
+	}, " ")
+
+	got := linkedIssuesFromBody("0maru/gh-zen", body)
+	want := []workbench.IssueRef{
+		{Number: 1, Repository: "0maru/gh-zen", Certain: true},
+		{Number: 2, Repository: "0maru/gh-zen", Certain: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected only same-repository closing references %+v, got %+v", want, got)
+	}
+}
+
 func TestCLIService_IssuesParsesGHOutput(t *testing.T) {
-	runner := &fakeRunner{output: []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[{"name":"enhancement"}],"assignees":[{"login":"0maru"}],"milestone":{"title":"v1"},"updatedAt":"2026-05-03T12:00:00Z"}]`)}
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields):                 []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[{"name":"enhancement"}],"assignees":[{"login":"0maru"}],"milestone":{"title":"v1"},"author":{"login":"alice"},"updatedAt":"2026-05-03T12:00:00Z"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+issueCommentCountsQuery): []byte(`{"data":{"repository":{"issues":{"nodes":[{"number":9,"comments":{"totalCount":3}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
 	service := CLIService{Runner: runner}
 
-	got, err := service.Issues(context.Background(), "0maru/gh-zen")
+	got, err := service.Issues(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("expected issues to parse, got %v", err)
 	}
 	want := []workbench.IssueRef{{
-		Number:    9,
-		Title:     "Config",
-		State:     "open",
-		URL:       "https://example.test/issues/9",
-		Body:      "Issue details",
-		Labels:    []string{"enhancement"},
-		Assignees: []string{"0maru"},
-		Milestone: "v1",
-		UpdatedAt: "2026-05-03T12:00:00Z",
-		Certain:   true,
+		Number:        9,
+		Repository:    repo,
+		Title:         "Config",
+		State:         "open",
+		URL:           "https://example.test/issues/9",
+		Body:          "Issue details",
+		Labels:        []string{"enhancement"},
+		Assignees:     []string{"0maru"},
+		Milestone:     "v1",
+		AuthorLogin:   "alice",
+		CommentsCount: 3,
+		UpdatedAt:     "2026-05-03T12:00:00Z",
+		Certain:       true,
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %+v, got %+v", want, got)
 	}
-	if !hasArgPair(runner.args, "--limit", listLimit) {
-		t.Fatalf("expected gh issue list limit, got %#v", runner.args)
+	if !hasArgPair(runner.calls[0], "--limit", listLimit) {
+		t.Fatalf("expected gh issue list limit, got %#v", runner.calls)
 	}
-	if !hasArgValue(runner.args, issueListFields) {
-		t.Fatalf("expected gh issue list to request issue detail fields, got %#v", runner.args)
+	if !hasArgValue(runner.calls[0], issueListFields) {
+		t.Fatalf("expected gh issue list to request issue detail fields, got %#v", runner.calls)
+	}
+	if strings.Contains(issueListFields, "comments") {
+		t.Fatalf("expected gh issue list not to request comment bodies, got %q", issueListFields)
+	}
+	if !strings.Contains(issueCommentCountsQuery, "field:CREATED_AT") || strings.Contains(issueCommentCountsQuery, "field:UPDATED_AT") {
+		t.Fatalf("expected issue comment count query to match gh issue list ordering, got %q", issueCommentCountsQuery)
+	}
+}
+
+func TestCLIService_IssuesWithOptionsDefersCommentCounts(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields): []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[],"assignees":[],"milestone":null,"author":{"login":"alice"},"updatedAt":"2026-05-03T12:00:00Z"}]`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.IssuesWithOptions(context.Background(), repo, workbench.IssueListOptions{})
+	if err != nil {
+		t.Fatalf("expected lightweight issues to parse, got %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 9 || got[0].CommentsCount != 0 {
+		t.Fatalf("expected issue without comment count, got %+v", got)
+	}
+	if len(runner.calls) != 1 || runner.calls[0][0] != "issue" {
+		t.Fatalf("expected only gh issue list without GraphQL comment pagination, got %#v", runner.calls)
+	}
+}
+
+func TestCLIService_IssuesWithOptionsPreservesIssuesAndReportsCommentCountFailure(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("issue", "list", "--repo", repo, "--state", "all", "--limit", listLimit, "--json", issueListFields): []byte(`[{"number":9,"title":"Config","state":"OPEN","url":"https://example.test/issues/9","body":"Issue details","labels":[],"assignees":[],"milestone":null,"author":{"login":"alice"},"updatedAt":"2026-05-03T12:00:00Z"}]`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.IssuesWithOptions(context.Background(), repo, workbench.IssueListOptions{IncludeCommentsCount: true})
+	if err == nil || !strings.Contains(err.Error(), "load issue comment counts") {
+		t.Fatalf("expected comment count failure to be reported, got %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 9 || got[0].CommentsCount != 0 {
+		t.Fatalf("expected the successfully loaded issue with an unknown comment count, got %+v", got)
 	}
 }
 
@@ -312,6 +479,7 @@ func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 		commandKey("pr", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", prListFields):                  []byte(`[{"number":24,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/pull/24","author":{"login":"0maru"},"headRefName":"feature/issue-123-runtime","headRepositoryOwner":{"login":"0maru"},"baseRefName":"main","isDraft":false,"updatedAt":"2026-05-03T12:00:00Z","reviewDecision":"APPROVED","reviewRequests":[],"latestReviews":[],"body":"Closes #123"}]`),
 		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+pullRequestClosingIssuesQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":24,"closingIssuesReferences":{"nodes":[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123"}]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
 		commandKey("issue", "list", "--repo", repo.FullName(), "--state", "all", "--limit", listLimit, "--json", issueListFields):            []byte(`[{"number":123,"title":"Runtime pipeline","state":"OPEN","url":"https://example.test/issues/123","body":"Runtime issue","labels":[],"assignees":[],"milestone":null,"updatedAt":"2026-05-03T12:00:00Z"}]`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=", "-f", "query="+issueCommentCountsQuery):       []byte(`{"data":{"repository":{"issues":{"nodes":[{"number":123,"comments":{"totalCount":2}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
 		commandKey("pr", "checks", "feature/issue-123-runtime", "--repo", repo.FullName(), "--json", "name,state"):                           []byte(`[{"name":"test","state":"SUCCESS"},{"name":"lint","state":"SUCCESS"}]`),
 	}}
 	service := CLIService{Runner: runner}
@@ -346,8 +514,8 @@ func TestCLIService_ProvidesDataForWorkbenchEnrichment(t *testing.T) {
 	if items[0].Checks.State != workbench.CheckPassing || items[0].Checks.Passing != 2 {
 		t.Fatalf("expected CLI check data to enrich work item, got %+v", items[0])
 	}
-	if len(runner.calls) != 4 {
-		t.Fatalf("expected four gh calls, got %#v", runner.calls)
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected five gh calls, got %#v", runner.calls)
 	}
 }
 

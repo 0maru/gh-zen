@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,13 +19,22 @@ type fakeMainGitHub struct {
 	prsByRepo    map[string][]workbench.PullRequestRef
 	issuesByRepo map[string][]workbench.IssueRef
 	checks       map[string]workbench.CheckSummary
+	subjects     workbench.ReviewSubjects
+	subjectErr   error
+	calls        *[]string
 }
 
 func (f fakeMainGitHub) PullRequests(_ context.Context, repo string) ([]workbench.PullRequestRef, error) {
+	if f.calls != nil {
+		*f.calls = append(*f.calls, "pull_requests:"+repo)
+	}
 	return append([]workbench.PullRequestRef(nil), f.prsByRepo[repo]...), nil
 }
 
 func (f fakeMainGitHub) Issues(_ context.Context, repo string) ([]workbench.IssueRef, error) {
+	if f.calls != nil {
+		*f.calls = append(*f.calls, "issues:"+repo)
+	}
 	return append([]workbench.IssueRef(nil), f.issuesByRepo[repo]...), nil
 }
 
@@ -32,6 +43,10 @@ func (f fakeMainGitHub) CheckSummary(_ context.Context, repo string, ref string)
 		return summary, nil
 	}
 	return workbench.CheckSummary{State: workbench.CheckUnknown}, nil
+}
+
+func (f fakeMainGitHub) ViewerReviewSubjects(context.Context) (workbench.ReviewSubjects, error) {
+	return f.subjects, f.subjectErr
 }
 
 func TestRepoRefFromFullName(t *testing.T) {
@@ -164,6 +179,223 @@ func TestRuntimeWorkbenchReloaderDiscoversConfiguredRoots(t *testing.T) {
 			strings.Contains(item.Local.Summary, "not accessible")
 	}) {
 		t.Fatalf("expected missing root diagnostic item while preserving work, got %+v", result.Items)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderPropagatesSelectedRepoRawData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	ghZenPath := filepath.Join(root, "0maru", "gh-zen")
+	initRuntimeRepo(t, ghZenPath, "https://github.com/0maru/gh-zen.git")
+
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			prsByRepo: map[string][]workbench.PullRequestRef{
+				repo.FullName(): {{
+					Number:     81,
+					Title:      "Issue browsing",
+					State:      "open",
+					HeadOwner:  "0maru",
+					HeadBranch: "feature/issues",
+				}},
+			},
+			issuesByRepo: map[string][]workbench.IssueRef{
+				repo.FullName(): {{
+					Number:  123,
+					Title:   "Raw issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+			subjects: workbench.ReviewSubjects{Login: "0maru"},
+		},
+	}
+
+	result := reloader.Load(context.Background(), repo)
+	if !result.PullRequestsLoaded || len(result.PullRequests) != 1 || result.PullRequests[0].Number != 81 {
+		t.Fatalf("expected selected repo pull requests to propagate, got loaded=%v prs=%+v", result.PullRequestsLoaded, result.PullRequests)
+	}
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 123 {
+		t.Fatalf("expected selected repo issues to propagate, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected selected repo issue source %+v, got %+v", repo, result.IssuesRepo)
+	}
+	if result.ViewerSubject.Login != "0maru" {
+		t.Fatalf("expected viewer subject to propagate, got %+v", result.ViewerSubject)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderPropagatesViewerSubjectError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses a temporary Git repository")
+	}
+
+	root := t.TempDir()
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	initRuntimeRepo(t, filepath.Join(root, repo.Owner, repo.Name), "https://github.com/0maru/gh-zen.git")
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			prsByRepo:    map[string][]workbench.PullRequestRef{repo.FullName(): {}},
+			issuesByRepo: map[string][]workbench.IssueRef{repo.FullName(): {}},
+			subjectErr:   errors.New("viewer unavailable"),
+		},
+	}
+
+	result := reloader.Load(context.Background(), repo)
+	if !strings.Contains(result.ViewerSubjectError, "viewer unavailable") {
+		t.Fatalf("expected viewer subject failure to propagate, got %q", result.ViewerSubjectError)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderLoadsIssuesForOnlyRequestedRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	ghZenRepo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	dotfilesRepo := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	initRuntimeRepo(t, filepath.Join(root, ghZenRepo.Owner, ghZenRepo.Name), "https://github.com/0maru/gh-zen.git")
+	initRuntimeRepo(t, filepath.Join(root, dotfilesRepo.Owner, dotfilesRepo.Name), "https://github.com/0maru/dotfiles.git")
+
+	calls := []string{}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			issuesByRepo: map[string][]workbench.IssueRef{
+				dotfilesRepo.FullName(): {{Number: 75, Title: "Issue browsing", State: "open"}},
+			},
+			calls: &calls,
+		},
+	}
+
+	result := reloader.LoadIssues(context.Background(), dotfilesRepo)
+
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
+		t.Fatalf("expected requested repo issues, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if len(result.Repositories) != 1 || result.Repositories[0].Repo != dotfilesRepo {
+		t.Fatalf("expected one repo-scoped repository summary, got %+v", result.Repositories)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, ghZenRepo.FullName()) {
+			t.Fatalf("expected no GitHub calls for unrelated repo, got %+v", calls)
+		}
+	}
+	if !slices.Contains(calls, "pull_requests:"+dotfilesRepo.FullName()) || !slices.Contains(calls, "issues:"+dotfilesRepo.FullName()) {
+		t.Fatalf("expected requested repo GitHub calls, got %+v", calls)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderLoadIssuesReportsMissingCheckout(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "missing-repo"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{t.TempDir()}
+
+	result := (runtimeWorkbenchReloader{config: cfg}).LoadIssues(context.Background(), repo)
+
+	if result.IssuesLoaded {
+		t.Fatalf("expected issues not to be loaded, got %+v", result)
+	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected issue error source %+v, got %+v", repo, result.IssuesRepo)
+	}
+	if !strings.Contains(result.IssuesError, "no local checkout found") {
+		t.Fatalf("expected checkout diagnostic in issue error, got %q", result.IssuesError)
+	}
+	if len(result.Items) != 1 || !strings.HasPrefix(result.Items[0].ID, "repository-path-error:") {
+		t.Fatalf("expected repository path error item, got %+v", result.Items)
+	}
+	if len(result.Repositories) != 1 || result.Repositories[0].Repo != repo {
+		t.Fatalf("expected missing checkout summary for %+v, got %+v", repo, result.Repositories)
+	}
+	summary := result.Repositories[0]
+	if summary.Path != "" || summary.ActiveWorktreeCount != 0 || summary.OpenPullRequestCount != 0 || summary.OpenIssueCount != 0 || summary.FailingCheckCount != 0 {
+		t.Fatalf("expected missing checkout summary to clear stale repository state, got %+v", summary)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderPropagatesFirstRepoRawDataForZeroRepoStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	ghZenPath := filepath.Join(root, "0maru", "gh-zen")
+	initRuntimeRepo(t, ghZenPath, "https://github.com/0maru/gh-zen.git")
+
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			issuesByRepo: map[string][]workbench.IssueRef{
+				repo.FullName(): {{
+					Number:  75,
+					Title:   "Discovered issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+		},
+	}
+
+	result := reloader.Load(context.Background(), workbench.RepoRef{})
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
+		t.Fatalf("expected first discovered repo issues to propagate, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected first discovered repo issue source %+v, got %+v", repo, result.IssuesRepo)
+	}
+}
+
+func TestRuntimeWorkbenchReloaderPropagatesRequestedRepoRawDataCaseInsensitively(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uses temporary Git repositories")
+	}
+
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "Owner", "Repo")
+	initRuntimeRepo(t, repoPath, "https://github.com/Owner/Repo.git")
+
+	discoveredRepo := workbench.RepoRef{Owner: "Owner", Name: "Repo"}
+	requestedRepo := workbench.RepoRef{Owner: "owner", Name: "repo"}
+	cfg := config.Defaults()
+	cfg.Repos.Roots = []string{root}
+	reloader := runtimeWorkbenchReloader{
+		config: cfg,
+		github: fakeMainGitHub{
+			issuesByRepo: map[string][]workbench.IssueRef{
+				discoveredRepo.FullName(): {{
+					Number:  82,
+					Title:   "Case-preserved issue",
+					State:   "open",
+					Certain: true,
+				}},
+			},
+		},
+	}
+
+	result := reloader.Load(context.Background(), requestedRepo)
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 82 {
+		t.Fatalf("expected requested repo issues to propagate case-insensitively, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if result.IssuesRepo != discoveredRepo {
+		t.Fatalf("expected discovered repo issue source %+v, got %+v", discoveredRepo, result.IssuesRepo)
 	}
 }
 

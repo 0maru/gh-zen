@@ -21,6 +21,7 @@ const (
 	defaultWidth           = 100
 	repoPaneWidth          = 23
 	workItemPaneWidth      = 41
+	issueListPaneWidth     = 62
 	paneGapWidth           = 1
 	paneContentPaddingLeft = 1
 	paneBorderGlyph        = "│"
@@ -33,6 +34,14 @@ const (
 	frameBottomRightGlyph  = "┘"
 	previewPaneMinWidth    = 28
 	fullLayoutMinWidth     = repoPaneWidth + workItemPaneWidth + previewPaneMinWidth + paneBorderWidth*3 + paneGapWidth*2
+	issueLayoutMinWidth    = issueListPaneWidth + previewPaneMinWidth + paneBorderWidth*2 + paneGapWidth
+)
+
+type appScreen int
+
+const (
+	screenWorkbench appScreen = iota
+	screenIssues
 )
 
 // paneFocus tracks the pane that owns pane-scoped key handling.
@@ -66,9 +75,54 @@ func (p paneFocus) borderLabel() string {
 	}
 }
 
+func (m model) paneLabel(p paneFocus) string {
+	if m.screen == screenIssues {
+		switch p {
+		case panePreview:
+			return "Preview"
+		default:
+			return "Issues"
+		}
+	}
+	if m.mode == modeActions {
+		switch p {
+		case paneRepositories:
+			return "Repositories"
+		case panePreview:
+			return "Preview"
+		default:
+			return "Runs"
+		}
+	}
+	return p.label()
+}
+
+func (m model) paneBorderLabel(p paneFocus) string {
+	if m.screen == screenIssues {
+		switch p {
+		case panePreview:
+			return "Preview"
+		default:
+			return "Issues"
+		}
+	}
+	if m.mode == modeActions {
+		switch p {
+		case paneRepositories:
+			return "Repositories"
+		case panePreview:
+			return "Preview"
+		default:
+			return "Runs"
+		}
+	}
+	return p.borderLabel()
+}
+
 type model struct {
 	width                int
 	height               int
+	screen               appScreen
 	mode                 appMode
 	repos                []workbench.RepoRef
 	repoSummaries        []workbench.RepositorySummary
@@ -77,6 +131,20 @@ type model struct {
 	viewSelected         bool
 	workItems            []workbench.WorkItem
 	selectedItem         int
+	issueRepo            workbench.RepoRef
+	issues               []workbench.IssueRef
+	selectedIssue        int
+	issuePreviewOffset   int
+	issueFilter          issueFilterState
+	issueSearchEditing   bool
+	issuesLoading        bool
+	issueReloadPending   bool
+	pendingIssueRepo     workbench.RepoRef
+	pendingIssueNumber   int
+	issuesError          string
+	prsByIssueNumber     map[int][]workbench.PullRequestRef
+	viewerLogin          string
+	workbenchReturn      workbenchReturnState
 	workbenchSource      workbenchDataSource
 	workbenchLoading     bool
 	focusedPane          paneFocus
@@ -86,6 +154,7 @@ type model struct {
 	nextPreviewRequestID int
 	previewLoader        previewLoader
 	workbenchReloader    WorkbenchReloader
+	issueReloader        IssueReloader
 	nextReloadRequestID  int
 	activeReloadRequest  workbenchReloadRequest
 	workbenchFilter      cfgpkg.WorkbenchFilter
@@ -103,16 +172,35 @@ type WorkbenchData struct {
 	Repos               []workbench.RepoRef
 	RepositorySummaries []workbench.RepositorySummary
 	WorkItems           []workbench.WorkItem
+	PullRequests        []workbench.PullRequestRef
+	Issues              []workbench.IssueRef
+	ViewerSubject       workbench.ReviewSubjects
 	Reloader            WorkbenchReloader
+	IssueReloader       IssueReloader
 	ActionsLoader       ActionsLoader
 	InitialLoading      bool
 	Demo                bool
+}
+
+type workbenchReturnState struct {
+	valid           bool
+	selectedRepo    int
+	selectedRepoRef workbench.RepoRef
+	selectedView    int
+	viewSelected    bool
+	selectedItem    int
+	focusedPane     paneFocus
 }
 
 // WorkbenchReloader reloads runtime workbench data using the selected repository
 // as the selection anchor.
 type WorkbenchReloader interface {
 	Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult
+}
+
+// IssueReloader refreshes runtime data for one repository without scanning all configured repositories.
+type IssueReloader interface {
+	LoadIssues(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult
 }
 
 type repoViewFilter int
@@ -193,9 +281,15 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 		repos:             repoRefsFromSummaries(repoSummaries),
 		repoSummaries:     cloneRepositorySummaries(repoSummaries),
 		workItems:         cloneWorkItems(data.WorkItems),
+		issues:            cloneIssueRefs(data.Issues),
+		issueFilter:       defaultIssueFilterState(),
+		issuesLoading:     data.InitialLoading,
+		prsByIssueNumber:  map[int][]workbench.PullRequestRef{},
+		viewerLogin:       data.ViewerSubject.Login,
 		workbenchSource:   source,
 		previewLoader:     loader,
 		workbenchReloader: data.Reloader,
+		issueReloader:     data.IssueReloader,
 		workbenchFilter:   cfg.Workbench.Filter,
 		actionsLoader:     actionsLoader,
 		actionRunner:      systemActionRunner{},
@@ -208,6 +302,14 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 		startupRepo = cfg.Startup.Repo
 	}
 	m.applyStartupRepo(startupRepo)
+	if repo, ok := m.selectedRepoRef(); ok {
+		m.issueRepo = repo
+		m.issues = mergeIssueRefs(m.issues, issuesFromWorkItems(m.workItems, repo))
+		m.prsByIssueNumber = pullRequestsByIssueNumber(data.PullRequests, repo)
+		if len(m.prsByIssueNumber) == 0 {
+			m.prsByIssueNumber = pullRequestsByIssueNumber(pullRequestsFromWorkItems(m.workItems, repo), repo)
+		}
+	}
 	if data.InitialLoading {
 		m.beginWorkbenchReload("Loading workbench data...")
 	}
@@ -216,9 +318,11 @@ func newModelWithRuntimeData(cfg cfgpkg.Config, startupRepo string, data Workben
 }
 
 type workbenchReloadRequest struct {
-	requestID int
-	repo      workbench.RepoRef
-	status    string
+	requestID   int
+	repo        workbench.RepoRef
+	status      string
+	issueScoped bool
+	fullResult  bool
 }
 
 type workbenchReloadMsg struct {
@@ -302,6 +406,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handleActionsLog(msg)
 		return m, nil
 	case tea.KeyMsg:
+		if m.screen == screenIssues && m.issueSearchEditing {
+			handled, cmd := m.handleIssueSearchKey(msg)
+			if handled {
+				return m, cmd
+			}
+		}
 		if action, ok := m.matchedAction(msg); ok {
 			return m, m.handleAction(action)
 		}
@@ -386,7 +496,11 @@ func (m *model) handlePreviewResult(msg previewResultMsg) {
 }
 
 func (m model) matchedAction(msg tea.KeyMsg) (actionID, bool) {
-	for _, binding := range m.keys.actionBindings(m.mode) {
+	bindings := m.keys.actionBindings(m.mode)
+	if m.screen == screenIssues {
+		bindings = m.keys.issueActionBindings()
+	}
+	for _, binding := range bindings {
 		if key.Matches(msg, binding.binding) {
 			return binding.id, true
 		}
@@ -416,15 +530,27 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		m.focusPaneByNumber(3)
 	case actionMoveDown:
 		m.moveFocusedSelection(1)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startFocusedPreviewOrLoad()
 	case actionMoveUp:
 		m.moveFocusedSelection(-1)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startFocusedPreviewOrLoad()
 	case actionJumpTop:
 		m.jumpFocusedSelection(false)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startFocusedPreviewOrLoad()
 	case actionJumpBottom:
 		m.jumpFocusedSelection(true)
+		if m.screen == screenIssues {
+			return nil
+		}
 		return m.startFocusedPreviewOrLoad()
 	case actionRefresh:
 		if m.mode == modeActions {
@@ -439,12 +565,16 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 	case actionOpenPullRequest:
 		return m.openPullRequest()
 	case actionOpenIssue:
-		return m.openIssue()
+		return m.enterIssueView()
+	case actionOpenInBrowser:
+		return m.openInBrowser()
 	case actionCopyURL:
 		if m.mode == modeActions {
 			return m.copyWorkflowRunURL()
 		}
 		return m.copyURL()
+	case actionCopyIssueNumber:
+		return m.copyIssueNumber()
 	case actionCopyWorktreePath:
 		return m.copyWorktreePath()
 	case actionOpenWorkflowRun:
@@ -467,6 +597,20 @@ func (m *model) handleAction(action actionID) tea.Cmd {
 		return m.applyActionsFilter(actionsFilterFieldActor)
 	case actionClearFilters:
 		return m.clearActionsFilters()
+	case actionCycleIssueState:
+		m.cycleIssueStateFilter()
+	case actionCycleIssueAssignee:
+		m.cycleIssueAssigneeFilter()
+	case actionCycleIssueLabel:
+		m.cycleIssueLabelFilter()
+	case actionCycleIssueMilestone:
+		m.cycleIssueMilestoneFilter()
+	case actionStartIssueSearch:
+		m.startIssueSearch()
+	case actionClearIssueFilters:
+		m.clearIssueFilters()
+	case actionBackToWorkbench:
+		return m.backToWorkbench()
 	}
 	return nil
 }
@@ -502,24 +646,52 @@ func (m *model) openPullRequest() tea.Cmd {
 	})
 }
 
-func (m *model) openIssue() tea.Cmd {
+func (m *model) openInBrowser() tea.Cmd {
+	if m.screen == screenIssues {
+		return m.openSelectedIssueInBrowser()
+	}
+
 	item, ok := m.selectedWorkItem()
 	if !ok {
 		m.statusMessage = "No work item selected"
 		return nil
 	}
-	if item.Issue == nil || item.Issue.URL == "" {
-		m.statusMessage = "No issue URL for selected work item"
+	if item.Issue != nil && item.Issue.URL != "" {
+		label := item.Issue.Label()
+		m.statusMessage = "Opening " + label + "..."
+		return m.actionCommand("Opened "+label, "Open issue failed", func(ctx context.Context) error {
+			return m.runner().Open(ctx, item.Issue.URL)
+		})
+	}
+	if item.PullRequest == nil || item.PullRequest.URL == "" {
+		m.statusMessage = "No browser URL for selected work item"
 		return nil
 	}
-	label := item.Issue.Label()
+	label := item.PullRequest.NumberLabel()
 	m.statusMessage = "Opening " + label + "..."
-	return m.actionCommand("Opened "+label, "Open issue failed", func(ctx context.Context) error {
-		return m.runner().Open(ctx, item.Issue.URL)
+	return m.actionCommand("Opened "+label, "Open PR failed", func(ctx context.Context) error {
+		return m.runner().Open(ctx, item.PullRequest.URL)
 	})
 }
 
 func (m *model) copyURL() tea.Cmd {
+	if m.screen == screenIssues {
+		issue, ok := m.selectedIssueRef()
+		if !ok {
+			m.statusMessage = "No issue selected"
+			return nil
+		}
+		if issue.URL == "" {
+			m.statusMessage = "No issue URL for selected issue"
+			return nil
+		}
+		label := issue.Label()
+		m.statusMessage = "Copying " + label + " URL..."
+		return m.actionCommand("Copied "+label+" URL", "Copy URL failed", func(ctx context.Context) error {
+			return m.runner().Copy(ctx, issue.URL)
+		})
+	}
+
 	item, ok := m.selectedWorkItem()
 	if !ok {
 		m.statusMessage = "No work item selected"
@@ -533,6 +705,23 @@ func (m *model) copyURL() tea.Cmd {
 	m.statusMessage = "Copying " + label + " URL..."
 	return m.actionCommand("Copied "+label+" URL", "Copy URL failed", func(ctx context.Context) error {
 		return m.runner().Copy(ctx, target)
+	})
+}
+
+func (m *model) copyIssueNumber() tea.Cmd {
+	issue, ok := m.selectedIssueRef()
+	if !ok {
+		m.statusMessage = "No issue selected"
+		return nil
+	}
+	if issue.Number == 0 {
+		m.statusMessage = "No issue number for selected issue"
+		return nil
+	}
+	label := issueNumberLabel(issue.Number)
+	m.statusMessage = "Copying " + label + "..."
+	return m.actionCommand("Copied "+label, "Copy issue number failed", func(ctx context.Context) error {
+		return m.runner().Copy(ctx, label)
 	})
 }
 
@@ -659,6 +848,9 @@ func bestWorkItemURL(item workbench.WorkItem) (string, string, bool) {
 }
 
 func (m *model) refreshWorkbenchData() tea.Cmd {
+	if m.screen == screenIssues {
+		return m.startIssueViewReload()
+	}
 	return m.startWorkbenchReload("Reloading workbench data...")
 }
 
@@ -670,24 +862,47 @@ func (m *model) startWorkbenchReload(status string) tea.Cmd {
 }
 
 func (m *model) beginWorkbenchReload(status string) bool {
-	if m.workbenchReloader == nil {
+	issueScoped := m.screen == screenIssues && hasRepoRef(m.issueRepo)
+	if m.workbenchReloader == nil && (!issueScoped || m.issueReloader == nil) {
 		return false
 	}
-	repo, _ := m.selectedRepoRef()
+	repo, ok := m.reloadRepoRef()
+	if !ok {
+		if !m.canReloadWithoutSelectedRepo() {
+			return false
+		}
+		repo = workbench.RepoRef{}
+	}
 	m.nextReloadRequestID++
 	request := workbenchReloadRequest{
-		requestID: m.nextReloadRequestID,
-		repo:      repo,
-		status:    status,
+		requestID:   m.nextReloadRequestID,
+		repo:        repo,
+		status:      status,
+		issueScoped: issueScoped,
+		fullResult:  issueScoped && m.issueReloader == nil,
 	}
 	m.activeReloadRequest = request
 	m.workbenchLoading = true
+	if m.screen == screenIssues {
+		m.issuesLoading = true
+		m.issuesError = ""
+	}
 	m.statusMessage = status
 	return true
 }
 
+func (m model) canReloadWithoutSelectedRepo() bool {
+	return m.screen == screenWorkbench && len(m.repos) == 0
+}
+
 func (m model) workbenchReloadCommand(request workbenchReloadRequest) tea.Cmd {
 	return func() tea.Msg {
+		if request.issueScoped && m.issueReloader != nil {
+			return workbenchReloadMsg{
+				request: request,
+				result:  m.issueReloader.LoadIssues(context.Background(), request.repo),
+			}
+		}
 		return workbenchReloadMsg{
 			request: request,
 			result:  m.workbenchReloader.Load(context.Background(), request.repo),
@@ -699,9 +914,13 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 	if msg.request != m.activeReloadRequest {
 		return nil
 	}
-	repo, ok := m.selectedRepoRef()
-	if msg.request.repo != (workbench.RepoRef{}) && (!ok || repo != msg.request.repo) {
+	if !msg.request.issueScoped &&
+		!(m.screen == screenIssues && m.issueReloadPending) &&
+		m.reloadRequestIsStale(msg.request) {
 		m.workbenchLoading = false
+		if m.screen == screenIssues {
+			m.issuesLoading = false
+		}
 		if m.statusMessage == msg.request.status {
 			m.statusMessage = ""
 		}
@@ -714,19 +933,78 @@ func (m *model) handleWorkbenchReload(msg workbenchReloadMsg) tea.Cmd {
 		selectedWorkItemRepo = item.Repo
 		selectedWorkItemID = item.ID
 	}
-	if len(msg.result.Repositories) > 0 {
-		m.replaceWorkbenchData(msg.result, msg.request.repo)
+	selectedRepo := msg.request.repo
+	if msg.request.issueScoped && m.screen != screenIssues {
+		if repo, ok := m.selectedRepoRef(); ok {
+			selectedRepo = repo
+		}
+	}
+	if msg.request.issueScoped && !msg.request.fullResult {
+		m.workItems = mergeIssueScopedWorkItems(m.workItems, msg.request.repo, msg.result)
+		for _, summary := range msg.result.Repositories {
+			m.replaceIssueScopedRepositorySummary(summary)
+		}
+	} else if len(msg.result.Repositories) > 0 {
+		m.replaceWorkbenchData(msg.result, selectedRepo)
 	} else {
-		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, msg.result.Items)
+		replacement := filterWorkItems(msg.result.Items, func(item workbench.WorkItem) bool {
+			return sameRepoRef(item.Repo, msg.request.repo)
+		})
+		m.workItems = replaceRepoWorkItems(m.workItems, msg.request.repo, replacement)
 	}
 	m.restoreSelectedWorkItem(selectedWorkItemRepo, selectedWorkItemID)
+	if m.screen == screenIssues && m.workbenchReturn.valid {
+		m.syncWorkbenchReturnAfterReload()
+		m.workbenchReturn.selectedItem = m.selectedItem
+	}
+	pendingIssueReload := m.issueReloadPending
+	pendingIssueRepo := m.pendingIssueRepo
+	resultIssueRepo := msg.result.IssuesRepo
+	if !hasRepoRef(resultIssueRepo) {
+		resultIssueRepo = msg.result.Repo
+	}
+	updateVisibleIssues := !pendingIssueReload || sameRepoRef(resultIssueRepo, pendingIssueRepo)
+	if updateVisibleIssues {
+		m.updateIssueDataFromRuntimeResult(msg.result)
+	}
 	m.workbenchLoading = false
+	m.issuesLoading = false
 	if hasWorkbenchErrorItems(msg.result.Items) {
 		m.statusMessage = "Workbench loaded with partial errors"
 	} else {
 		m.statusMessage = ""
 	}
+	if m.screen == screenIssues {
+		if pendingIssueReload {
+			return m.startPendingIssueReload()
+		}
+		m.clearFocusedWorkItem()
+		return nil
+	}
 	return m.startPreviewLoadForCurrentItem()
+}
+
+func (m model) reloadRequestIsStale(request workbenchReloadRequest) bool {
+	repo, ok := m.reloadRepoRef()
+	return request.repo != (workbench.RepoRef{}) && (!ok || repo != request.repo)
+}
+
+func (m *model) syncWorkbenchReturnAfterReload() {
+	if m.workbenchReturn.selectedRepoRef == (workbench.RepoRef{}) {
+		return
+	}
+	if index, ok := m.repoIndex(m.workbenchReturn.selectedRepoRef); ok {
+		m.workbenchReturn.selectedRepo = index
+		return
+	}
+	m.workbenchReturn.selectedRepo = m.selectedRepo
+}
+
+func (m model) reloadRepoRef() (workbench.RepoRef, bool) {
+	if m.screen == screenIssues && hasRepoRef(m.issueRepo) {
+		return m.issueRepo, true
+	}
+	return m.selectedRepoRef()
 }
 
 func (m *model) focusNextPane() {
@@ -748,6 +1026,9 @@ func (m *model) focusPaneByNumber(number int) {
 
 // paneOrder is the visible pane traversal order for tab navigation.
 func (m model) paneOrder() []paneFocus {
+	if m.screen == screenIssues {
+		return []paneFocus{paneWorkItems, panePreview}
+	}
 	if m.isCompact() {
 		return []paneFocus{paneWorkItems, panePreview}
 	}
@@ -796,6 +1077,15 @@ func previousPane(current paneFocus, order []paneFocus) paneFocus {
 
 // moveFocusedSelection keeps j/k scoped to the active pane.
 func (m *model) moveFocusedSelection(delta int) {
+	if m.screen == screenIssues {
+		switch m.activePane() {
+		case paneWorkItems:
+			m.moveIssueSelection(delta)
+		case panePreview:
+			m.moveIssuePreview(delta)
+		}
+		return
+	}
 	switch m.activePane() {
 	case paneRepositories:
 		m.moveRepoSelection(delta)
@@ -810,6 +1100,15 @@ func (m *model) moveFocusedSelection(delta int) {
 
 // jumpFocusedSelection keeps g/G behavior aligned with the active pane.
 func (m *model) jumpFocusedSelection(toEnd bool) {
+	if m.screen == screenIssues {
+		switch m.activePane() {
+		case paneWorkItems:
+			m.jumpIssueSelection(toEnd)
+		case panePreview:
+			m.jumpIssuePreview(toEnd)
+		}
+		return
+	}
 	switch m.activePane() {
 	case paneRepositories:
 		if toEnd {
@@ -929,6 +1228,10 @@ func (m model) selectedRepoRef() (workbench.RepoRef, bool) {
 	return m.repos[m.selectedRepo], true
 }
 
+func hasRepoRef(repo workbench.RepoRef) bool {
+	return repo.Owner != "" || repo.Name != ""
+}
+
 func (m model) selectedRepoSummary() (workbench.RepositorySummary, bool) {
 	repo, ok := m.selectedRepoRef()
 	if !ok {
@@ -964,10 +1267,24 @@ func filterWorkItems(items []workbench.WorkItem, keep func(workbench.WorkItem) b
 }
 
 func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, replacement []workbench.WorkItem) []workbench.WorkItem {
+	canonicalRepo := repo
+	for _, item := range items {
+		if sameRepoRef(item.Repo, repo) {
+			canonicalRepo = item.Repo
+			break
+		}
+	}
+	replacement = cloneWorkItems(replacement)
+	for i := range replacement {
+		if sameRepoRef(replacement[i].Repo, repo) {
+			replacement[i].Repo = canonicalRepo
+		}
+	}
+
 	out := make([]workbench.WorkItem, 0, len(items)+len(replacement))
 	replaced := false
 	for _, item := range items {
-		if item.Repo == repo {
+		if sameRepoRef(item.Repo, repo) {
 			if !replaced {
 				out = append(out, replacement...)
 				replaced = true
@@ -982,6 +1299,155 @@ func replaceRepoWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, re
 	return out
 }
 
+func mergeIssueScopedWorkItems(items []workbench.WorkItem, repo workbench.RepoRef, result workbench.RuntimeLoadResult) []workbench.WorkItem {
+	replacement := cloneWorkItems(result.Items)
+	if result.LocalDiscoveryError != "" {
+		replacement = rebuildAfterLocalDiscoveryFailure(items, repo, result)
+	}
+	byID := make(map[string]int, len(replacement))
+	for i, item := range replacement {
+		byID[item.ID] = i
+	}
+
+	for _, previous := range items {
+		if !sameRepoRef(previous.Repo, repo) {
+			continue
+		}
+		index, found := byID[previous.ID]
+		if found {
+			samePR := previous.PullRequest != nil && replacement[index].PullRequest != nil &&
+				samePullRequest(*previous.PullRequest, *replacement[index].PullRequest)
+			if !result.PullRequestsLoaded && previous.PullRequest != nil && sameWorkItemBranch(previous, replacement[index]) {
+				replacement[index].PullRequest = previous.PullRequest
+				replacement[index].Checks = previous.Checks
+				replacement[index].Issue = refreshedIssueRef(previous.Issue, result)
+			} else {
+				if result.ViewerSubjectError != "" && samePR {
+					preserveViewerReviewPerspective(replacement[index].PullRequest, previous.PullRequest)
+				}
+				if samePR && checkRefFailed(replacement[index], result.FailedCheckRefs) {
+					replacement[index].Checks = previous.Checks
+				}
+			}
+			if !result.IssuesLoaded && sameIssueRef(previous.Issue, replacement[index].Issue) {
+				replacement[index].Issue = previous.Issue
+			}
+			continue
+		}
+		if !result.PullRequestsLoaded && previous.PullRequest != nil && !isLocalDiscoveryWorkItem(previous) {
+			previous.Issue = refreshedIssueRef(previous.Issue, result)
+			byID[previous.ID] = len(replacement)
+			replacement = append(replacement, previous)
+		}
+	}
+
+	return replaceRepoWorkItems(items, repo, replacement)
+}
+
+func rebuildAfterLocalDiscoveryFailure(items []workbench.WorkItem, repo workbench.RepoRef, result workbench.RuntimeLoadResult) []workbench.WorkItem {
+	localItems := filterWorkItems(items, func(item workbench.WorkItem) bool {
+		return sameRepoRef(item.Repo, repo) && isLocalDiscoveryWorkItem(item)
+	})
+	if !result.PullRequestsLoaded {
+		return append(cloneWorkItems(result.Items), localItems...)
+	}
+
+	for i := range localItems {
+		localItems[i].PullRequest = nil
+		localItems[i].Issue = nil
+		localItems[i].Checks = workbench.CheckSummary{}
+	}
+	rebuilt := workbench.LinkPullRequestsForRepo(repo, localItems, result.PullRequests)
+	rebuilt = workbench.LinkIssues(rebuilt, result.Issues)
+	for i := range rebuilt {
+		if rebuilt[i].PullRequest == nil {
+			continue
+		}
+		if checks, ok := checkSummaryForPullRequest(*rebuilt[i].PullRequest, result.Items); ok {
+			rebuilt[i].Checks = checks
+		}
+	}
+	for _, item := range result.Items {
+		if hasWorkbenchErrorItems([]workbench.WorkItem{item}) {
+			rebuilt = append(rebuilt, item)
+		}
+	}
+	return rebuilt
+}
+
+func isLocalDiscoveryWorkItem(item workbench.WorkItem) bool {
+	return item.Worktree != nil ||
+		strings.HasPrefix(item.ID, "worktree:") ||
+		strings.HasPrefix(item.ID, "branch:") ||
+		strings.HasPrefix(item.ID, "remote:")
+}
+
+func checkSummaryForPullRequest(pr workbench.PullRequestRef, items []workbench.WorkItem) (workbench.CheckSummary, bool) {
+	for _, item := range items {
+		if item.PullRequest == nil || !samePullRequest(pr, *item.PullRequest) {
+			continue
+		}
+		return item.Checks, true
+	}
+	return workbench.CheckSummary{}, false
+}
+
+func samePullRequest(left workbench.PullRequestRef, right workbench.PullRequestRef) bool {
+	if left.Number > 0 || right.Number > 0 {
+		return left.Number > 0 && left.Number == right.Number
+	}
+	return left.HeadBranch != "" && left.HeadBranch == right.HeadBranch && strings.EqualFold(left.HeadOwner, right.HeadOwner)
+}
+
+func sameIssueRef(left *workbench.IssueRef, right *workbench.IssueRef) bool {
+	return left != nil && right != nil && left.Number > 0 && left.Number == right.Number
+}
+
+func sameWorkItemBranch(left workbench.WorkItem, right workbench.WorkItem) bool {
+	return left.Branch != nil && right.Branch != nil && left.Branch.Name != "" && left.Branch.Name == right.Branch.Name
+}
+
+func preserveViewerReviewPerspective(current *workbench.PullRequestRef, previous *workbench.PullRequestRef) {
+	current.ViewerReviewRequested = previous.ViewerReviewRequested
+	current.ViewerAuthored = previous.ViewerAuthored
+	current.WaitingOnReview = previous.WaitingOnReview
+}
+
+func checkRefFailed(item workbench.WorkItem, failedRefs []string) bool {
+	if item.PullRequest == nil {
+		return false
+	}
+	ref := item.PullRequest.HeadBranch
+	if strings.HasPrefix(item.ID, "pull-request:") && item.PullRequest.Number > 0 {
+		ref = fmt.Sprintf("%d", item.PullRequest.Number)
+	}
+	for _, failedRef := range failedRefs {
+		if failedRef == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func refreshedIssueRef(previous *workbench.IssueRef, result workbench.RuntimeLoadResult) *workbench.IssueRef {
+	if previous == nil || !result.IssuesLoaded {
+		return previous
+	}
+	for _, issue := range result.Issues {
+		if issue.Number != previous.Number {
+			continue
+		}
+		issue.Certain = previous.Certain
+		issue.Source = previous.Source
+		return &issue
+	}
+	return previous
+}
+
+func sameRepoRef(left workbench.RepoRef, right workbench.RepoRef) bool {
+	return hasRepoRef(left) && hasRepoRef(right) && strings.EqualFold(left.FullName(), right.FullName())
+}
+
 func (m *model) replaceWorkbenchData(result workbench.RuntimeLoadResult, selectedRepo workbench.RepoRef) {
 	m.repoSummaries = cloneRepositorySummaries(result.Repositories)
 	m.repos = repoRefsFromSummaries(m.repoSummaries)
@@ -989,14 +1455,51 @@ func (m *model) replaceWorkbenchData(result workbench.RuntimeLoadResult, selecte
 	m.restoreSelectedRepo(selectedRepo)
 }
 
-func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
-	if repo != (workbench.RepoRef{}) {
-		for i, candidate := range m.repos {
-			if candidate == repo {
-				m.selectedRepo = i
-				return
-			}
+func (m *model) replaceRepositorySummary(summary workbench.RepositorySummary) {
+	for i := range m.repoSummaries {
+		if !strings.EqualFold(m.repoSummaries[i].Repo.FullName(), summary.Repo.FullName()) {
+			continue
 		}
+		summary.Repo = m.repoSummaries[i].Repo
+		summary.Remotes = append([]string(nil), summary.Remotes...)
+		m.repoSummaries[i] = summary
+		return
+	}
+	summary.Remotes = append([]string(nil), summary.Remotes...)
+	m.repoSummaries = append(m.repoSummaries, summary)
+	m.repos = append(m.repos, summary.Repo)
+}
+
+func (m *model) replaceIssueScopedRepositorySummary(summary workbench.RepositorySummary) {
+	repo := m.canonicalRepoRef(summary.Repo)
+	summary = workbench.SummarizeRepository(
+		repo,
+		summary.Path,
+		summary.DefaultBranch,
+		summary.Remotes,
+		m.workItems,
+	)
+	m.replaceRepositorySummary(summary)
+}
+
+func (m model) canonicalRepoRef(repo workbench.RepoRef) workbench.RepoRef {
+	for _, candidate := range m.repos {
+		if sameRepoRef(candidate, repo) {
+			return candidate
+		}
+	}
+	for _, item := range m.workItems {
+		if sameRepoRef(item.Repo, repo) {
+			return item.Repo
+		}
+	}
+	return repo
+}
+
+func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
+	if index, ok := m.repoIndex(repo); ok {
+		m.selectedRepo = index
+		return
 	}
 	if len(m.repos) == 0 {
 		m.selectedRepo = 0
@@ -1007,6 +1510,18 @@ func (m *model) restoreSelectedRepo(repo workbench.RepoRef) {
 	if m.viewSelected {
 		m.selectedView = clamp(m.selectedView, 0, max(len(repoViews)-1, 0))
 	}
+}
+
+func (m model) repoIndex(repo workbench.RepoRef) (int, bool) {
+	if !hasRepoRef(repo) {
+		return 0, false
+	}
+	for i, candidate := range m.repos {
+		if sameRepoRef(candidate, repo) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func hasWorkbenchErrorItems(items []workbench.WorkItem) bool {
@@ -1028,7 +1543,7 @@ func (m *model) restoreSelectedWorkItem(repo workbench.RepoRef, workItemID strin
 	}
 	if workItemID != "" {
 		for i, item := range items {
-			if item.Repo == repo && item.ID == workItemID {
+			if sameRepoRef(item.Repo, repo) && item.ID == workItemID {
 				m.selectedItem = i
 				return
 			}
@@ -1182,6 +1697,12 @@ func matchFilterPattern(pattern string, value string, match func(pattern string,
 func (m model) View() string {
 	width := m.effectiveWidth()
 
+	if m.screen == screenIssues {
+		if width < issueLayoutMinWidth {
+			return m.renderIssueCompact(width)
+		}
+		return m.renderIssueFull(width)
+	}
 	if width < fullLayoutMinWidth {
 		return m.renderCompact(width)
 	}
@@ -1410,7 +1931,7 @@ func (m model) keymapLines(width int) []string {
 	focus := m.activePane()
 	prefix := m.paneLabel(focus) + " keys: "
 	helpWidth := max(width-lipgloss.Width(prefix), 0)
-	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(m.mode, focus, m.paneOrder()))
+	helpView := m.styledHelp(helpWidth).View(m.keys.contextualHelp(m.screen, m.mode, focus, m.paneOrder()))
 	lines := strings.Split(helpView, "\n")
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 
@@ -1515,34 +2036,6 @@ func (m model) paneHeading(pane paneFocus) string {
 		return m.paneBorderLabel(pane)
 	}
 	return fmt.Sprintf("%s[%d]", m.paneBorderLabel(pane), number)
-}
-
-func (m model) paneLabel(pane paneFocus) string {
-	if m.mode == modeActions {
-		switch pane {
-		case paneRepositories:
-			return "Repositories"
-		case panePreview:
-			return "Preview"
-		default:
-			return "Runs"
-		}
-	}
-	return pane.label()
-}
-
-func (m model) paneBorderLabel(pane paneFocus) string {
-	if m.mode == modeActions {
-		switch pane {
-		case paneRepositories:
-			return "Repositories"
-		case panePreview:
-			return "Preview"
-		default:
-			return "Runs"
-		}
-	}
-	return pane.borderLabel()
 }
 
 func (m model) paneNumber(pane paneFocus) (int, bool) {

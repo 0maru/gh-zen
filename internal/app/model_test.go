@@ -86,6 +86,19 @@ type fakeWorkbenchReloader struct {
 	deadlineSet []bool
 }
 
+type fakeIssueReloader struct {
+	results map[string]workbench.RuntimeLoadResult
+	calls   []workbench.RepoRef
+}
+
+func (r *fakeIssueReloader) LoadIssues(_ context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
+	r.calls = append(r.calls, repo)
+	if result, ok := r.results[repo.FullName()]; ok {
+		return result
+	}
+	return workbench.RuntimeLoadResult{Repo: repo}
+}
+
 func (r *fakeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef) workbench.RuntimeLoadResult {
 	r.calls = append(r.calls, repo)
 	_, hasDeadline := ctx.Deadline()
@@ -112,6 +125,28 @@ func requireWorkbenchReloadMsg(t *testing.T, cmd tea.Cmd) workbenchReloadMsg {
 func TestInit_ReturnsNilCmd(t *testing.T) {
 	if cmd := (model{}).Init(); cmd != nil {
 		t.Fatalf("expected Init to return nil cmd, got %T", cmd)
+	}
+}
+
+func TestInit_StartsInitialReloadWithoutSelectedRepository(t *testing.T) {
+	reloader := &fakeWorkbenchReloader{}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), "", WorkbenchData{
+		Reloader:       reloader,
+		InitialLoading: true,
+	}, fakeDelayedPreviewLoader(0))
+
+	if !start.workbenchLoading || start.activeReloadRequest.requestID == 0 {
+		t.Fatalf("expected initial workbench reload request, got loading=%v request=%+v", start.workbenchLoading, start.activeReloadRequest)
+	}
+	if start.activeReloadRequest.repo != (workbench.RepoRef{}) {
+		t.Fatalf("expected zero repo reload request, got %+v", start.activeReloadRequest.repo)
+	}
+	msg := requireWorkbenchReloadMsg(t, start.Init())
+	if msg.request.repo != (workbench.RepoRef{}) {
+		t.Fatalf("expected zero repo reload command, got %+v", msg.request.repo)
+	}
+	if len(reloader.calls) != 1 || reloader.calls[0] != (workbench.RepoRef{}) {
+		t.Fatalf("expected reloader to be called with zero repo, got %+v", reloader.calls)
 	}
 }
 
@@ -1090,7 +1125,8 @@ func TestUpdate_ActionKeysAreBound(t *testing.T) {
 	}{
 		{"refresh", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}, actionRefresh},
 		{"open PR", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}, actionOpenPullRequest},
-		{"open issue", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}, actionOpenIssue},
+		{"show issues", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}, actionOpenIssue},
+		{"open in browser", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}, actionOpenInBrowser},
 		{"copy URL", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, actionCopyURL},
 		{"copy worktree path", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}}, actionCopyWorktreePath},
 	}
@@ -1127,13 +1163,35 @@ func TestUpdate_OpenPullRequestRunsActionCommand(t *testing.T) {
 	}
 }
 
-func TestUpdate_OpenIssueRunsActionCommand(t *testing.T) {
+func TestUpdate_OpenIssueEntersIssueView(t *testing.T) {
+	start := newModel()
+	start.selectedItem = 1
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if cmd != nil {
+		t.Fatalf("expected issue view transition without command, got %T", cmd)
+	}
+	mm := got.(model)
+	if mm.screen != screenIssues {
+		t.Fatalf("expected issue screen, got %v", mm.screen)
+	}
+	issue, ok := mm.selectedIssueRef()
+	if !ok || issue.Number != 9 {
+		t.Fatalf("expected linked issue #9 to be selected, got %+v ok=%v", issue, ok)
+	}
+	if !mm.workbenchReturn.valid || mm.workbenchReturn.selectedItem != 1 || mm.workbenchReturn.focusedPane != paneWorkItems {
+		t.Fatalf("expected workbench return state to be captured, got %+v", mm.workbenchReturn)
+	}
+}
+
+func TestUpdate_OpenInBrowserRunsIssueActionCommand(t *testing.T) {
 	runner := &fakeActionRunner{}
 	start := newModel()
 	start.actionRunner = runner
 	start.selectedItem = 1
 
-	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
 	if cmd == nil {
 		t.Fatalf("expected open issue command")
 	}
