@@ -20,6 +20,16 @@ type IssueCheckDiscovery interface {
 	CheckSummary(ctx context.Context, repo string, ref string) (CheckSummary, error)
 }
 
+// IssueListOptions controls optional data that is expensive to load for every repository.
+type IssueListOptions struct {
+	IncludeCommentsCount bool
+}
+
+// IssueListDiscovery supports callers that can defer expensive issue metadata.
+type IssueListDiscovery interface {
+	IssuesWithOptions(ctx context.Context, repo string, opts IssueListOptions) ([]IssueRef, error)
+}
+
 // IssueCheckLinkService links issues and checks onto workbench items.
 type IssueCheckLinkService struct {
 	GitHub IssueCheckDiscovery
@@ -77,7 +87,7 @@ func LinkIssues(items []WorkItem, issues []IssueRef) []WorkItem {
 		if out[i].Issue != nil {
 			continue
 		}
-		if issue, ok := issueFromPullRequest(out[i].PullRequest); ok {
+		if issue, ok := issueFromPullRequest(out[i].PullRequest, out[i].Repo.FullName()); ok {
 			out[i].Issue = enrichIssue(issue, byNumber)
 			continue
 		}
@@ -130,12 +140,21 @@ func prefixedIssueNumbers(branch string) []int {
 	return numbers
 }
 
-func issueFromPullRequest(pr *PullRequestRef) (IssueRef, bool) {
+func issueFromPullRequest(pr *PullRequestRef, repo string) (IssueRef, bool) {
 	if pr == nil || len(pr.LinkedIssues) == 0 {
 		return IssueRef{}, false
 	}
-	issue := pr.LinkedIssues[0]
-	issue.Certain = len(pr.LinkedIssues) == 1
+	linkedIssues := make([]IssueRef, 0, len(pr.LinkedIssues))
+	for _, issue := range pr.LinkedIssues {
+		if issue.Repository == "" || strings.EqualFold(issue.Repository, repo) {
+			linkedIssues = append(linkedIssues, issue)
+		}
+	}
+	if len(linkedIssues) == 0 {
+		return IssueRef{}, false
+	}
+	issue := linkedIssues[0]
+	issue.Certain = len(linkedIssues) == 1
 	if issue.Source == IssueLinkSourceUnknown {
 		issue.Source = IssueLinkSourcePullRequest
 	}

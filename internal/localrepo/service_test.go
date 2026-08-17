@@ -417,6 +417,7 @@ func initTempGitRepoAt(t *testing.T, dir string) {
 	runGit(t, dir, "config", "user.email", "test@example.com")
 	runGit(t, dir, "config", "user.name", "Test User")
 	runGit(t, dir, "config", "commit.gpgsign", "false")
+	runGit(t, dir, "config", "tag.gpgsign", "false")
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

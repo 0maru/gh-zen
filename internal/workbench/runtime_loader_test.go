@@ -23,6 +23,16 @@ type fakeRuntimeGitHub struct {
 	checkErrs   map[string]error
 }
 
+type configurableIssueRuntimeGitHub struct {
+	fakeRuntimeGitHub
+	includeComments []bool
+}
+
+func (f *configurableIssueRuntimeGitHub) IssuesWithOptions(_ context.Context, _ string, opts IssueListOptions) ([]IssueRef, error) {
+	f.includeComments = append(f.includeComments, opts.IncludeCommentsCount)
+	return f.issues, f.issueErr
+}
+
 func (f fakeRuntimeGitHub) PullRequests(context.Context, string) ([]PullRequestRef, error) {
 	if f.prErr != nil {
 		return nil, f.prErr
@@ -100,8 +110,20 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	if result.Repo != repo {
 		t.Fatalf("expected repo %+v, got %+v", repo, result.Repo)
 	}
+	if result.LocalDiscoveryError != "" {
+		t.Fatalf("expected local discovery to succeed, got %q", result.LocalDiscoveryError)
+	}
 	if len(result.Items) != 1 {
 		t.Fatalf("expected one enriched item, got %+v", result.Items)
+	}
+	if !result.PullRequestsLoaded || len(result.PullRequests) != 1 || result.PullRequests[0].Number != 24 {
+		t.Fatalf("expected raw pull requests in result, got loaded=%v prs=%+v", result.PullRequestsLoaded, result.PullRequests)
+	}
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 123 {
+		t.Fatalf("expected raw issues in result, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if result.IssuesRepo != repo {
+		t.Fatalf("expected raw issue source repo %+v, got %+v", repo, result.IssuesRepo)
 	}
 	item := result.Items[0]
 	if item.PullRequest == nil || item.PullRequest.Number != 24 || item.PullRequest.ReviewState != "approved" {
@@ -112,6 +134,97 @@ func TestRuntimeLoader_LoadsLocalItemsAndGitHubEnrichment(t *testing.T) {
 	}
 	if item.Checks.State != CheckPassing || item.Checks.Passing != 2 {
 		t.Fatalf("expected passing checks, got %+v", item.Checks)
+	}
+}
+
+func TestRuntimeLoader_DefersIssueCommentsUnlessRequested(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	discovery := &configurableIssueRuntimeGitHub{fakeRuntimeGitHub: fakeRuntimeGitHub{
+		issues: []IssueRef{{Number: 75, Title: "Issue browsing", State: "open"}},
+	}}
+
+	RuntimeLoader{Repo: repo, RepoPath: "/repo", Local: fakeLocalDiscovery{}, GitHub: discovery}.Load(context.Background())
+	RuntimeLoader{Repo: repo, RepoPath: "/repo", Local: fakeLocalDiscovery{}, GitHub: discovery, IncludeIssueCommentsCount: true}.Load(context.Background())
+
+	if len(discovery.includeComments) != 2 || discovery.includeComments[0] || !discovery.includeComments[1] {
+		t.Fatalf("expected normal load to defer comments and issue-scoped load to include them, got %v", discovery.includeComments)
+	}
+}
+
+func TestRuntimeLoader_ReturnsViewerSubjectForIssueFilters(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	result := RuntimeLoader{
+		Repo:     repo,
+		RepoPath: "/repo",
+		Local: fakeLocalDiscovery{
+			branches: []localrepo.Branch{{Name: "main"}},
+		},
+		GitHub: fakeRuntimeGitHub{
+			subjects: ReviewSubjects{Login: "0maru"},
+			prs:      []PullRequestRef{},
+			issues:   []IssueRef{},
+		},
+	}.Load(context.Background())
+
+	if result.ViewerSubject.Login != "0maru" {
+		t.Fatalf("expected viewer subject to be returned, got %+v", result.ViewerSubject)
+	}
+}
+
+func TestRuntimeLoader_ReturnsViewerSubjectWhenPullRequestsFail(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	result := RuntimeLoader{
+		Repo:     repo,
+		RepoPath: "/repo",
+		Local: fakeLocalDiscovery{
+			branches: []localrepo.Branch{{Name: "main"}},
+		},
+		GitHub: fakeRuntimeGitHub{
+			prErr:    errors.New("pull requests unavailable"),
+			subjects: ReviewSubjects{Login: "0maru"},
+			issues:   []IssueRef{{Number: 75, Title: "Issue browsing", State: "open"}},
+		},
+	}.Load(context.Background())
+
+	if result.ViewerSubject.Login != "0maru" {
+		t.Fatalf("expected viewer subject despite pull request failure, got %+v", result.ViewerSubject)
+	}
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
+		t.Fatalf("expected issues to remain available, got loaded=%v issues=%+v", result.IssuesLoaded, result.Issues)
+	}
+	if !hasRuntimeErrorItem(result.Items, "pull request discovery failed", "pull requests unavailable") {
+		t.Fatalf("expected pull request error item, got %+v", result.Items)
+	}
+}
+
+func TestRuntimeLoader_RecordsViewerSubjectFailure(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	result := RuntimeLoader{
+		Repo:     repo,
+		RepoPath: "/repo",
+		Local: fakeLocalDiscovery{
+			branches: []localrepo.Branch{{Name: "feature"}},
+		},
+		GitHub: fakeRuntimeGitHub{
+			subjectErr: errors.New("viewer unavailable"),
+			prs: []PullRequestRef{{
+				Number:     10,
+				State:      "open",
+				HeadOwner:  "0maru",
+				HeadBranch: "feature",
+			}},
+			issues: []IssueRef{},
+		},
+	}.Load(context.Background())
+
+	if !result.PullRequestsLoaded {
+		t.Fatalf("expected pull requests to remain loaded, got %+v", result)
+	}
+	if !strings.Contains(result.ViewerSubjectError, "viewer unavailable") {
+		t.Fatalf("expected viewer subject failure to be recorded, got %q", result.ViewerSubjectError)
+	}
+	if !hasRuntimeErrorItem(result.Items, "pull request discovery failed", "viewer unavailable") {
+		t.Fatalf("expected viewer subject error item, got %+v", result.Items)
 	}
 }
 
@@ -200,6 +313,33 @@ func TestRuntimeLoader_PreservesLocalItemsWhenGitHubFails(t *testing.T) {
 	if !hasRuntimeErrorItem(result.Items, "issue and check discovery failed", "network failed") {
 		t.Fatalf("expected issue and check discovery error item, got %+v", result.Items)
 	}
+	if !strings.Contains(result.IssuesError, "network failed") {
+		t.Fatalf("expected issue-specific error, got %q", result.IssuesError)
+	}
+}
+
+func TestRuntimeLoader_PreservesPartialIssuesWhenMetadataFails(t *testing.T) {
+	repo := RepoRef{Owner: "0maru", Name: "gh-zen"}
+	github := &configurableIssueRuntimeGitHub{fakeRuntimeGitHub: fakeRuntimeGitHub{
+		issues:   []IssueRef{{Number: 75, Repository: repo.FullName(), Title: "Issue browser", Certain: true}},
+		issueErr: errors.New("comment counts failed"),
+	}}
+	loader := RuntimeLoader{
+		Repo:                      repo,
+		RepoPath:                  "/repo",
+		Local:                     fakeLocalDiscovery{},
+		GitHub:                    github,
+		IncludeIssueCommentsCount: true,
+	}
+
+	result := loader.Load(context.Background())
+
+	if !result.IssuesLoaded || len(result.Issues) != 1 || result.Issues[0].Number != 75 {
+		t.Fatalf("expected partial issues to remain loaded, got %+v", result)
+	}
+	if !strings.Contains(result.IssuesError, "comment counts failed") {
+		t.Fatalf("expected the metadata failure to be reported separately, got %q", result.IssuesError)
+	}
 }
 
 func TestRuntimeLoader_ReturnsLocalDiscoveryErrorItem(t *testing.T) {
@@ -220,6 +360,9 @@ func TestRuntimeLoader_ReturnsLocalDiscoveryErrorItem(t *testing.T) {
 	}
 	if result.Items[0].Local == nil || !strings.Contains(result.Items[0].Local.Summary, "git failed") {
 		t.Fatalf("expected local discovery error summary, got %+v", result.Items[0].Local)
+	}
+	if !strings.Contains(result.LocalDiscoveryError, "git failed") {
+		t.Fatalf("expected local discovery error to be recorded, got %q", result.LocalDiscoveryError)
 	}
 }
 
@@ -264,8 +407,14 @@ func TestRuntimeLoader_ContinuesWhenSingleCheckFails(t *testing.T) {
 	if second.Checks.State != CheckPassing || second.Checks.Passing != 2 {
 		t.Fatalf("expected later PR checks to be linked, got %+v", second.Checks)
 	}
+	if len(result.FailedCheckRefs) != 1 || result.FailedCheckRefs[0] != "first" {
+		t.Fatalf("expected failed check ref to be recorded, got %+v", result.FailedCheckRefs)
+	}
 	if !hasRuntimeErrorItem(result.Items, "issue and check discovery failed", "first checks failed") {
 		t.Fatalf("expected check discovery error item, got %+v", result.Items)
+	}
+	if result.IssuesError != "" {
+		t.Fatalf("expected check failure not to set issue-specific error, got %q", result.IssuesError)
 	}
 }
 
