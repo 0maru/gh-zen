@@ -102,7 +102,9 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 		LinkedIssues: []workbench.IssueRef{
 			{Number: 9, Repository: repo, Title: "Issue", State: "open", URL: "https://example.test/issues/9", Certain: true},
 		},
-		ReviewState: "review required",
+		BodyExcerpt:    "No closing keyword",
+		ReviewDecision: "review required",
+		ReviewState:    "review required",
 		ReviewRequests: []workbench.ReviewRequestRef{
 			{Kind: "User", Login: "alice", Name: "Alice"},
 			{Kind: "Team", Name: "Core", Slug: "core"},
@@ -122,6 +124,141 @@ func TestCLIService_PullRequestsParsesGHOutput(t *testing.T) {
 	}
 	if !hasArgValue(runner.calls[0], prListFields) {
 		t.Fatalf("expected gh pr list to request head repository owner, got %#v", runner.calls)
+	}
+}
+
+func TestCLIService_RepositoryPullRequestsParsesGraphQLOutput(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"viewer":{"login":"alice"},"repository":{"pullRequests":{"nodes":[
+			{"number":3,"title":"Merged fix","state":"MERGED","isDraft":false,"url":"https://example.test/pull/3","bodyText":"Merged body","headRefName":"fix","baseRefName":"main","reviewDecision":"APPROVED","mergeable":"MERGEABLE","updatedAt":"2026-05-01T10:00:00Z","author":{"login":"0maru"},"headRepositoryOwner":{"login":"0maru"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[{"author":{"login":"bob"},"state":"APPROVED"}]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]}},
+			{"number":5,"title":"Review requested","state":"OPEN","isDraft":false,"url":"https://example.test/pull/5","bodyText":"Closes #12 with enough body text for an excerpt","headRefName":"feature","baseRefName":"main","reviewDecision":"REVIEW_REQUIRED","mergeable":"CONFLICTING","updatedAt":"2026-05-03T10:00:00Z","author":{"login":"alice"},"headRepositoryOwner":{"login":"alice"},"reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"0maru","name":"0maru"}}]},"latestReviews":{"nodes":[]},"closingIssuesReferences":{"nodes":[{"number":12,"title":"Linked issue","state":"OPEN","url":"https://example.test/issues/12"}]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"StatusContext","context":"build","state":"SUCCESS"}]}}}}]}},
+			{"number":4,"title":"Draft work","state":"OPEN","isDraft":true,"url":"https://example.test/pull/4","bodyText":"Draft body","headRefName":"draft","baseRefName":"main","reviewDecision":null,"mergeable":"UNKNOWN","updatedAt":"2026-05-02T10:00:00Z","author":{"login":"0maru"},"headRepositoryOwner":{"login":"0maru"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null}]}}}}]}}
+		],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected repository pull requests to parse, got %v", err)
+	}
+	gotNumbers := []int{}
+	for _, pr := range got {
+		gotNumbers = append(gotNumbers, pr.Number)
+	}
+	if !reflect.DeepEqual(gotNumbers, []int{5, 4, 3}) {
+		t.Fatalf("expected updated desc order, got %+v", gotNumbers)
+	}
+	pr := got[0]
+	if pr.Number != 5 || pr.State != "open" || pr.Author != "alice" || pr.HeadRef != "alice/feature" || pr.BaseRef != "main" {
+		t.Fatalf("unexpected parsed PR identity: %+v", pr)
+	}
+	if pr.ReviewDecision != "review required" || len(pr.ReviewRequests) != 1 || pr.ReviewRequests[0].Login != "0maru" {
+		t.Fatalf("expected review request data, got %+v", pr)
+	}
+	if len(pr.LinkedIssues) != 1 || pr.LinkedIssues[0].Number != 12 {
+		t.Fatalf("expected linked issue data, got %+v", pr.LinkedIssues)
+	}
+	if pr.Checks.State != "failing" || pr.Checks.Failing != 1 || pr.Checks.Passing != 1 {
+		t.Fatalf("expected failing check summary, got %+v", pr.Checks)
+	}
+	if !pr.WaitingOnReview || pr.ViewerReviewRequested {
+		t.Fatalf("expected viewer-authored PR to be waiting on review only, got %+v", pr)
+	}
+	if pr.Mergeability != "conflicting" || pr.BodyExcerpt == "" {
+		t.Fatalf("expected mergeability and body excerpt, got mergeability=%q body=%q", pr.Mergeability, pr.BodyExcerpt)
+	}
+}
+
+func TestCLIService_RepositoryPullRequestsPaginatesWithCursorAfterFirstPage(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery):                         []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":1,"title":"First","state":"OPEN","updatedAt":"2026-05-01T10:00:00Z"}],"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"}}}}}`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "after=cursor-1", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[{"number":2,"title":"Second","state":"OPEN","updatedAt":"2026-05-02T10:00:00Z"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected repository pull requests to paginate, got %v", err)
+	}
+	gotNumbers := []int{got[0].Number, got[1].Number}
+	if !reflect.DeepEqual(gotNumbers, []int{2, 1}) {
+		t.Fatalf("expected sorted paginated PR numbers [2 1], got %+v", gotNumbers)
+	}
+}
+
+func TestCLIService_RepositoryPullRequestsClassifiesTimedOutChecksAsFailing(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[
+			{"number":7,"title":"Timed out","state":"OPEN","updatedAt":"2026-05-01T10:00:00Z","commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"TIMED_OUT"},{"__typename":"CheckRun","name":"deploy","status":"COMPLETED","conclusion":"ACTION_REQUIRED"}]}}}}]}}
+		],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected repository pull requests to parse, got %v", err)
+	}
+	if got[0].Checks.State != "failing" || got[0].Checks.Failing != 2 {
+		t.Fatalf("expected timed out and action required checks to fail, got %+v", got[0].Checks)
+	}
+}
+
+func TestCLIService_RepositoryPullRequestsClassifiesWaitingChecksAsPending(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[
+			{"number":8,"title":"Waiting","state":"OPEN","updatedAt":"2026-05-01T10:00:00Z","commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"REQUESTED","conclusion":""},{"__typename":"StatusContext","context":"deploy","state":"EXPECTED"}]}}}}]}}
+		],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected repository pull requests to parse, got %v", err)
+	}
+	if got[0].Checks.State != "pending" || got[0].Checks.Pending != 2 {
+		t.Fatalf("expected requested and expected checks to be pending, got %+v", got[0].Checks)
+	}
+}
+
+func TestCLIService_RepositoryPullRequestsPaginatesCheckContexts(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "query="+repositoryPullRequestsQuery): []byte(`{"data":{"repository":{"pullRequests":{"nodes":[
+			{"number":9,"title":"Many checks","state":"OPEN","updatedAt":"2026-05-01T10:00:00Z","commits":{"nodes":[{"commit":{"oid":"abc123","statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}],"pageInfo":{"hasNextPage":true,"endCursor":"checks-1"}}}}}]}}
+		],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`),
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-f", "oid=abc123", "-f", "after=checks-1", "-f", "query="+repositoryPullRequestCheckContextsQuery): []byte(`{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"deploy","status":"COMPLETED","conclusion":"FAILURE"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.RepositoryPullRequests(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected check contexts to paginate, got %v", err)
+	}
+	if len(got) != 1 || got[0].Checks.State != "failing" || got[0].Checks.Passing != 1 || got[0].Checks.Failing != 1 {
+		t.Fatalf("expected all check context pages in summary, got %+v", got)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected list and check-context page calls, got %#v", runner.calls)
+	}
+}
+
+func TestCLIService_DetailParsesGraphQLOutput(t *testing.T) {
+	repo := "0maru/gh-zen"
+	runner := &fakeRunnerByCommand{outputs: map[string][]byte{
+		commandKey("api", "graphql", "-f", "owner=0maru", "-f", "name=gh-zen", "-F", "number=7", "-f", "query="+repositoryPullRequestDetailQuery): []byte(`{"data":{"repository":{"pullRequest":{"number":7,"title":"Detail","state":"CLOSED","isDraft":false,"url":"https://example.test/pull/7","bodyText":"Detail body","headRefName":"detail","baseRefName":"main","reviewDecision":"CHANGES_REQUESTED","mergeable":"UNKNOWN","updatedAt":"2026-05-04T10:00:00Z","author":{"login":"alice"},"headRepositoryOwner":{"login":"alice"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[{"author":{"login":"bob"},"state":"CHANGES_REQUESTED"}]},"closingIssuesReferences":{"nodes":[]},"commits":{"nodes":[]}}}}}`),
+	}}
+	service := CLIService{Runner: runner}
+
+	got, err := service.Detail(context.Background(), repo, 7)
+	if err != nil {
+		t.Fatalf("expected detail to parse, got %v", err)
+	}
+	if got.Number != 7 || got.State != "closed" || got.ReviewDecision != "changes requested" || len(got.LatestReviews) != 1 {
+		t.Fatalf("unexpected detail result: %+v", got)
 	}
 }
 

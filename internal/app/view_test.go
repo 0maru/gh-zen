@@ -193,6 +193,33 @@ func TestView_FullLayoutSeparatesPanes(t *testing.T) {
 	}
 }
 
+func TestView_PullRequestViewRendersListAndPreview(t *testing.T) {
+	m := testPRModel()
+	m.width = 160
+	m.activeView = appViewPullRequests
+	m.focusedPane = panePullRequests
+	m.pullRequestPreview = pullRequestPreviewState{
+		status:                previewLoaded,
+		focusedPullRequestKey: "pr:24",
+		loaded: pullRequestPreviewData{
+			pullRequestKey: "pr:24",
+			pr:             m.pullRequests[0],
+		},
+	}
+	got := ansi.Strip(m.View())
+	if !strings.Contains(got, "gh-zen  pull requests") || !strings.Contains(got, "PullRequests[2]") {
+		t.Fatalf("expected PR view panes, got:\n%s", got)
+	}
+	for _, want := range []string{"#24", "Add layered", "@teammate", "review requested", "checks failing (1)", "2026-05-03"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected PR row to include %q, got:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "Branch: 0maru/feat/config") {
+		t.Fatalf("expected PR preview branch refs, got:\n%s", got)
+	}
+}
+
 func TestView_RepositoryPaneRendersRepositorySummaries(t *testing.T) {
 	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}

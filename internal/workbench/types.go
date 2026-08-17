@@ -79,9 +79,13 @@ type PullRequestRef struct {
 	IsDraft        bool
 	UpdatedAt      string
 	LinkedIssues   []IssueRef
+	BodyExcerpt    string
+	Mergeability   string
 	ReviewState    string
+	ReviewDecision string
 	ReviewRequests []ReviewRequestRef
 	LatestReviews  []PullRequestReviewRef
+	ChecksSummary  CheckSummary
 
 	ViewerReviewRequested bool
 	ViewerAuthored        bool

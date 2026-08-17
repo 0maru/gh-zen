@@ -2,6 +2,7 @@
 
 - Status: Superseded by [0006: Use Repository Workbench as the Primary Navigation Model](0006-use-repository-workbench-as-the-primary-navigation-model.md)
 - Date: 2026-04-26
+- Follow-up: [0010: Use Terminal-First GitHub Browsing as the Product Direction](0010-use-terminal-first-github-browsing-as-the-product-direction.md)
 
 ## Context
 
@@ -83,6 +84,11 @@ browser:
 This slice should prove the core interaction loop before the same model is
 expanded to issues, notifications, workflow runs, releases, or cross-repository
 search.
+
+ADR 0006 superseded this first-slice choice with the repository workbench, but
+ADR 0010 restores current-repository pull request browsing as a parallel
+first-class view. The preview identity and stale-result rules in this ADR still
+apply to that PR view.
 
 ## Consequences
 

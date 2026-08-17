@@ -1,6 +1,7 @@
 package app
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -9,43 +10,49 @@ import (
 type actionID string
 
 const (
-	actionMoveDown             actionID = "move_down"
-	actionMoveUp               actionID = "move_up"
-	actionJumpTop              actionID = "jump_top"
-	actionJumpBottom           actionID = "jump_bottom"
-	actionFocusNextPane        actionID = "focus_next_pane"
-	actionFocusPreviousPane    actionID = "focus_previous_pane"
-	actionFocusPane1           actionID = "focus_pane_1"
-	actionFocusPane2           actionID = "focus_pane_2"
-	actionFocusPane3           actionID = "focus_pane_3"
-	actionToggleHelp           actionID = "toggle_help"
-	actionRefresh              actionID = "refresh"
-	actionShowActions          actionID = "show_actions"
-	actionShowWorkbench        actionID = "show_workbench"
-	actionOpenPullRequest      actionID = "open_pr"
-	actionOpenIssue            actionID = "open_issue"
-	actionOpenInBrowser        actionID = "open_in_browser"
-	actionCopyURL              actionID = "copy_url"
-	actionCopyIssueNumber      actionID = "copy_issue_number"
-	actionCopyWorktreePath     actionID = "copy_worktree_path"
-	actionOpenWorkflowRun      actionID = "open_workflow_run"
-	actionCopyWorkflowRunID    actionID = "copy_workflow_run_id"
-	actionFetchWorkflowRunLogs actionID = "fetch_workflow_run_logs"
-	actionFilterStatus         actionID = "filter_status"
-	actionFilterConclusion     actionID = "filter_conclusion"
-	actionFilterBranch         actionID = "filter_branch"
-	actionFilterWorkflow       actionID = "filter_workflow"
-	actionFilterEvent          actionID = "filter_event"
-	actionFilterActor          actionID = "filter_actor"
-	actionClearFilters         actionID = "clear_filters"
-	actionCycleIssueState      actionID = "cycle_issue_state"
-	actionCycleIssueAssignee   actionID = "cycle_issue_assignee"
-	actionCycleIssueLabel      actionID = "cycle_issue_label"
-	actionCycleIssueMilestone  actionID = "cycle_issue_milestone"
-	actionStartIssueSearch     actionID = "start_issue_search"
-	actionClearIssueFilters    actionID = "clear_issue_filters"
-	actionBackToWorkbench      actionID = "back_to_workbench"
-	actionQuit                 actionID = "quit"
+	actionMoveDown              actionID = "move_down"
+	actionMoveUp                actionID = "move_up"
+	actionJumpTop               actionID = "jump_top"
+	actionJumpBottom            actionID = "jump_bottom"
+	actionFocusNextPane         actionID = "focus_next_pane"
+	actionFocusPreviousPane     actionID = "focus_previous_pane"
+	actionFocusPane1            actionID = "focus_pane_1"
+	actionFocusPane2            actionID = "focus_pane_2"
+	actionFocusPane3            actionID = "focus_pane_3"
+	actionToggleHelp            actionID = "toggle_help"
+	actionRefresh               actionID = "refresh"
+	actionShowActions           actionID = "show_actions"
+	actionShowWorkbench         actionID = "show_workbench"
+	actionOpenPullRequest       actionID = "open_pr"
+	actionOpenSelected          actionID = "open_selected"
+	actionOpenIssue             actionID = "open_issue"
+	actionOpenInBrowser         actionID = "open_in_browser"
+	actionCopyURL               actionID = "copy_url"
+	actionCopyIssueNumber       actionID = "copy_issue_number"
+	actionCopyWorktreePath      actionID = "copy_worktree_path"
+	actionCopyPullRequestNumber actionID = "copy_pr_number"
+	actionCopyPullRequestHead   actionID = "copy_pr_head"
+	actionShowPullRequests      actionID = "show_pull_requests"
+	actionSearchPullRequests    actionID = "search_prs"
+	actionFilterPullRequests    actionID = "filter_prs"
+	actionOpenWorkflowRun       actionID = "open_workflow_run"
+	actionCopyWorkflowRunID     actionID = "copy_workflow_run_id"
+	actionFetchWorkflowRunLogs  actionID = "fetch_workflow_run_logs"
+	actionFilterStatus          actionID = "filter_status"
+	actionFilterConclusion      actionID = "filter_conclusion"
+	actionFilterBranch          actionID = "filter_branch"
+	actionFilterWorkflow        actionID = "filter_workflow"
+	actionFilterEvent           actionID = "filter_event"
+	actionFilterActor           actionID = "filter_actor"
+	actionClearFilters          actionID = "clear_filters"
+	actionCycleIssueState       actionID = "cycle_issue_state"
+	actionCycleIssueAssignee    actionID = "cycle_issue_assignee"
+	actionCycleIssueLabel       actionID = "cycle_issue_label"
+	actionCycleIssueMilestone   actionID = "cycle_issue_milestone"
+	actionStartIssueSearch      actionID = "start_issue_search"
+	actionClearIssueFilters     actionID = "clear_issue_filters"
+	actionBackToWorkbench       actionID = "back_to_workbench"
+	actionQuit                  actionID = "quit"
 )
 
 type actionBinding struct {
@@ -54,44 +61,50 @@ type actionBinding struct {
 }
 
 type workbenchKeyMap struct {
-	MoveDown             key.Binding
-	MoveUp               key.Binding
-	JumpTop              key.Binding
-	JumpBottom           key.Binding
-	FocusNextPane        key.Binding
-	FocusPreviousPane    key.Binding
-	FocusPane1           key.Binding
-	FocusPane2           key.Binding
-	FocusPane3           key.Binding
-	ToggleHelp           key.Binding
-	Refresh              key.Binding
-	ShowActions          key.Binding
-	ShowWorkbench        key.Binding
-	OpenPullRequest      key.Binding
-	OpenIssue            key.Binding
-	OpenInBrowser        key.Binding
-	CopyURL              key.Binding
-	CopyIssueNumber      key.Binding
-	CopyWorktreePath     key.Binding
-	OpenWorkflowRun      key.Binding
-	CopyWorkflowRunID    key.Binding
-	FetchWorkflowRunLogs key.Binding
-	FilterStatus         key.Binding
-	FilterConclusion     key.Binding
-	FilterBranch         key.Binding
-	FilterWorkflow       key.Binding
-	FilterEvent          key.Binding
-	FilterActor          key.Binding
-	ClearFilters         key.Binding
-	CycleIssueState      key.Binding
-	CycleIssueAssignee   key.Binding
-	CycleIssueLabel      key.Binding
-	CycleIssueMilestone  key.Binding
-	StartIssueSearch     key.Binding
-	ClearIssueFilters    key.Binding
-	BackToWorkbench      key.Binding
-	ForceQuit            key.Binding
-	Quit                 key.Binding
+	MoveDown              key.Binding
+	MoveUp                key.Binding
+	JumpTop               key.Binding
+	JumpBottom            key.Binding
+	FocusNextPane         key.Binding
+	FocusPreviousPane     key.Binding
+	FocusPane1            key.Binding
+	FocusPane2            key.Binding
+	FocusPane3            key.Binding
+	ToggleHelp            key.Binding
+	Refresh               key.Binding
+	ShowActions           key.Binding
+	ShowWorkbench         key.Binding
+	OpenPullRequest       key.Binding
+	OpenSelected          key.Binding
+	OpenIssue             key.Binding
+	OpenInBrowser         key.Binding
+	CopyURL               key.Binding
+	CopyIssueNumber       key.Binding
+	CopyWorktreePath      key.Binding
+	CopyPullRequestNumber key.Binding
+	CopyPullRequestHead   key.Binding
+	ShowPullRequests      key.Binding
+	SearchPullRequests    key.Binding
+	FilterPullRequests    key.Binding
+	OpenWorkflowRun       key.Binding
+	CopyWorkflowRunID     key.Binding
+	FetchWorkflowRunLogs  key.Binding
+	FilterStatus          key.Binding
+	FilterConclusion      key.Binding
+	FilterBranch          key.Binding
+	FilterWorkflow        key.Binding
+	FilterEvent           key.Binding
+	FilterActor           key.Binding
+	ClearFilters          key.Binding
+	CycleIssueState       key.Binding
+	CycleIssueAssignee    key.Binding
+	CycleIssueLabel       key.Binding
+	CycleIssueMilestone   key.Binding
+	StartIssueSearch      key.Binding
+	ClearIssueFilters     key.Binding
+	BackToWorkbench       key.Binding
+	ForceQuit             key.Binding
+	Quit                  key.Binding
 }
 
 type contextualHelpKeyMap struct {
@@ -158,12 +171,16 @@ func DefaultKeyMap() workbenchKeyMap {
 			key.WithHelp("a", "actions"),
 		),
 		ShowWorkbench: key.NewBinding(
-			key.WithKeys("w"),
+			key.WithKeys("w", "["),
 			key.WithHelp("w", "workbench"),
 		),
 		OpenPullRequest: key.NewBinding(
 			key.WithKeys("p"),
 			key.WithHelp("p", "open PR"),
+		),
+		OpenSelected: key.NewBinding(
+			key.WithKeys("o"),
+			key.WithHelp("o", "open"),
 		),
 		OpenIssue: key.NewBinding(
 			key.WithKeys("i"),
@@ -184,6 +201,26 @@ func DefaultKeyMap() workbenchKeyMap {
 		CopyWorktreePath: key.NewBinding(
 			key.WithKeys("Y"),
 			key.WithHelp("Y", "copy path"),
+		),
+		CopyPullRequestNumber: key.NewBinding(
+			key.WithKeys("Y"),
+			key.WithHelp("Y", "copy #"),
+		),
+		CopyPullRequestHead: key.NewBinding(
+			key.WithKeys("H"),
+			key.WithHelp("H", "copy head"),
+		),
+		ShowPullRequests: key.NewBinding(
+			key.WithKeys("]"),
+			key.WithHelp("]", "PR view"),
+		),
+		SearchPullRequests: key.NewBinding(
+			key.WithKeys("/"),
+			key.WithHelp("/", "search"),
+		),
+		FilterPullRequests: key.NewBinding(
+			key.WithKeys("f"),
+			key.WithHelp("f", "filter"),
 		),
 		OpenWorkflowRun: key.NewBinding(
 			key.WithKeys("o"),
@@ -264,7 +301,67 @@ func DefaultKeyMap() workbenchKeyMap {
 	}
 }
 
-func (k workbenchKeyMap) actionBindings(mode appMode) []actionBinding {
+func keyMapFromBindings(bindings map[string][]string) workbenchKeyMap {
+	keyMap := DefaultKeyMap()
+	byAction := map[actionID]*key.Binding{
+		actionMoveDown:              &keyMap.MoveDown,
+		actionMoveUp:                &keyMap.MoveUp,
+		actionJumpTop:               &keyMap.JumpTop,
+		actionJumpBottom:            &keyMap.JumpBottom,
+		actionFocusNextPane:         &keyMap.FocusNextPane,
+		actionFocusPreviousPane:     &keyMap.FocusPreviousPane,
+		actionFocusPane1:            &keyMap.FocusPane1,
+		actionFocusPane2:            &keyMap.FocusPane2,
+		actionFocusPane3:            &keyMap.FocusPane3,
+		actionToggleHelp:            &keyMap.ToggleHelp,
+		actionRefresh:               &keyMap.Refresh,
+		actionShowActions:           &keyMap.ShowActions,
+		actionShowWorkbench:         &keyMap.ShowWorkbench,
+		actionOpenPullRequest:       &keyMap.OpenPullRequest,
+		actionOpenSelected:          &keyMap.OpenSelected,
+		actionOpenIssue:             &keyMap.OpenIssue,
+		actionOpenInBrowser:         &keyMap.OpenInBrowser,
+		actionCopyURL:               &keyMap.CopyURL,
+		actionCopyIssueNumber:       &keyMap.CopyIssueNumber,
+		actionCopyWorktreePath:      &keyMap.CopyWorktreePath,
+		actionCopyPullRequestNumber: &keyMap.CopyPullRequestNumber,
+		actionCopyPullRequestHead:   &keyMap.CopyPullRequestHead,
+		actionShowPullRequests:      &keyMap.ShowPullRequests,
+		actionSearchPullRequests:    &keyMap.SearchPullRequests,
+		actionFilterPullRequests:    &keyMap.FilterPullRequests,
+		actionOpenWorkflowRun:       &keyMap.OpenWorkflowRun,
+		actionCopyWorkflowRunID:     &keyMap.CopyWorkflowRunID,
+		actionFetchWorkflowRunLogs:  &keyMap.FetchWorkflowRunLogs,
+		actionFilterStatus:          &keyMap.FilterStatus,
+		actionFilterConclusion:      &keyMap.FilterConclusion,
+		actionFilterBranch:          &keyMap.FilterBranch,
+		actionFilterWorkflow:        &keyMap.FilterWorkflow,
+		actionFilterEvent:           &keyMap.FilterEvent,
+		actionFilterActor:           &keyMap.FilterActor,
+		actionClearFilters:          &keyMap.ClearFilters,
+		actionCycleIssueState:       &keyMap.CycleIssueState,
+		actionCycleIssueAssignee:    &keyMap.CycleIssueAssignee,
+		actionCycleIssueLabel:       &keyMap.CycleIssueLabel,
+		actionCycleIssueMilestone:   &keyMap.CycleIssueMilestone,
+		actionStartIssueSearch:      &keyMap.StartIssueSearch,
+		actionClearIssueFilters:     &keyMap.ClearIssueFilters,
+		actionBackToWorkbench:       &keyMap.BackToWorkbench,
+		actionQuit:                  &keyMap.Quit,
+	}
+
+	for action, configuredKeys := range bindings {
+		binding, ok := byAction[actionID(action)]
+		if !ok || len(configuredKeys) == 0 || slices.Equal(binding.Keys(), configuredKeys) {
+			continue
+		}
+		help := binding.Help()
+		binding.SetKeys(configuredKeys...)
+		binding.SetHelp(strings.Join(configuredKeys, "/"), help.Desc)
+	}
+	return keyMap
+}
+
+func (k workbenchKeyMap) actionBindings(view appView, mode appMode) []actionBinding {
 	common := []actionBinding{
 		{id: actionQuit, binding: k.Quit},
 		{id: actionToggleHelp, binding: k.ToggleHelp},
@@ -278,6 +375,17 @@ func (k workbenchKeyMap) actionBindings(mode appMode) []actionBinding {
 		{id: actionJumpTop, binding: k.JumpTop},
 		{id: actionJumpBottom, binding: k.JumpBottom},
 		{id: actionRefresh, binding: k.Refresh},
+	}
+	if view == appViewPullRequests {
+		return append(common,
+			actionBinding{id: actionOpenSelected, binding: k.OpenSelected},
+			actionBinding{id: actionCopyURL, binding: k.CopyURL},
+			actionBinding{id: actionCopyPullRequestNumber, binding: k.CopyPullRequestNumber},
+			actionBinding{id: actionCopyPullRequestHead, binding: k.CopyPullRequestHead},
+			actionBinding{id: actionShowWorkbench, binding: k.ShowWorkbench},
+			actionBinding{id: actionSearchPullRequests, binding: k.SearchPullRequests},
+			actionBinding{id: actionFilterPullRequests, binding: k.FilterPullRequests},
+		)
 	}
 	if mode == modeActions {
 		return append(common,
@@ -302,6 +410,7 @@ func (k workbenchKeyMap) actionBindings(mode appMode) []actionBinding {
 		actionBinding{id: actionOpenInBrowser, binding: k.OpenInBrowser},
 		actionBinding{id: actionCopyURL, binding: k.CopyURL},
 		actionBinding{id: actionCopyWorktreePath, binding: k.CopyWorktreePath},
+		actionBinding{id: actionShowPullRequests, binding: k.ShowPullRequests},
 	)
 }
 
@@ -331,7 +440,7 @@ func (k workbenchKeyMap) issueActionBindings() []actionBinding {
 	}
 }
 
-func (k workbenchKeyMap) contextualHelp(screen appScreen, mode appMode, focus paneFocus, visiblePanes []paneFocus) contextualHelpKeyMap {
+func (k workbenchKeyMap) contextualHelp(view appView, screen appScreen, mode appMode, focus paneFocus, visiblePanes []paneFocus) contextualHelpKeyMap {
 	if screen == screenIssues {
 		return k.issueContextualHelp(focus, visiblePanes)
 	}
@@ -339,8 +448,10 @@ func (k workbenchKeyMap) contextualHelp(screen appScreen, mode appMode, focus pa
 	paneNumbers := k.visiblePaneBinding(visiblePanes)
 	paneKeys := combinedBinding("pane", k.FocusPreviousPane, k.FocusNextPane)
 	system := []key.Binding{k.ToggleHelp, k.Quit}
-	actions := []key.Binding{k.ShowActions, k.OpenPullRequest, k.OpenIssue, k.OpenInBrowser, k.CopyURL, k.CopyWorktreePath, k.Refresh}
-	if mode == modeActions {
+	actions := []key.Binding{k.ShowActions, k.OpenPullRequest, k.OpenIssue, k.OpenInBrowser, k.CopyURL, k.CopyWorktreePath, k.ShowPullRequests, k.Refresh}
+	if view == appViewPullRequests {
+		actions = []key.Binding{k.OpenSelected, k.CopyURL, k.CopyPullRequestNumber, k.CopyPullRequestHead, k.SearchPullRequests, k.FilterPullRequests, k.ShowWorkbench, k.Refresh}
+	} else if mode == modeActions {
 		actions = []key.Binding{k.ShowWorkbench, k.OpenWorkflowRun, k.CopyURL, k.CopyWorkflowRunID, k.FetchWorkflowRunLogs, k.Refresh}
 		system = []key.Binding{k.ToggleHelp, k.Quit}
 	}
@@ -348,12 +459,12 @@ func (k workbenchKeyMap) contextualHelp(screen appScreen, mode appMode, focus pa
 
 	short := []key.Binding{paneNumbers, paneKeys, k.ToggleHelp, k.Quit}
 	full := [][]key.Binding{panes, actions, system}
-	if mode == modeActions {
+	if view != appViewPullRequests && mode == modeActions {
 		filters := []key.Binding{k.FilterStatus, k.FilterConclusion, k.FilterBranch, k.FilterWorkflow, k.FilterEvent, k.FilterActor, k.ClearFilters}
 		full = [][]key.Binding{panes, actions, filters, system}
 	}
 
-	if focus == paneRepositories || focus == paneWorkItems {
+	if focus == paneRepositories || focus == paneWorkItems || focus == panePullRequests {
 		move := combinedBinding("move", k.MoveDown, k.MoveUp)
 		jump := combinedBinding("jump", k.JumpTop, k.JumpBottom)
 		short = append([]key.Binding{move, jump}, short...)

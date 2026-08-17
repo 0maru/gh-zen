@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-04-26
 - Supersedes: [0003: Use Yazi-Inspired Object Navigation and Previews](0003-use-yazi-inspired-object-navigation-and-previews.md)
+- Follow-up: [0010: Use Terminal-First GitHub Browsing as the Product Direction](0010-use-terminal-first-github-browsing-as-the-product-direction.md)
 
 ## Context
 
@@ -88,6 +89,10 @@ The Yazi-inspired behavior from ADR 0003 still applies:
 - Stale preview responses must not replace the current preview.
 - Direct keyboard movement and contextual actions should remain preferred over
   modal page transitions.
+
+ADR 0010 keeps the workbench as the default view and adds a parallel
+current-repository pull request browser for complete PR scanning. The PR browser
+does not remove work item linking or replace the workbench navigation model.
 
 The first concrete product slice should be a fake-data repository workbench:
 

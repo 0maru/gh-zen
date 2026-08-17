@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0maru/gh-zen/internal/pullrequests"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -78,6 +79,211 @@ const (
 	runJobsFields    = "jobs"
 	runListLimit     = 30
 	logTailLineLimit = 500
+
+	repositoryPullRequestsQuery = `
+query($owner:String!, $name:String!, $after:String) {
+  viewer {
+    login
+  }
+  repository(owner:$owner, name:$name) {
+    pullRequests(first:100, after:$after, states:[OPEN, CLOSED, MERGED], orderBy:{field:UPDATED_AT, direction:DESC}) {
+      nodes {
+        number
+        title
+        state
+        isDraft
+        url
+        bodyText
+        headRefName
+        baseRefName
+        reviewDecision
+        mergeable
+        updatedAt
+        author {
+          login
+        }
+        headRepositoryOwner {
+          login
+        }
+        reviewRequests(first:20) {
+          nodes {
+            requestedReviewer {
+              __typename
+              ... on User {
+                login
+                name
+              }
+              ... on Team {
+                slug
+                name
+              }
+            }
+          }
+        }
+        latestReviews(first:20) {
+          nodes {
+            author {
+              login
+            }
+            state
+          }
+        }
+        closingIssuesReferences(first:20) {
+          nodes {
+            number
+            title
+            state
+            url
+          }
+        }
+        commits(last:1) {
+          nodes {
+            commit {
+              oid
+              statusCheckRollup {
+                contexts(first:100) {
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                  nodes {
+                    __typename
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                    }
+                    ... on StatusContext {
+                      context
+                      state
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}`
+
+	repositoryPullRequestDetailQuery = `
+query($owner:String!, $name:String!, $number:Int!) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      number
+      title
+      state
+      isDraft
+      url
+      bodyText
+      headRefName
+      baseRefName
+      reviewDecision
+      mergeable
+      updatedAt
+      author {
+        login
+      }
+      headRepositoryOwner {
+        login
+      }
+      reviewRequests(first:20) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on User {
+              login
+              name
+            }
+            ... on Team {
+              slug
+              name
+            }
+          }
+        }
+      }
+      latestReviews(first:20) {
+        nodes {
+          author {
+            login
+          }
+          state
+        }
+      }
+      closingIssuesReferences(first:20) {
+        nodes {
+          number
+          title
+          state
+          url
+        }
+      }
+      commits(last:1) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              contexts(first:100) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    name
+                    status
+                    conclusion
+                  }
+                  ... on StatusContext {
+                    context
+                    state
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+	}`
+
+	repositoryPullRequestCheckContextsQuery = `
+query($owner:String!, $name:String!, $oid:GitObjectID!, $after:String!) {
+  repository(owner:$owner, name:$name) {
+    object(oid:$oid) {
+      ... on Commit {
+        statusCheckRollup {
+          contexts(first:100, after:$after) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              __typename
+              ... on CheckRun {
+                name
+                status
+                conclusion
+              }
+              ... on StatusContext {
+                context
+                state
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
 
 	pullRequestClosingIssuesQuery = `
 query($owner:String!, $name:String!, $after:String) {
@@ -248,12 +454,158 @@ func (s CLIService) PullRequests(ctx context.Context, repo string) ([]workbench.
 			IsDraft:        pr.IsDraft,
 			UpdatedAt:      pr.UpdatedAt,
 			LinkedIssues:   linkedIssues(closingIssuesByPR[pr.Number], repo, pr.Body, closingIssuesErr != nil),
+			BodyExcerpt:    textExcerpt(pr.Body),
+			ReviewDecision: reviewState(pr.ReviewDecision),
 			ReviewState:    reviewState(pr.ReviewDecision),
 			ReviewRequests: reviewRequests(pr.ReviewRequests),
 			LatestReviews:  latestReviews(pr.LatestReviews),
 		})
 	}
 	return prs, nil
+}
+
+// List loads first-class pull request browser data through gh GraphQL.
+func (s CLIService) List(ctx context.Context, repo string, filter pullrequests.PullRequestFilter) ([]pullrequests.PullRequest, error) {
+	prs, err := s.RepositoryPullRequests(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	return pullrequests.Filter(prs, filter), nil
+}
+
+// Detail loads one pull request for the PR browser.
+func (s CLIService) Detail(ctx context.Context, repo string, number int) (pullrequests.PullRequest, error) {
+	if number <= 0 {
+		return pullrequests.PullRequest{}, fmt.Errorf("pull request number must be positive")
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return pullrequests.PullRequest{}, fmt.Errorf("repo must use owner/repo format")
+	}
+	output, err := s.runner().Run(ctx, "api", "graphql", "-f", "owner="+owner, "-f", "name="+name, "-F", "number="+strconv.Itoa(number), "-f", "query="+repositoryPullRequestDetailQuery)
+	if err != nil {
+		return pullrequests.PullRequest{}, err
+	}
+	var payload struct {
+		Data struct {
+			Repository struct {
+				PullRequest *ghPullRequestBrowserNode `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return pullrequests.PullRequest{}, fmt.Errorf("parse gh pull request detail output: %w", err)
+	}
+	if payload.Data.Repository.PullRequest == nil {
+		return pullrequests.PullRequest{}, fmt.Errorf("pull request #%d not found", number)
+	}
+	if err := s.loadRemainingPullRequestCheckContexts(ctx, owner, name, payload.Data.Repository.PullRequest); err != nil {
+		return pullrequests.PullRequest{}, err
+	}
+	return pullRequestFromGraphQL(*payload.Data.Repository.PullRequest), nil
+}
+
+// RepositoryPullRequests loads all selected-repository pull requests for the PR browser.
+func (s CLIService) RepositoryPullRequests(ctx context.Context, repo string) ([]pullrequests.PullRequest, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, fmt.Errorf("repo must use owner/repo format")
+	}
+
+	prs := []pullrequests.PullRequest{}
+	after := ""
+	for {
+		args := []string{"api", "graphql", "-f", "owner=" + owner, "-f", "name=" + name}
+		if after != "" {
+			args = append(args, "-f", "after="+after)
+		}
+		args = append(args, "-f", "query="+repositoryPullRequestsQuery)
+		output, err := s.runner().Run(ctx, args...)
+		if err != nil {
+			return prs, err
+		}
+		var payload struct {
+			Data struct {
+				Viewer     ghUser `json:"viewer"`
+				Repository struct {
+					PullRequests struct {
+						Nodes    []ghPullRequestBrowserNode `json:"nodes"`
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+					} `json:"pullRequests"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(output, &payload); err != nil {
+			return prs, fmt.Errorf("parse gh repository pull requests output: %w", err)
+		}
+		for i := range payload.Data.Repository.PullRequests.Nodes {
+			node := &payload.Data.Repository.PullRequests.Nodes[i]
+			if err := s.loadRemainingPullRequestCheckContexts(ctx, owner, name, node); err != nil {
+				return prs, err
+			}
+			prs = append(prs, pullRequestWithViewerPerspective(pullRequestFromGraphQL(*node), payload.Data.Viewer.Login))
+		}
+		if !payload.Data.Repository.PullRequests.PageInfo.HasNextPage {
+			pullrequests.SortByUpdatedDesc(prs)
+			return prs, nil
+		}
+		after = payload.Data.Repository.PullRequests.PageInfo.EndCursor
+		if after == "" {
+			pullrequests.SortByUpdatedDesc(prs)
+			return prs, nil
+		}
+	}
+}
+
+func (s CLIService) loadRemainingPullRequestCheckContexts(ctx context.Context, owner string, name string, node *ghPullRequestBrowserNode) error {
+	for i := range node.Commits.Nodes {
+		commit := &node.Commits.Nodes[i].Commit
+		if commit.StatusCheckRollup == nil {
+			continue
+		}
+		contexts := &commit.StatusCheckRollup.Contexts
+		for contexts.PageInfo.HasNextPage {
+			if commit.OID == "" || contexts.PageInfo.EndCursor == "" {
+				return fmt.Errorf("paginate pull request #%d check contexts: missing commit oid or cursor", node.Number)
+			}
+			args := []string{
+				"api", "graphql",
+				"-f", "owner=" + owner,
+				"-f", "name=" + name,
+				"-f", "oid=" + commit.OID,
+				"-f", "after=" + contexts.PageInfo.EndCursor,
+				"-f", "query=" + repositoryPullRequestCheckContextsQuery,
+			}
+			output, err := s.runner().Run(ctx, args...)
+			if err != nil {
+				return fmt.Errorf("paginate pull request #%d check contexts: %w", node.Number, err)
+			}
+			var payload struct {
+				Data struct {
+					Repository struct {
+						Object *struct {
+							StatusCheckRollup *struct {
+								Contexts ghCheckContexts `json:"contexts"`
+							} `json:"statusCheckRollup"`
+						} `json:"object"`
+					} `json:"repository"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(output, &payload); err != nil {
+				return fmt.Errorf("parse pull request #%d check contexts: %w", node.Number, err)
+			}
+			if payload.Data.Repository.Object == nil || payload.Data.Repository.Object.StatusCheckRollup == nil {
+				return fmt.Errorf("paginate pull request #%d check contexts: commit not found", node.Number)
+			}
+			page := payload.Data.Repository.Object.StatusCheckRollup.Contexts
+			contexts.Nodes = append(contexts.Nodes, page.Nodes...)
+			contexts.PageInfo = page.PageInfo
+		}
+	}
+	return nil
 }
 
 // Issues loads issue summaries and browser-only metadata through gh.
@@ -678,6 +1030,262 @@ type ghPullReviewItem struct {
 	State  string `json:"state"`
 }
 
+type ghPullRequestBrowserNode struct {
+	Number              int    `json:"number"`
+	Title               string `json:"title"`
+	State               string `json:"state"`
+	IsDraft             bool   `json:"isDraft"`
+	URL                 string `json:"url"`
+	BodyText            string `json:"bodyText"`
+	HeadRefName         string `json:"headRefName"`
+	BaseRefName         string `json:"baseRefName"`
+	ReviewDecision      string `json:"reviewDecision"`
+	Mergeable           string `json:"mergeable"`
+	UpdatedAt           string `json:"updatedAt"`
+	Author              ghUser `json:"author"`
+	HeadRepositoryOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
+	ReviewRequests struct {
+		Nodes []struct {
+			RequestedReviewer ghReviewRequest `json:"requestedReviewer"`
+		} `json:"nodes"`
+	} `json:"reviewRequests"`
+	LatestReviews struct {
+		Nodes []ghPullReviewItem `json:"nodes"`
+	} `json:"latestReviews"`
+	ClosingIssues struct {
+		Nodes []ghIssue `json:"nodes"`
+	} `json:"closingIssuesReferences"`
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				OID               string `json:"oid"`
+				StatusCheckRollup *struct {
+					Contexts ghCheckContexts `json:"contexts"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+}
+
+type ghCheckContexts struct {
+	Nodes    []ghCheckContext `json:"nodes"`
+	PageInfo struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+}
+
+type ghCheckContext struct {
+	TypeName   string `json:"__typename"`
+	Name       string `json:"name"`
+	Context    string `json:"context"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+}
+
+func pullRequestFromGraphQL(node ghPullRequestBrowserNode) pullrequests.PullRequest {
+	return pullrequests.PullRequest{
+		Number:         node.Number,
+		Title:          node.Title,
+		State:          strings.ToLower(node.State),
+		IsDraft:        node.IsDraft,
+		Author:         node.Author.Login,
+		HeadRef:        pullRequestHeadRef(node.HeadRepositoryOwner.Login, node.HeadRefName),
+		BaseRef:        node.BaseRefName,
+		ReviewDecision: reviewState(node.ReviewDecision),
+		ReviewRequests: pullRequestReviewRequests(node.ReviewRequests.Nodes),
+		LatestReviews:  pullRequestLatestReviews(node.LatestReviews.Nodes),
+		LinkedIssues:   pullRequestLinkedIssues(node.ClosingIssues.Nodes, node.BodyText),
+		Checks:         pullRequestCheckSummary(node.Commits.Nodes),
+		Mergeability:   reviewState(node.Mergeable),
+		UpdatedAt:      node.UpdatedAt,
+		URL:            node.URL,
+		BodyExcerpt:    textExcerpt(node.BodyText),
+	}
+}
+
+func pullRequestWithViewerPerspective(pr pullrequests.PullRequest, viewer string) pullrequests.PullRequest {
+	if viewer == "" {
+		return pr
+	}
+	pr.ViewerReviewRequested = pullRequestNeedsViewerReview(pr, viewer)
+	pr.WaitingOnReview = pullRequestWaitingOnViewerAuthoredReview(pr, viewer)
+	return pr
+}
+
+func pullRequestNeedsViewerReview(pr pullrequests.PullRequest, viewer string) bool {
+	if !pullRequestOpenForReview(pr) {
+		return false
+	}
+	for _, request := range pr.ReviewRequests {
+		if strings.EqualFold(request.Login, viewer) {
+			return true
+		}
+	}
+	return false
+}
+
+func pullRequestWaitingOnViewerAuthoredReview(pr pullrequests.PullRequest, viewer string) bool {
+	if !pullRequestOpenForReview(pr) || !strings.EqualFold(pr.Author, viewer) {
+		return false
+	}
+	return len(pr.ReviewRequests) > 0 || strings.EqualFold(pr.ReviewDecision, "review required")
+}
+
+func pullRequestOpenForReview(pr pullrequests.PullRequest) bool {
+	return strings.EqualFold(pr.State, "open") && !pr.IsDraft
+}
+
+func pullRequestHeadRef(owner string, branch string) string {
+	switch {
+	case owner != "" && branch != "":
+		return owner + "/" + branch
+	case branch != "":
+		return branch
+	default:
+		return owner
+	}
+}
+
+func pullRequestReviewRequests(nodes []struct {
+	RequestedReviewer ghReviewRequest `json:"requestedReviewer"`
+}) []pullrequests.ReviewRequest {
+	requests := make([]pullrequests.ReviewRequest, 0, len(nodes))
+	for _, node := range nodes {
+		request := node.RequestedReviewer
+		requests = append(requests, pullrequests.ReviewRequest{
+			Kind:  request.TypeName,
+			Login: request.Login,
+			Name:  reviewRequestName(request),
+			Slug:  request.Slug,
+		})
+	}
+	return requests
+}
+
+func pullRequestLatestReviews(payload []ghPullReviewItem) []pullrequests.Review {
+	reviews := make([]pullrequests.Review, 0, len(payload))
+	for _, review := range payload {
+		reviews = append(reviews, pullrequests.Review{
+			Author: review.Author.Login,
+			State:  reviewState(review.State),
+		})
+	}
+	return reviews
+}
+
+func pullRequestLinkedIssues(closingIssues []ghIssue, body string) []pullrequests.LinkedIssue {
+	issues := make([]pullrequests.LinkedIssue, 0, len(closingIssues))
+	seen := map[int]bool{}
+	for _, issue := range closingIssues {
+		if issue.Number == 0 {
+			continue
+		}
+		issues = append(issues, pullrequests.LinkedIssue{
+			Number: issue.Number,
+			Title:  issue.Title,
+			State:  strings.ToLower(issue.State),
+			URL:    issue.URL,
+		})
+		seen[issue.Number] = true
+	}
+	for _, issue := range linkedIssuesFromBody("", body) {
+		if issue.Number == 0 || seen[issue.Number] {
+			continue
+		}
+		issues = append(issues, pullrequests.LinkedIssue{
+			Number: issue.Number,
+			Title:  issue.Title,
+			State:  issue.State,
+			URL:    issue.URL,
+		})
+		seen[issue.Number] = true
+	}
+	return issues
+}
+
+func pullRequestCheckSummary(nodes []struct {
+	Commit struct {
+		OID               string `json:"oid"`
+		StatusCheckRollup *struct {
+			Contexts ghCheckContexts `json:"contexts"`
+		} `json:"statusCheckRollup"`
+	} `json:"commit"`
+}) pullrequests.CheckSummary {
+	states := []string{}
+	for _, node := range nodes {
+		if node.Commit.StatusCheckRollup == nil {
+			continue
+		}
+		for _, context := range node.Commit.StatusCheckRollup.Contexts.Nodes {
+			states = append(states, pullRequestCheckContextState(context))
+		}
+	}
+	return summarizePullRequestCheckStates(states)
+}
+
+func pullRequestCheckContextState(context ghCheckContext) string {
+	if context.Conclusion != "" {
+		return context.Conclusion
+	}
+	if context.State != "" {
+		return context.State
+	}
+	return context.Status
+}
+
+func summarizePullRequestCheckStates(states []string) pullrequests.CheckSummary {
+	summary := pullrequests.CheckSummary{State: pullrequests.CheckUnknown}
+	for _, state := range states {
+		switch normalizedPullRequestCheckState(state) {
+		case pullrequests.CheckPassing:
+			summary.Passing++
+		case pullrequests.CheckFailing:
+			summary.Failing++
+		case pullrequests.CheckPending:
+			summary.Pending++
+		}
+	}
+	switch {
+	case summary.Failing > 0:
+		summary.State = pullrequests.CheckFailing
+	case summary.Pending > 0:
+		summary.State = pullrequests.CheckPending
+	case summary.Passing > 0:
+		summary.State = pullrequests.CheckPassing
+	}
+	return summary
+}
+
+func normalizedPullRequestCheckState(value string) pullrequests.CheckState {
+	switch normalizedCheckState(value) {
+	case workbench.CheckPassing:
+		return pullrequests.CheckPassing
+	case workbench.CheckFailing:
+		return pullrequests.CheckFailing
+	case workbench.CheckPending:
+		return pullrequests.CheckPending
+	default:
+		return pullrequests.CheckUnknown
+	}
+}
+
+func textExcerpt(body string) string {
+	fields := strings.Fields(body)
+	if len(fields) == 0 {
+		return ""
+	}
+	const maxWords = 60
+	if len(fields) > maxWords {
+		fields = fields[:maxWords]
+		return strings.Join(fields, " ") + "..."
+	}
+	return strings.Join(fields, " ")
+}
+
 type ghWorkflowRun struct {
 	DatabaseID      int64     `json:"databaseId"`
 	ID              int64     `json:"id"`
@@ -1047,10 +1655,12 @@ func summarizeCheckStates(states []string) workbench.CheckSummary {
 
 func normalizedCheckState(value string) workbench.CheckState {
 	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "_", " ")
+	value = strings.ReplaceAll(value, "-", " ")
 	switch {
-	case strings.Contains(value, "fail"), strings.Contains(value, "error"), strings.Contains(value, "cancel"):
+	case strings.Contains(value, "fail"), strings.Contains(value, "error"), strings.Contains(value, "cancel"), strings.Contains(value, "timed out"), strings.Contains(value, "timeout"), strings.Contains(value, "action required"):
 		return workbench.CheckFailing
-	case strings.Contains(value, "pending"), strings.Contains(value, "queued"), strings.Contains(value, "progress"), strings.Contains(value, "waiting"):
+	case value == "requested", value == "expected", strings.Contains(value, "pending"), strings.Contains(value, "queued"), strings.Contains(value, "progress"), strings.Contains(value, "waiting"):
 		return workbench.CheckPending
 	case strings.Contains(value, "pass"), strings.Contains(value, "success"):
 		return workbench.CheckPassing

@@ -3,14 +3,17 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	cfgpkg "github.com/0maru/gh-zen/internal/config"
+	"github.com/0maru/gh-zen/internal/pullrequests"
 	"github.com/0maru/gh-zen/internal/workbench"
 )
 
@@ -27,6 +30,48 @@ func requirePreviewResultMsg(t *testing.T, cmd tea.Cmd) previewResultMsg {
 	return result
 }
 
+func requirePullRequestPreviewResultMsg(t *testing.T, cmd tea.Cmd) pullRequestPreviewResultMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("expected pull request preview command, got nil")
+	}
+	msg := cmd()
+	result, ok := msg.(pullRequestPreviewResultMsg)
+	if !ok {
+		t.Fatalf("expected pullRequestPreviewResultMsg, got %T", msg)
+	}
+	return result
+}
+
+func commandMessages(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("expected command, got nil")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		messages := make([]tea.Msg, 0, len(batch))
+		for _, batchCmd := range batch {
+			if batchCmd != nil {
+				messages = append(messages, batchCmd())
+			}
+		}
+		return messages
+	}
+	return []tea.Msg{msg}
+}
+
+func requirePullRequestLoadMsg(t *testing.T, cmd tea.Cmd) pullRequestLoadMsg {
+	t.Helper()
+	for _, msg := range commandMessages(t, cmd) {
+		if result, ok := msg.(pullRequestLoadMsg); ok {
+			return result
+		}
+	}
+	t.Fatalf("expected pullRequestLoadMsg")
+	return pullRequestLoadMsg{}
+}
+
 func requireModelEqualIgnoringPreviewLoader(t *testing.T, got tea.Model, want model) {
 	t.Helper()
 	mm, ok := got.(model)
@@ -34,7 +79,9 @@ func requireModelEqualIgnoringPreviewLoader(t *testing.T, got tea.Model, want mo
 		t.Fatalf("expected model, got %T", got)
 	}
 	mm.previewLoader = nil
+	mm.prPreviewLoader = nil
 	want.previewLoader = nil
+	want.prPreviewLoader = nil
 	if !reflect.DeepEqual(mm, want) {
 		t.Fatalf("expected model unchanged, got %+v", mm)
 	}
@@ -62,6 +109,16 @@ func errorPreviewLoader(err error) previewLoader {
 			}
 		}
 	}
+}
+
+func testPRModel() model {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	return newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:        []workbench.RepoRef{repo},
+		WorkItems:    workbench.FakeWorkItems(),
+		PullRequests: pullrequests.FakePullRequests(),
+		Demo:         false,
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
 }
 
 type fakeActionRunner struct {
@@ -107,6 +164,29 @@ func (r *fakeWorkbenchReloader) Load(ctx context.Context, repo workbench.RepoRef
 		return result
 	}
 	return workbench.RuntimeLoadResult{Repo: repo}
+}
+
+type fakePullRequestService struct {
+	prsByRepo map[string][]pullrequests.PullRequest
+	calls     []string
+	err       error
+}
+
+func (s *fakePullRequestService) List(_ context.Context, repo string, _ pullrequests.PullRequestFilter) ([]pullrequests.PullRequest, error) {
+	s.calls = append(s.calls, repo)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]pullrequests.PullRequest(nil), s.prsByRepo[repo]...), nil
+}
+
+func (s *fakePullRequestService) Detail(_ context.Context, repo string, number int) (pullrequests.PullRequest, error) {
+	for _, pr := range s.prsByRepo[repo] {
+		if pr.Number == number {
+			return pr, nil
+		}
+	}
+	return pullrequests.PullRequest{}, nil
 }
 
 func requireWorkbenchReloadMsg(t *testing.T, cmd tea.Cmd) workbenchReloadMsg {
@@ -672,6 +752,36 @@ func TestInit_StartsInitialWorkbenchLoadWithoutSelectedRepository(t *testing.T) 
 	}
 }
 
+func TestInitialRepositoryDiscoveryStartsPullRequestLoadForActiveView(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	reloader := &fakeWorkbenchReloader{
+		results: map[string]workbench.RuntimeLoadResult{
+			(workbench.RepoRef{}).FullName(): {
+				Repositories: []workbench.RepositorySummary{{Repo: repo, Path: "/repos/gh-zen"}},
+			},
+		},
+	}
+	service := &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+		repo.FullName(): {{Number: 24, Title: "Discovered PR", State: "open"}},
+	}}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), "", WorkbenchData{
+		Reloader:        reloader,
+		PullRequestsAPI: service,
+		InitialLoading:  true,
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	reloadMsg := requireWorkbenchReloadMsg(t, start.Init())
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd != nil {
+		t.Fatalf("expected no PR load before repository discovery, got %T", cmd)
+	}
+	got, cmd = got.(model).Update(reloadMsg)
+	msg := requirePullRequestLoadMsg(t, cmd)
+	if msg.request.repo != repo || len(service.calls) != 1 || service.calls[0] != repo.FullName() {
+		t.Fatalf("expected discovered repo PR load, got request=%+v calls=%+v", msg.request, service.calls)
+	}
+}
+
 func TestUpdate_RefreshKeepsPartialDataVisibleWhileLoading(t *testing.T) {
 	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
 	item := workbench.WorkItem{
@@ -1117,6 +1227,38 @@ func TestUpdate_KeyOverrideChangesActionAndHelp(t *testing.T) {
 	}
 }
 
+func TestNewModelUsesConfiguredPullRequestActionKeys(t *testing.T) {
+	cfg := cfgpkg.Defaults()
+	cfg.Keys["copy_pr_number"] = []string{"N"}
+	cfg.Keys["copy_pr_head"] = []string{"B"}
+	cfg.Keys["show_pull_requests"] = []string{"P"}
+	cfg.Keys["show_workbench"] = []string{"W"}
+
+	start := newModelWithRuntimeData(cfg, "0maru/gh-zen", WorkbenchData{
+		Repos:        []workbench.RepoRef{{Owner: "0maru", Name: "gh-zen"}},
+		PullRequests: pullrequests.FakePullRequests(),
+	}, fakeDelayedPreviewLoader(0))
+
+	for _, tc := range []struct {
+		name string
+		got  []string
+		want []string
+	}{
+		{name: "copy number", got: start.keys.CopyPullRequestNumber.Keys(), want: []string{"N"}},
+		{name: "copy head", got: start.keys.CopyPullRequestHead.Keys(), want: []string{"B"}},
+		{name: "show pull requests", got: start.keys.ShowPullRequests.Keys(), want: []string{"P"}},
+		{name: "show workbench", got: start.keys.ShowWorkbench.Keys(), want: []string{"W"}},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Fatalf("expected configured %s keys %v, got %v", tc.name, tc.want, tc.got)
+		}
+	}
+	start.activeView = appViewPullRequests
+	if action, ok := start.matchedAction(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}}); !ok || action != actionCopyPullRequestNumber {
+		t.Fatalf("expected configured N key to invoke copy PR number, got %q ok=%v", action, ok)
+	}
+}
+
 func TestUpdate_ActionKeysAreBound(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1129,6 +1271,7 @@ func TestUpdate_ActionKeysAreBound(t *testing.T) {
 		{"open in browser", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}, actionOpenInBrowser},
 		{"copy URL", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, actionCopyURL},
 		{"copy worktree path", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}}, actionCopyWorktreePath},
+		{"show PR view", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}}, actionShowPullRequests},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1140,6 +1283,69 @@ func TestUpdate_ActionKeysAreBound(t *testing.T) {
 				t.Fatalf("expected action %s, got %s", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestUpdate_PullRequestViewActionKeysAreBound(t *testing.T) {
+	start := testPRModel()
+	start.activeView = appViewPullRequests
+	cases := []struct {
+		name string
+		msg  tea.KeyMsg
+		want actionID
+	}{
+		{"open selected", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}, actionOpenSelected},
+		{"copy URL", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, actionCopyURL},
+		{"copy number", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}}, actionCopyPullRequestNumber},
+		{"copy head", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'H'}}, actionCopyPullRequestHead},
+		{"search", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}, actionSearchPullRequests},
+		{"filter", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}, actionFilterPullRequests},
+		{"show workbench", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}}, actionShowWorkbench},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := start.matchedAction(tc.msg)
+			if !ok {
+				t.Fatalf("expected key to be bound to %s", tc.want)
+			}
+			if got != tc.want {
+				t.Fatalf("expected action %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestUpdate_JumpFromWorkbenchToPullRequestsAndBackPreservesSelection(t *testing.T) {
+	start := testPRModel()
+	start.selectedItem = 1
+	item, ok := start.selectedWorkItem()
+	if !ok || item.PullRequest == nil {
+		t.Fatalf("expected selected fake work item with PR, got %+v", item)
+	}
+	_ = start.startPreviewLoadForCurrentItem()
+	focusedID := start.focusedWorkItemID
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected PR preview command after jump")
+	}
+	mm := got.(model)
+	if mm.activeView != appViewPullRequests || mm.focusedPane != panePullRequests {
+		t.Fatalf("expected PR view focus, got view=%v pane=%v", mm.activeView, mm.focusedPane)
+	}
+	if pr, ok := mm.selectedPullRequest(); !ok || pr.Number != item.PullRequest.Number {
+		t.Fatalf("expected selected PR #%d, got %+v ok=%v", item.PullRequest.Number, pr, ok)
+	}
+	got, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	if cmd != nil {
+		t.Fatalf("expected no preview reload when returning to same focused item, got %T", cmd)
+	}
+	mm = got.(model)
+	if mm.activeView != appViewWorkbench || mm.focusedPane != paneWorkItems {
+		t.Fatalf("expected workbench focus, got view=%v pane=%v", mm.activeView, mm.focusedPane)
+	}
+	if mm.selectedItem != 1 || mm.focusedWorkItemID != focusedID {
+		t.Fatalf("expected workbench selection to remain item=1 focused=%q, got item=%d focused=%q", focusedID, mm.selectedItem, mm.focusedWorkItemID)
 	}
 }
 
@@ -1229,6 +1435,507 @@ func TestUpdate_CopyActionsRouteSelectedWorkItemData(t *testing.T) {
 	_ = cmd()
 	if len(runner.copied) != 2 || runner.copied[1] != "~/workspaces/github.com/0maru/gh-zen-agent-a" {
 		t.Fatalf("expected worktree path to copy, got %#v", runner.copied)
+	}
+}
+
+func TestUpdate_PullRequestActionsRouteSelectedPRData(t *testing.T) {
+	runner := &fakeActionRunner{}
+	start := testPRModel()
+	start.actionRunner = runner
+	start.activeView = appViewPullRequests
+	start.focusedPane = panePullRequests
+	start.selectedPR = 0
+	start.pullRequestPreview = pullRequestPreviewState{status: previewLoaded, focusedPullRequestKey: "pr:24", loaded: pullRequestPreviewData{pullRequestKey: "pr:24", pr: pullrequests.FakePullRequests()[0]}}
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil {
+		t.Fatalf("expected copy URL command")
+	}
+	got, _ = got.(model).Update(cmd())
+	if len(runner.copied) != 1 || runner.copied[0] != "https://github.com/0maru/gh-zen/pull/24" {
+		t.Fatalf("expected PR URL to copy, got %#v", runner.copied)
+	}
+
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}})
+	if cmd == nil {
+		t.Fatalf("expected copy PR number command")
+	}
+	got, _ = got.(model).Update(cmd())
+	if len(runner.copied) != 2 || runner.copied[1] != "#24" {
+		t.Fatalf("expected PR number to copy, got %#v", runner.copied)
+	}
+
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'H'}})
+	if cmd == nil {
+		t.Fatalf("expected copy head ref command")
+	}
+	got, _ = got.(model).Update(cmd())
+	if len(runner.copied) != 3 || runner.copied[2] != "0maru/feat/config-loader" {
+		t.Fatalf("expected head ref to copy, got %#v", runner.copied)
+	}
+
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if cmd == nil {
+		t.Fatalf("expected open command")
+	}
+	got, _ = got.(model).Update(cmd())
+	if len(runner.opened) != 1 || runner.opened[0] != "https://github.com/0maru/gh-zen/pull/24" {
+		t.Fatalf("expected PR URL to open, got %#v", runner.opened)
+	}
+	if status := got.(model).statusMessage; status != "Opened PR #24" {
+		t.Fatalf("expected open success status, got %q", status)
+	}
+}
+
+func TestUpdate_ShowPullRequestsSelectsWorkItemRepo(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	itemB := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repoB,
+		PullRequest: &workbench.PullRequestRef{
+			Number:                42,
+			Title:                 "Cross repo PR",
+			State:                 "open",
+			URL:                   "https://github.com/0maru/dotfiles/pull/42",
+			ViewerReviewRequested: true,
+		},
+	}
+	service := &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+		repoB.FullName(): {{Number: 42, Title: "Cross repo PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+	}}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:           []workbench.RepoRef{repoA, repoB},
+		WorkItems:       []workbench.WorkItem{itemB},
+		PullRequestsAPI: service,
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.viewSelected = true
+	start.selectedView = 1
+	start.selectedRepo = 0
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected PR load command")
+	}
+	mm := got.(model)
+	if repo, ok := mm.selectedRepoRef(); !ok || repo != repoB {
+		t.Fatalf("expected selected repo to follow work item repo %v, got %v ok=%v", repoB, repo, ok)
+	}
+	msg := requirePullRequestLoadMsg(t, cmd)
+	if msg.request.repo != repoB || len(service.calls) != 1 || service.calls[0] != repoB.FullName() {
+		t.Fatalf("expected PR load for repo B, got request=%+v calls=%+v", msg.request, service.calls)
+	}
+}
+
+func TestUpdate_ShowPullRequestsSelectsWorkItemRepoWithoutPullRequest(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	itemB := workbench.WorkItem{
+		ID:     "branch:docs",
+		Repo:   repoB,
+		Branch: &workbench.BranchRef{Name: "docs"},
+		Checks: workbench.CheckSummary{State: workbench.CheckFailing, Failing: 1},
+	}
+	service := &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+		repoB.FullName(): {{Number: 42, Title: "Repo B PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+	}}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:           []workbench.RepoRef{repoA, repoB},
+		WorkItems:       []workbench.WorkItem{itemB},
+		PullRequestsAPI: service,
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.viewSelected = true
+	start.selectedView = 3
+	start.selectedRepo = 0
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected PR load command")
+	}
+	mm := got.(model)
+	if repo, ok := mm.selectedRepoRef(); !ok || repo != repoB {
+		t.Fatalf("expected selected repo to follow non-PR work item repo %v, got %v ok=%v", repoB, repo, ok)
+	}
+	msg := requirePullRequestLoadMsg(t, cmd)
+	if msg.request.repo != repoB || len(service.calls) != 1 || service.calls[0] != repoB.FullName() {
+		t.Fatalf("expected PR load for repo B, got request=%+v calls=%+v", msg.request, service.calls)
+	}
+}
+
+func TestUpdate_ShowPullRequestsPreservesAggregateWorkItemSelection(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	earlierRepoBItem := workbench.WorkItem{
+		ID:     "branch:setup",
+		Repo:   repoB,
+		Branch: &workbench.BranchRef{Name: "setup"},
+	}
+	target := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repoB,
+		PullRequest: &workbench.PullRequestRef{
+			Number:                42,
+			Title:                 "Cross repo PR",
+			State:                 "open",
+			URL:                   "https://github.com/0maru/dotfiles/pull/42",
+			ViewerReviewRequested: true,
+		},
+	}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos: []workbench.RepoRef{repoA, repoB},
+		WorkItems: []workbench.WorkItem{
+			earlierRepoBItem,
+			target,
+		},
+		PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+			repoB.FullName(): {{Number: 42, Title: "Cross repo PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+		}},
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.viewSelected = true
+	start.selectedView = 1
+	start.selectedRepo = 0
+	start.selectedItem = 0
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected PR load command")
+	}
+	mm := got.(model)
+	if mm.selectedItem != 1 {
+		t.Fatalf("expected repo-scoped selected item to follow %q at index 1, got %d", target.ID, mm.selectedItem)
+	}
+
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	mm = got.(model)
+	item, ok := mm.selectedWorkItem()
+	if !ok || item.ID != target.ID {
+		t.Fatalf("expected workbench to restore selected item %q, got %+v ok=%v", target.ID, item, ok)
+	}
+}
+
+func TestUpdate_ShowPullRequestsStartsSeededPreviewWhileListLoads(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	target := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repo,
+		PullRequest: &workbench.PullRequestRef{
+			Number: 42,
+			Title:  "Seeded PR",
+			State:  "open",
+			URL:    "https://github.com/0maru/gh-zen/pull/42",
+		},
+	}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{target},
+		PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+			repo.FullName(): {{Number: 42, Title: "Loaded PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+		}},
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.focusedPane = paneWorkItems
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd == nil {
+		t.Fatalf("expected batched PR load and preview command")
+	}
+	mm := got.(model)
+	if mm.pullRequestPreview.status != previewLoading || mm.pullRequestPreview.focusedPullRequestKey != "pr:42" {
+		t.Fatalf("expected seeded PR preview loading for pr:42, got %+v", mm.pullRequestPreview)
+	}
+	var sawLoad bool
+	var previewMsg pullRequestPreviewResultMsg
+	for _, msg := range commandMessages(t, cmd) {
+		switch msg := msg.(type) {
+		case pullRequestLoadMsg:
+			sawLoad = true
+		case pullRequestPreviewResultMsg:
+			previewMsg = msg
+		}
+	}
+	if !sawLoad {
+		t.Fatalf("expected PR list load to be batched with seeded preview")
+	}
+	if previewMsg.pullRequestKey != "pr:42" || previewMsg.data.pr.Number != 42 {
+		t.Fatalf("expected seeded PR preview result for #42, got %+v", previewMsg)
+	}
+}
+
+func TestUpdate_ShowPullRequestsClearsFilterHidingJumpTarget(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	target := workbench.WorkItem{
+		ID:   "pr-only:42",
+		Repo: repo,
+		PullRequest: &workbench.PullRequestRef{
+			Number:      42,
+			Title:       "Target PR",
+			State:       "open",
+			AuthorLogin: "alice",
+			URL:         "https://github.com/0maru/gh-zen/pull/42",
+		},
+	}
+	start := newModelWithRuntimeData(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+		Repos:     []workbench.RepoRef{repo},
+		WorkItems: []workbench.WorkItem{target},
+	}, fakeDelayedPreviewLoader(0))
+	start.focusedPane = paneWorkItems
+	start.pullRequestFilter = pullrequests.PullRequestFilter{Author: "bob", State: pullrequests.StateMerged}
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	mm := got.(model)
+	pr, ok := mm.selectedPullRequest()
+	if !ok || pr.Number != 42 {
+		t.Fatalf("expected jump target PR #42 to be visible and selected, got %+v ok=%v", pr, ok)
+	}
+	if mm.pullRequestFilter.Active() {
+		t.Fatalf("expected filters hiding the jump target to clear, got %+v", mm.pullRequestFilter)
+	}
+}
+
+func TestHandlePullRequestLoadClearsPendingSelectionOnFailureOrDiscard(t *testing.T) {
+	repo := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+
+	t.Run("failure", func(t *testing.T) {
+		start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+			Repos:           []workbench.RepoRef{repo},
+			PullRequestsAPI: &fakePullRequestService{err: errors.New("boom")},
+		}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+		start.activeView = appViewPullRequests
+		start.pendingPullRequest = 24
+
+		msg := requirePullRequestLoadMsg(t, start.startPullRequestLoad("Loading pull requests..."))
+		got, _ := start.Update(msg)
+		mm := got.(model)
+		if mm.pendingPullRequest != 0 {
+			t.Fatalf("expected pending PR to clear after failed load, got %d", mm.pendingPullRequest)
+		}
+		if mm.statusMessage != "Pull requests failed: boom" {
+			t.Fatalf("expected failure status, got %q", mm.statusMessage)
+		}
+	})
+
+	t.Run("discarded", func(t *testing.T) {
+		start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repo.FullName(), WorkbenchData{
+			Repos: []workbench.RepoRef{repo},
+			PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{
+				repo.FullName(): {{Number: 24, Title: "Loaded PR", State: "open", UpdatedAt: "2026-05-01T10:00:00Z"}},
+			}},
+		}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+		start.activeView = appViewPullRequests
+		start.pendingPullRequest = 24
+
+		cmd := start.startPullRequestLoad("Loading pull requests...")
+		start.activeView = appViewWorkbench
+		msg := requirePullRequestLoadMsg(t, cmd)
+		got, _ := start.Update(msg)
+		mm := got.(model)
+		if mm.pendingPullRequest != 0 {
+			t.Fatalf("expected pending PR to clear after discarded load, got %d", mm.pendingPullRequest)
+		}
+		if mm.pullRequestsLoading {
+			t.Fatalf("expected discarded load to stop loading")
+		}
+	})
+}
+
+func TestBeginPullRequestLoadClearsStalePreviewOnRepoChange(t *testing.T) {
+	repoA := workbench.RepoRef{Owner: "0maru", Name: "gh-zen"}
+	repoB := workbench.RepoRef{Owner: "0maru", Name: "dotfiles"}
+	start := newModelWithRuntimeDataLoaders(cfgpkg.Defaults(), repoA.FullName(), WorkbenchData{
+		Repos:           []workbench.RepoRef{repoA, repoB},
+		PullRequestsAPI: &fakePullRequestService{prsByRepo: map[string][]pullrequests.PullRequest{}},
+	}, fakeDelayedPreviewLoader(0), fakeDelayedPullRequestPreviewLoader(0))
+	start.activeView = appViewPullRequests
+	start.selectedRepo = 1
+	start.pullRequestRepo = repoA
+	start.pullRequests = pullrequests.FakePullRequests()
+	start.pendingPullRequest = 24
+	start.pullRequestPreview = pullRequestPreviewState{
+		status:                previewLoaded,
+		focusedPullRequestKey: "pr:24",
+		loaded:                pullRequestPreviewData{pullRequestKey: "pr:24", pr: pullrequests.FakePullRequests()[0]},
+	}
+
+	if !start.beginPullRequestLoad("Loading pull requests...") {
+		t.Fatalf("expected pull request load to start")
+	}
+	if len(start.pullRequests) != 0 || start.selectedPR != 0 {
+		t.Fatalf("expected stale PR list to clear, got selected=%d prs=%+v", start.selectedPR, start.pullRequests)
+	}
+	if start.pendingPullRequest != 0 {
+		t.Fatalf("expected stale pending PR selection to clear, got %d", start.pendingPullRequest)
+	}
+	if start.pullRequestPreview.status != previewEmpty {
+		t.Fatalf("expected stale PR preview to clear, got %v", start.pullRequestPreview.status)
+	}
+}
+
+func TestPullRequestFullPaneWidthShowsRowMetadata(t *testing.T) {
+	start := testPRModel()
+	start.activeView = appViewPullRequests
+	_, listWidth, previewWidth := start.fullPaneWidths(160)
+	if listWidth < pullRequestPaneMinWidth || previewWidth < previewPaneMinWidth {
+		t.Fatalf("expected PR list and preview widths to fit metadata, got list=%d preview=%d", listWidth, previewWidth)
+	}
+	got := strings.Join(start.pullRequestLines(paneTextWidth(listWidth), false), "\n")
+	for _, want := range []string{"#24", "open", "Add layered", "@teammate", "review requested", "checks failing (1)", "2026-05-03"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected PR row to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestPullRequestViewUsesPullRequestFullLayoutBreakpoint(t *testing.T) {
+	start := testPRModel()
+	start.activeView = appViewPullRequests
+
+	for _, width := range []int{100, 120, 132, prFullLayoutMinWidth - 1} {
+		m := start
+		m.width = width
+		if !m.isCompact() {
+			t.Fatalf("expected PR view to stay compact at width %d", width)
+		}
+		got := ansi.Strip(m.View())
+		if strings.Contains(got, "Repositories[1]") {
+			t.Fatalf("expected compact PR view to hide repository pane at width %d, got:\n%s", width, got)
+		}
+		if !strings.Contains(got, "PullRequests[1]") {
+			t.Fatalf("expected compact PR view to show PR list as first pane at width %d, got:\n%s", width, got)
+		}
+	}
+
+	full := start
+	full.width = prFullLayoutMinWidth
+	if full.isCompact() {
+		t.Fatalf("expected PR view to use full layout at width %d", prFullLayoutMinWidth)
+	}
+	got := ansi.Strip(full.View())
+	if !strings.Contains(got, "Repositories[1]") || !strings.Contains(got, "PullRequests[2]") {
+		t.Fatalf("expected full PR view panes at width %d, got:\n%s", prFullLayoutMinWidth, got)
+	}
+	_, listWidth, previewWidth := full.fullPaneWidths(prFullLayoutMinWidth)
+	if listWidth < pullRequestPaneMinWidth || previewWidth < previewPaneMinWidth {
+		t.Fatalf("expected PR full layout minimums, got list=%d preview=%d", listWidth, previewWidth)
+	}
+}
+
+func TestPullRequestRowsStayWithinTerminalAndFollowSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		width int
+	}{
+		{name: "compact", width: 120},
+		{name: "full", width: prFullLayoutMinWidth},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := testPRModel()
+			start.activeView = appViewPullRequests
+			start.width = tc.width
+			start.height = 18
+			start.pullRequests = make([]pullrequests.PullRequest, 30)
+			for i := range start.pullRequests {
+				start.pullRequests[i] = pullrequests.PullRequest{
+					Number:    i + 1,
+					Title:     fmt.Sprintf("Pull request %d", i+1),
+					State:     "open",
+					UpdatedAt: "2026-08-01T00:00:00Z",
+				}
+			}
+			start.selectedPR = 20
+
+			lines := start.pullRequestLines(120, true)
+			if len(lines) != start.pullRequestLineLimit() {
+				t.Fatalf("expected %d visible PR rows, got %d", start.pullRequestLineLimit(), len(lines))
+			}
+			if got := strings.Join(lines, "\n"); !strings.Contains(got, "> #21") {
+				t.Fatalf("expected selected PR to stay visible, got:\n%s", got)
+			}
+
+			got := ansi.Strip(start.View())
+			if lineCount := len(strings.Split(strings.TrimSuffix(got, "\n"), "\n")); lineCount != start.height {
+				t.Fatalf("expected PR view to use %d terminal rows, got %d:\n%s", start.height, lineCount, got)
+			}
+			if !strings.Contains(got, "#21") {
+				t.Fatalf("expected selected PR in rendered viewport, got:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestUpdate_CtrlCQuitsFromPullRequestInputModes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		search bool
+		filter bool
+	}{
+		{name: "search", search: true},
+		{name: "filter", filter: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := testPRModel()
+			start.activeView = appViewPullRequests
+			start.pullRequestSearch = tc.search
+			start.pullRequestFilterUI = tc.filter
+
+			_, cmd := start.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			if cmd == nil {
+				t.Fatalf("expected quit command")
+			}
+			if _, ok := cmd().(tea.QuitMsg); !ok {
+				t.Fatalf("expected tea.QuitMsg from cmd, got %T", cmd())
+			}
+		})
+	}
+}
+
+func TestUpdate_PullRequestSearchFiltersList(t *testing.T) {
+	start := testPRModel()
+	start.activeView = appViewPullRequests
+	start.focusedPane = panePullRequests
+
+	got, cmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if cmd != nil {
+		t.Fatalf("expected search start without command, got %T", cmd)
+	}
+	mm := got.(model)
+	if !mm.pullRequestSearch {
+		t.Fatalf("expected search mode")
+	}
+	got, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("draft")})
+	got, cmd = got.(model).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected preview command after applying search")
+	}
+	mm = got.(model)
+	prs := mm.visiblePullRequests()
+	if len(prs) != 1 || prs[0].Number != 31 {
+		t.Fatalf("expected draft PR after search, got %+v", prs)
+	}
+}
+
+func TestUpdate_PullRequestFilterKeysToggleFilters(t *testing.T) {
+	start := testPRModel()
+	start.activeView = appViewPullRequests
+	start.focusedPane = panePullRequests
+
+	got, _ := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	mm := got.(model)
+	if !mm.pullRequestFilterUI {
+		t.Fatalf("expected filter UI mode")
+	}
+	got, cmd := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if cmd == nil {
+		t.Fatalf("expected preview command after draft filter")
+	}
+	mm = got.(model)
+	if mm.pullRequestFilter.Draft != pullrequests.DraftOnly {
+		t.Fatalf("expected draft-only filter, got %+v", mm.pullRequestFilter)
+	}
+	prs := mm.visiblePullRequests()
+	if len(prs) != 1 || !prs[0].IsDraft {
+		t.Fatalf("expected only draft PRs, got %+v", prs)
 	}
 }
 
@@ -1384,6 +2091,29 @@ func TestWorkItemPreviewLines_ShowsReviewPerspective(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected preview to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestPullRequestPreviewLines_ShowsPullRequestDetails(t *testing.T) {
+	pr := pullrequests.FakePullRequests()[0]
+	got := strings.Join(pullRequestPreviewLines(pr, 120), "\n")
+	for _, want := range []string{
+		"PR: PR #24 Add layered config model",
+		"State: open",
+		"Branch: 0maru/feat/config-loader -> main",
+		"Author: teammate",
+		"Review: review requested",
+		"Requested: 0maru",
+		"Reviews: alice commented",
+		"Checks: checks failing (1)",
+		"Mergeability: mergeable",
+		"Linked issues: #9 Implement layered config model and merge rules",
+		"Body:",
+		"Adds layered configuration defaults",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected PR preview to contain %q, got:\n%s", want, got)
 		}
 	}
 }
@@ -1663,6 +2393,51 @@ func TestUpdate_StalePreviewResultIsDiscarded(t *testing.T) {
 	}
 	if mm.preview.loaded.item.ID != secondID {
 		t.Fatalf("expected loaded item %q, got %q", secondID, mm.preview.loaded.item.ID)
+	}
+}
+
+func TestUpdate_StalePullRequestPreviewResultIsDiscarded(t *testing.T) {
+	start := testPRModel()
+	start.activeView = appViewPullRequests
+	start.focusedPane = panePullRequests
+	firstCmd := start.startPullRequestPreviewLoadForCurrent()
+	firstResult := requirePullRequestPreviewResultMsg(t, firstCmd)
+
+	got, secondCmd := start.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	mm := got.(model)
+	secondKey := mm.pullRequestPreview.focusedPullRequestKey
+
+	got, cmd := mm.Update(firstResult)
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for stale PR preview result, got %T", cmd)
+	}
+	mm = got.(model)
+	if mm.pullRequestPreview.focusedPullRequestKey != secondKey {
+		t.Fatalf("expected focus to stay on %q, got %q", secondKey, mm.pullRequestPreview.focusedPullRequestKey)
+	}
+	if mm.pullRequestPreview.status != previewLoading {
+		t.Fatalf("expected stale result to leave PR preview loading, got %v", mm.pullRequestPreview.status)
+	}
+
+	wrongIdentity := pullRequestPreviewResultMsg{
+		requestID:      mm.pullRequestPreview.requestID,
+		pullRequestKey: firstResult.pullRequestKey,
+		data:           firstResult.data,
+	}
+	got, _ = mm.Update(wrongIdentity)
+	mm = got.(model)
+	if mm.pullRequestPreview.status != previewLoading {
+		t.Fatalf("expected wrong PR identity to be discarded, got %v", mm.pullRequestPreview.status)
+	}
+
+	secondResult := requirePullRequestPreviewResultMsg(t, secondCmd)
+	got, _ = mm.Update(secondResult)
+	mm = got.(model)
+	if mm.pullRequestPreview.status != previewLoaded {
+		t.Fatalf("expected current PR result to load preview, got %v", mm.pullRequestPreview.status)
+	}
+	if mm.pullRequestPreview.loaded.pullRequestKey != secondKey {
+		t.Fatalf("expected loaded PR key %q, got %q", secondKey, mm.pullRequestPreview.loaded.pullRequestKey)
 	}
 }
 

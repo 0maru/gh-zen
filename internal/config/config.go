@@ -30,6 +30,22 @@ const (
 	LocalStatusDetached LocalStatusFilter = "detached"
 	// LocalStatusMissing keeps missing local work items.
 	LocalStatusMissing LocalStatusFilter = "missing"
+
+	// PullRequestsStateAny leaves PR lifecycle state unfiltered.
+	PullRequestsStateAny PullRequestsStateFilter = "any"
+	// PullRequestsStateOpen keeps open pull requests.
+	PullRequestsStateOpen PullRequestsStateFilter = "open"
+	// PullRequestsStateClosed keeps closed pull requests.
+	PullRequestsStateClosed PullRequestsStateFilter = "closed"
+	// PullRequestsStateMerged keeps merged pull requests.
+	PullRequestsStateMerged PullRequestsStateFilter = "merged"
+
+	// PullRequestsDraftAny leaves draft status unfiltered.
+	PullRequestsDraftAny PullRequestsDraftFilter = "any"
+	// PullRequestsDraftOnly keeps only draft pull requests.
+	PullRequestsDraftOnly PullRequestsDraftFilter = "draft"
+	// PullRequestsDraftNonDraft keeps only non-draft pull requests.
+	PullRequestsDraftNonDraft PullRequestsDraftFilter = "non_draft"
 )
 
 // StartupView identifies the view selected at startup.
@@ -41,14 +57,21 @@ type PullRequestFilter string
 // LocalStatusFilter configures workbench local status filtering.
 type LocalStatusFilter string
 
+// PullRequestsStateFilter configures PR browser lifecycle state filtering.
+type PullRequestsStateFilter string
+
+// PullRequestsDraftFilter configures PR browser draft filtering.
+type PullRequestsDraftFilter string
+
 // Config is a resolved runtime configuration.
 type Config struct {
-	Startup   StartupConfig   `toml:"startup"`
-	UI        UIConfig        `toml:"ui"`
-	Keys      KeyBindings     `toml:"keys"`
-	Repos     ReposConfig     `toml:"repos"`
-	Worktrees WorktreesConfig `toml:"worktrees"`
-	Workbench WorkbenchConfig `toml:"workbench"`
+	Startup      StartupConfig      `toml:"startup"`
+	UI           UIConfig           `toml:"ui"`
+	Keys         KeyBindings        `toml:"keys"`
+	Repos        ReposConfig        `toml:"repos"`
+	Worktrees    WorktreesConfig    `toml:"worktrees"`
+	Workbench    WorkbenchConfig    `toml:"workbench"`
+	PullRequests PullRequestsConfig `toml:"pullrequests"`
 }
 
 // StartupConfig contains startup selection settings.
@@ -100,15 +123,34 @@ type WorkbenchFilter struct {
 	LocalStatus   LocalStatusFilter `toml:"local_status"`
 }
 
+// PullRequestsConfig contains filters used by the first-class PR browser.
+type PullRequestsConfig struct {
+	PreviewWidth float64                       `toml:"preview_width"`
+	Filter       PullRequestsFilter            `toml:"filter"`
+	SavedFilters map[string]PullRequestsFilter `toml:"saved_filters"`
+}
+
+// PullRequestsFilter configures a deterministic PR browser filter.
+type PullRequestsFilter struct {
+	State           PullRequestsStateFilter `toml:"state"`
+	Author          string                  `toml:"author"`
+	ReviewRequested bool                    `toml:"review_requested"`
+	WaitingOnReview bool                    `toml:"waiting_on_review"`
+	FailedChecks    bool                    `toml:"failed_checks"`
+	Draft           PullRequestsDraftFilter `toml:"draft"`
+	TextQuery       string                  `toml:"text_query"`
+}
+
 // PartialConfig is one optional configuration layer before merge resolution.
 type PartialConfig struct {
-	Startup     StartupConfigLayer   `toml:"startup"`
-	UI          UIConfigLayer        `toml:"ui"`
-	Keys        KeyBindings          `toml:"keys"`
-	Repos       ReposConfigLayer     `toml:"repos"`
-	Worktrees   WorktreesConfigLayer `toml:"worktrees"`
-	Workbench   WorkbenchConfigLayer `toml:"workbench"`
-	UnknownKeys []string             `toml:"-"`
+	Startup      StartupConfigLayer      `toml:"startup"`
+	UI           UIConfigLayer           `toml:"ui"`
+	Keys         KeyBindings             `toml:"keys"`
+	Repos        ReposConfigLayer        `toml:"repos"`
+	Worktrees    WorktreesConfigLayer    `toml:"worktrees"`
+	Workbench    WorkbenchConfigLayer    `toml:"workbench"`
+	PullRequests PullRequestsConfigLayer `toml:"pullrequests"`
+	UnknownKeys  []string                `toml:"-"`
 }
 
 // StartupConfigLayer is the optional form of StartupConfig.
@@ -155,6 +197,24 @@ type WorkbenchFilterLayer struct {
 	BranchPattern *string            `toml:"branch_pattern"`
 	PullRequest   *PullRequestFilter `toml:"pull_request"`
 	LocalStatus   *LocalStatusFilter `toml:"local_status"`
+}
+
+// PullRequestsConfigLayer is the optional form of PullRequestsConfig.
+type PullRequestsConfigLayer struct {
+	PreviewWidth *float64                           `toml:"preview_width"`
+	Filter       PullRequestsFilterLayer            `toml:"filter"`
+	SavedFilters map[string]PullRequestsFilterLayer `toml:"saved_filters"`
+}
+
+// PullRequestsFilterLayer is the optional form of PullRequestsFilter.
+type PullRequestsFilterLayer struct {
+	State           *PullRequestsStateFilter `toml:"state"`
+	Author          *string                  `toml:"author"`
+	ReviewRequested *bool                    `toml:"review_requested"`
+	WaitingOnReview *bool                    `toml:"waiting_on_review"`
+	FailedChecks    *bool                    `toml:"failed_checks"`
+	Draft           *PullRequestsDraftFilter `toml:"draft"`
+	TextQuery       *string                  `toml:"text_query"`
 }
 
 // Diagnostic describes a non-fatal configuration warning.
@@ -211,9 +271,16 @@ func Defaults() Config {
 			"toggle_help":         {"?"},
 			"refresh":             {"r"},
 			"open_pr":             {"p"},
+			"open_selected":       {"o"},
 			"open_issue":          {"i"},
 			"copy_url":            {"y"},
 			"copy_worktree_path":  {"Y"},
+			"copy_pr_number":      {"Y"},
+			"copy_pr_head":        {"H"},
+			"show_pull_requests":  {"]"},
+			"show_workbench":      {"w", "["},
+			"search_prs":          {"/"},
+			"filter_prs":          {"f"},
 			"quit":                {"q", "esc", "ctrl+c"},
 		},
 		Repos: ReposConfig{
@@ -222,6 +289,11 @@ func Defaults() Config {
 		Workbench: WorkbenchConfig{
 			Filter:       defaultWorkbenchFilter(),
 			SavedFilters: map[string]WorkbenchFilter{},
+		},
+		PullRequests: PullRequestsConfig{
+			PreviewWidth: 0.45,
+			Filter:       defaultPullRequestsFilter(),
+			SavedFilters: map[string]PullRequestsFilter{},
 		},
 	}
 }
@@ -308,6 +380,23 @@ func Merge(base Config, layer PartialConfig) Config {
 		}
 	}
 
+	if layer.PullRequests.PreviewWidth != nil {
+		out.PullRequests.PreviewWidth = *layer.PullRequests.PreviewWidth
+	}
+	out.PullRequests.Filter = mergePullRequestsFilter(out.PullRequests.Filter, layer.PullRequests.Filter)
+	if len(layer.PullRequests.SavedFilters) > 0 {
+		if out.PullRequests.SavedFilters == nil {
+			out.PullRequests.SavedFilters = map[string]PullRequestsFilter{}
+		}
+		for name, filterLayer := range layer.PullRequests.SavedFilters {
+			filter, ok := out.PullRequests.SavedFilters[name]
+			if !ok {
+				filter = defaultPullRequestsFilter()
+			}
+			out.PullRequests.SavedFilters[name] = mergePullRequestsFilter(filter, filterLayer)
+		}
+	}
+
 	return out
 }
 
@@ -328,6 +417,9 @@ func Validate(cfg Config) error {
 	if math.IsNaN(cfg.UI.PreviewWidth) || cfg.UI.PreviewWidth <= 0 || cfg.UI.PreviewWidth >= 1 {
 		problems = append(problems, Problem{Path: "ui.preview_width", Message: "must be greater than 0 and less than 1"})
 	}
+	if math.IsNaN(cfg.PullRequests.PreviewWidth) || cfg.PullRequests.PreviewWidth <= 0 || cfg.PullRequests.PreviewWidth >= 1 {
+		problems = append(problems, Problem{Path: "pullrequests.preview_width", Message: "must be greater than 0 and less than 1"})
+	}
 
 	problems = append(problems, validateKeyBindings("keys", cfg.Keys)...)
 	problems = append(problems, validateStringList("repos.roots", cfg.Repos.Roots)...)
@@ -337,6 +429,8 @@ func Validate(cfg Config) error {
 	problems = append(problems, validateStringList("workbench.branch_patterns", cfg.Workbench.BranchPatterns)...)
 	problems = append(problems, validateWorkbenchFilter("workbench.filter", cfg.Workbench.Filter)...)
 	problems = append(problems, validateSavedFilters(cfg.Workbench.SavedFilters)...)
+	problems = append(problems, validatePullRequestsFilter("pullrequests.filter", cfg.PullRequests.Filter)...)
+	problems = append(problems, validatePullRequestsSavedFilters(cfg.PullRequests.SavedFilters)...)
 
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}
@@ -383,10 +477,48 @@ func mergeWorkbenchFilter(base WorkbenchFilter, layer WorkbenchFilterLayer) Work
 	return base
 }
 
+func mergePullRequestsFilter(base PullRequestsFilter, layer PullRequestsFilterLayer) PullRequestsFilter {
+	if base.State == "" {
+		base.State = PullRequestsStateAny
+	}
+	if base.Draft == "" {
+		base.Draft = PullRequestsDraftAny
+	}
+	if layer.State != nil {
+		base.State = *layer.State
+	}
+	if layer.Author != nil {
+		base.Author = *layer.Author
+	}
+	if layer.ReviewRequested != nil {
+		base.ReviewRequested = *layer.ReviewRequested
+	}
+	if layer.WaitingOnReview != nil {
+		base.WaitingOnReview = *layer.WaitingOnReview
+	}
+	if layer.FailedChecks != nil {
+		base.FailedChecks = *layer.FailedChecks
+	}
+	if layer.Draft != nil {
+		base.Draft = *layer.Draft
+	}
+	if layer.TextQuery != nil {
+		base.TextQuery = *layer.TextQuery
+	}
+	return base
+}
+
 func defaultWorkbenchFilter() WorkbenchFilter {
 	return WorkbenchFilter{
 		PullRequest: PullRequestAny,
 		LocalStatus: LocalStatusAny,
+	}
+}
+
+func defaultPullRequestsFilter() PullRequestsFilter {
+	return PullRequestsFilter{
+		State: PullRequestsStateAny,
+		Draft: PullRequestsDraftAny,
 	}
 }
 
@@ -407,6 +539,11 @@ func cloneConfig(cfg Config) Config {
 			Filter:         cfg.Workbench.Filter,
 			BranchPatterns: cloneStrings(cfg.Workbench.BranchPatterns),
 			SavedFilters:   cloneSavedFilters(cfg.Workbench.SavedFilters),
+		},
+		PullRequests: PullRequestsConfig{
+			PreviewWidth: cfg.PullRequests.PreviewWidth,
+			Filter:       cfg.PullRequests.Filter,
+			SavedFilters: clonePullRequestsSavedFilters(cfg.PullRequests.SavedFilters),
 		},
 	}
 }
@@ -438,6 +575,17 @@ func cloneSavedFilters(filters map[string]WorkbenchFilter) map[string]WorkbenchF
 		return nil
 	}
 	out := make(map[string]WorkbenchFilter, len(filters))
+	for name, filter := range filters {
+		out[name] = filter
+	}
+	return out
+}
+
+func clonePullRequestsSavedFilters(filters map[string]PullRequestsFilter) map[string]PullRequestsFilter {
+	if filters == nil {
+		return nil
+	}
+	out := make(map[string]PullRequestsFilter, len(filters))
 	for name, filter := range filters {
 		out[name] = filter
 	}
@@ -532,6 +680,40 @@ func validateSavedFilters(filters map[string]WorkbenchFilter) []Problem {
 	return problems
 }
 
+func validatePullRequestsSavedFilters(filters map[string]PullRequestsFilter) []Problem {
+	var problems []Problem
+	names := make([]string, 0, len(filters))
+	for name := range filters {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if !isSafeIdentifier(name) {
+			problems = append(problems, Problem{Path: fmt.Sprintf("pullrequests.saved_filters.%s", name), Message: "name must be a safe identifier"})
+		}
+		problems = append(problems, validatePullRequestsFilter(fmt.Sprintf("pullrequests.saved_filters.%s", name), filters[name])...)
+	}
+	return problems
+}
+
+func validatePullRequestsFilter(path string, filter PullRequestsFilter) []Problem {
+	var problems []Problem
+	if !isPullRequestsStateFilter(filter.State) {
+		problems = append(problems, Problem{Path: path + ".state", Message: "must be any, open, closed, or merged"})
+	}
+	if strings.TrimSpace(filter.Author) != filter.Author {
+		problems = append(problems, Problem{Path: path + ".author", Message: "must not have surrounding whitespace"})
+	}
+	if !isPullRequestsDraftFilter(filter.Draft) {
+		problems = append(problems, Problem{Path: path + ".draft", Message: "must be any, draft, or non_draft"})
+	}
+	if strings.TrimSpace(filter.TextQuery) != filter.TextQuery {
+		problems = append(problems, Problem{Path: path + ".text_query", Message: "must not have surrounding whitespace"})
+	}
+	return problems
+}
+
 func validateWorkbenchFilter(path string, filter WorkbenchFilter) []Problem {
 	var problems []Problem
 	if strings.TrimSpace(filter.Worktree) != filter.Worktree {
@@ -571,6 +753,24 @@ func isPullRequestFilter(value PullRequestFilter) bool {
 func isLocalStatusFilter(value LocalStatusFilter) bool {
 	switch value {
 	case LocalStatusAny, LocalStatusClean, LocalStatusDirty, LocalStatusDetached, LocalStatusMissing:
+		return true
+	default:
+		return false
+	}
+}
+
+func isPullRequestsStateFilter(value PullRequestsStateFilter) bool {
+	switch value {
+	case PullRequestsStateAny, PullRequestsStateOpen, PullRequestsStateClosed, PullRequestsStateMerged:
+		return true
+	default:
+		return false
+	}
+}
+
+func isPullRequestsDraftFilter(value PullRequestsDraftFilter) bool {
+	switch value {
+	case PullRequestsDraftAny, PullRequestsDraftOnly, PullRequestsDraftNonDraft:
 		return true
 	default:
 		return false
